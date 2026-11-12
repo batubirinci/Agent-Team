@@ -234,3 +234,30 @@ test('in team mode an owner prompt carries the Lead role, outside it nothing is 
   expect(seen[0] ?? []).toEqual([])
   expect(seen[1]?.some(c => c.includes("Sen Lead'sin"))).toBe(true)
 })
+
+test('an empty pane says the team is ready, lists the roles, and an example fills the prompt', async ($, on) => {
+  // Approved design "Boş pane": hero, example tasks that fill the composer, how it works, 7 roles.
+  const filled: string[] = []
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.close', () => ({ value: undefined }))
+  on('session.append', (_, e, next) => next(e))
+  on('prompt.fill', (_, e) => {
+    filled.push(e.text)
+    return { isFilled: true }
+  })
+
+  const off = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await off.find({ type: 'Text', text: /^Agent Team kapalı$/ })).toBeDefined()
+  expect(await off.find({ key: 'pane-team-on' })).toBeDefined()
+  expect(await off.find({ key: 'ex-0' })).toBeUndefined()
+  await off.press({ key: 'pane-team-on' })
+  await off.unmount()
+
+  const ready = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ready.find({ type: 'Text', text: /^Takım hazır$/ })).toBeDefined()
+  expect(await ready.find({ type: 'Text', text: /^Nasıl işler$/ })).toBeDefined()
+  expect((await ready.findAll({ type: 'Text', text: /^(Analyst|Analyst 2|Developer|Developer \(zor iş\)|QA|QA 2 · canlı|Helper)$/ })).length).toBe(7)
+  await ready.press({ key: 'ex-0' })
+  await ready.unmount()
+  expect(filled).toEqual(['Bir hatayı düzelt: '])
+})

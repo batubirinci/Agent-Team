@@ -28,6 +28,23 @@ const CARD = {
   borderColor: 'rgba(128,128,128,0.28)',
   backgroundColor: 'rgba(128,128,128,0.10)',
 } as const
+// The empty pane (approved design "Boş pane").
+const EXAMPLES = ['Bir hatayı düzelt: ', 'Yeni özellik ekle: ', 'Şu değişikliği incelet: ']
+const STEPS = [
+  'Analyst neyin "bitti" sayılacağını yazar.',
+  'Developer kendi dalında yazar, tek aday SHA teslim eder.',
+  "QA (Astra) inceler; GO olunca main'e birleşir.",
+  'Karar gerekince burada "Senin sıran" çıkar.',
+]
+const ROSTER = [
+  ['Analyst', 'Fable 5.2'],
+  ['Analyst 2', 'GPT-6 Astra'],
+  ['Developer', 'Sonnet 5.5'],
+  ['Developer (zor iş)', 'Opus 5.5'],
+  ['QA', 'GPT-6 Astra'],
+  ['QA 2 · canlı', 'Opus 5.5'],
+  ['Helper', 'Haiku 5.5'],
+] as const
 const CHIP_BLOCKING = 'rgba(224,108,108,0.18)'
 const CHIP = 'rgba(128,128,128,0.2)'
 
@@ -151,7 +168,8 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="row" alignItems="center" gap="sm">
         <Button key="team-mode" plain onPress={() => void setMode($, !isOn)}>
-          {isOn ? <Text color="claude">● Agent Team</Text> : <Text dimColor>○ Agent Team</Text>}
+          {isOn ? <Text color="claude">● </Text> : <Text color="inactive">○ </Text>}
+          <Text weight={isOn ? 'medium' : 'regular'}>Agent Team</Text>
         </Button>
         {e.props.modes.length > 0 && <Text dimColor>{e.props.modes.join(' & ')}</Text>}
       </Box>
@@ -265,20 +283,55 @@ export const register: Register = (on, options) => {
                 .join(' · ') || 'Lead'}
             </Text>
           </Box>
-          {data?.paused ? (
-            <Button key="resume" label="Devam" onPress={() => void say($, 'Devam et')} />
-          ) : (
-            <Button key="pause" label="Pause" onPress={() => void say($, 'Pause')} />
-          )}
+          {data &&
+            (data.paused ? (
+              <Button key="resume" label="Devam" onPress={() => void say($, 'Devam et')} />
+            ) : (
+              <Button key="pause" label="Pause" onPress={() => void say($, 'Pause')} />
+            ))}
         </Box>
 
-        {!m.isOn && <Button key="pane-team-on" variant="primary" label="Bu oturumda Agent Team'i aç" onPress={() => void setMode($, true)} />}
+        {data && !m.isOn && <Button key="pane-team-on" variant="primary" label="Bu oturumda Agent Team'i aç" onPress={() => void setMode($, true)} />}
 
         {error && <Text color="error" size="caption">Durum dosyası okunamadı: {error}</Text>}
 
         {!data && !error && (
-          <Box flexDirection="column" gap="xs">
-            <Text dimColor>Henüz durum yok. Lead ilk görevi aldığında burada görünür.</Text>
+          <Box flexDirection="column" gap="md">
+            <Box flexDirection="column" gap="xs">
+              <Text size="heading" weight="semibold">{m.isOn ? 'Takım hazır' : 'Agent Team kapalı'}</Text>
+              <Text size="caption" dimColor>
+                {m.isOn
+                  ? 'Görevi sohbete düz cümleyle yaz. Lead işi rollere dağıtır, sen yalnızca karar gerekince devreye girersin.'
+                  : 'Açınca bu sohbet Lead olur ve her mesajın takıma gider. Alt satırdaki Agent Team hapı da aynı işi yapar.'}
+              </Text>
+            </Box>
+            {m.isOn ? (
+              <Box flexDirection="column" gap="xs">
+                {EXAMPLES.map((x, i) => (
+                  <Button key={`ex-${i}`} label={`${x}…`} onPress={() => void $.prompt.fill({ text: x, mode: 'replace' })} />
+                ))}
+              </Box>
+            ) : (
+              <Button key="pane-team-on" variant="primary" label="Bu sohbette aç" onPress={() => void setMode($, true)} />
+            )}
+            <Box flexDirection="column" gap="xs">
+              <Text weight="semibold">Nasıl işler</Text>
+              {STEPS.map((s, i) => (
+                <Text size="caption" dimColor>{`${i + 1}. ${s}`}</Text>
+              ))}
+            </Box>
+            <Box {...CARD} gap="xs">
+              <Box flexDirection="row" justifyContent="space-between">
+                <Text weight="semibold">Takım</Text>
+                <Text size="caption" dimColor>{`${ROSTER.length} rol hazır`}</Text>
+              </Box>
+              {ROSTER.map(([name, model]) => (
+                <Box key={`roster-${name}`} flexDirection="row" justifyContent="space-between" gap="sm">
+                  <Text>{name}</Text>
+                  <Text size="caption" dimColor>{model}</Text>
+                </Box>
+              ))}
+            </Box>
             <Text size="caption" mono dimColor wrap="truncate-middle">{file}</Text>
           </Box>
         )}
