@@ -104,6 +104,9 @@ test('team folders match the folder and what is under it, nothing beside it', as
   expect(isInside('/Users/x/Projeler/shop', folders)).toBe(true)
   expect(isInside('/Users/x/Projeler/shop/web', folders)).toBe(true)
   expect(isInside('/Users/x/Projeler/shop-old', folders)).toBe(false)
+  // "/" is every session (owner's choice 2026-11-12: Agent Team on everywhere).
+  expect(isInside('/Users/x/anything', parseFolders('/', '/Users/x'))).toBe(true)
+  expect(isInside('/', parseFolders('/', '/Users/x'))).toBe(true)
 })
 
 test('the pane draws the status file and a decision button speaks for the owner', async ($, on) => {
