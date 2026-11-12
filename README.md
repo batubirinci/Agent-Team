@@ -11,7 +11,8 @@ rollerine dağıtır; sahibe yalnızca karar gerekince döner. Eklenti dört par
   (`skills/agent-team/references/gpt-roles.md`).
 - **Push / PR koruması** (`hooks/guard-push.sh`): Bash çağrılarında `git push`, `gh pr
   create|merge|ready` ve yazma yapan `gh api` çağrıları için sahibin onayını ister. Komutu kabuk
-  kurallarıyla ayrıştırır (sarmalayıcılar, `bash -c`, heredoc); ayrıştıramazsa yine sorar.
+  kurallarıyla ayrıştırır (sarmalayıcılar, `bash -c`, heredoc). Ayrıştıramazsa yalnızca metinde
+  `push`, `pr` ya da `api` geçiyorsa sorar; geçmiyorsa komutu karışmaz.
 - **Masaüstü pane'i** (`hooks/register.tsx`): kararları, görevleri, rol durumlarını ve kullanım
   yüzdelerini gösterir.
 
@@ -29,7 +30,7 @@ Klasördeki bir değişiklik `/reload-plugins` ile alınır.
 ## Kullanım
 
 **Takım modunu açmak.** Mod açıkken oturumdaki her mesaj Lead'e gider; `/agent-team` yazmak
-gerekmez. Üç yolu var:
+gerekmez (slash komutları hariç). Üç yolu var:
 
 - `teamFolders` seçeneğindeki bir klasörde (ya da altında) açılan oturum kendiliğinden takım olur.
 - Alt satırdaki **Agent Team** hapına basmak (açıkken `● Agent Team`, kapalıyken `○ Agent Team`).
@@ -37,18 +38,20 @@ gerekmez. Üç yolu var:
 
 Mod açılınca pane da açılır. `/team-pane` pane'i yeniden açar.
 
-**Pane ne gösterir.** Üstte Lead'in modeli ve son güncelleme saati; sağda **Pause** (duraklatılmışsa
-**Devam**). Altında:
+**Pane ne gösterir.** Durum dosyası varsa: üstte Lead'in modeli ve son güncelleme saati; sağda
+**Pause** (duraklatılmışsa **Devam**). Altında, dosyada olanlar:
 
 - **Senin sıran:** bekleyen kararlar. Bir seçeneğe basmak Lead'e sahibin kendi mesajı olarak
   `Karar (<id>): <seçenek>` gönderir; ilk seçenek ana düğmedir.
-- **Görevler:** her görev için dal adı, 5 aşamalı çizgi (Spec, Build, Review, Revise, Rapor), tur
-  sayısı, rollerin durumu (çalışıyor, bitti, takıldı, sırada, boşta), aday SHA'nın ilk 7 hanesi ve
-  blocking / follow-up sayıları.
-- **5 saatlik / Haftalık** kullanım yüzdeleri (durum dosyasında varsa).
+- **Görevler:** her görev için başlık, 5 aşamalı çizgi (Spec, Build, Review, Revise, Rapor) ve
+  rollerin durumu (çalışıyor, bitti, takıldı, sırada, boşta); varsa dal adı, tur sayısı, aday
+  SHA'nın ilk 7 hanesi ve sıfırdan büyük blocking / follow-up sayıları.
+- **5 saatlik / Haftalık** kullanım yüzdeleri.
 
-Durum dosyası yokken pane "Takım hazır" ekranını, örnek istemleri ve rol listesini gösterir.
-Pause, Lead'e `Pause` mesajı olarak gider.
+Durum dosyası yokken (okuma hatası da yoksa) pane boş ekranı gösterir. Takım modu açıksa bu
+"Takım hazır" ekranıdır: örnek istemler, akış adımları ve rol listesi. Mod kapalıysa "Agent Team
+kapalı" yazar ve "Bu sohbette aç" düğmesi çıkar. Pause, Lead'e `Pause` mesajı olarak gider
+(**Devam** düğmesi `Devam et`).
 
 ## Seçenekler
 
@@ -73,7 +76,7 @@ gösterir.
 ## Durum dosyası
 
 Lead, pane'in okuduğu durumu `<evidenceRoot>/status/<proje>.json` dosyasına yazar; pane dosyayı 3
-saniyede bir okur. Biçim: [`skills/agent-team/references/status.md`](skills/agent-team/references/status.md).
+saniyede bir kontrol eder, dosya değişmişse yeniden okur. Biçim: [`skills/agent-team/references/status.md`](skills/agent-team/references/status.md).
 
 ## Geliştirme
 
