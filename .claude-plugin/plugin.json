@@ -1,0 +1,20 @@
+{
+  "name": "agent-team",
+  "version": "0.1.0",
+  "description": "Lead/Analyst/Developer/QA takımı: agent-team skill'i, 6 rol ajanı, push koruması ve canlı durum pane'i",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "teamFolders": {
+      "type": "string",
+      "title": "Takım klasörleri",
+      "description": "Bu klasörlerde (ve altlarında) açılan oturumlar kendiliğinden Agent Team olur. Virgülle ayır; ~ kullanılabilir.",
+      "default": ""
+    },
+    "evidenceRoot": {
+      "type": "string",
+      "title": "Kanıt kökü",
+      "description": "Lead'in raporları ve durum dosyasını yazdığı klasör.",
+      "default": "~/agent-team-evidence"
+    }
+  }
+}
