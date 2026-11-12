@@ -1,4 +1,4 @@
-import type { Decision, Role, RoleStatus, Status, Task } from '../types'
+import type { Decision, Evidence, Role, Round, RoleStatus, Status, Task } from '../types'
 
 export const STAGES = ['spec', 'build', 'review', 'revise', 'report'] as const
 export const STAGE_LABELS = ['Spec', 'Build', 'Review', 'Revise', 'Rapor'] as const
@@ -8,6 +8,8 @@ type Obj = Record<string, unknown>
 
 const isObj = (x: unknown): x is Obj => typeof x === 'object' && x !== null && !Array.isArray(x)
 const str = (x: unknown): string | undefined => (typeof x === 'string' && x.trim() ? x : undefined)
+// A string cut to n characters: the file is model-written, a pane line is not a place for an essay.
+const short = (x: unknown, n: number): string | undefined => str(x)?.trim().slice(0, n)
 const num = (x: unknown): number | undefined =>
   typeof x === 'number' && Number.isFinite(x) && x >= 0 ? Math.round(x) : undefined
 const list = (x: unknown): Obj[] => (Array.isArray(x) ? x.filter(isObj) : [])
@@ -34,6 +36,24 @@ export function parseStatus(text: string): Status {
       const status = ROLE_STATUSES.includes(r.status as RoleStatus) ? (r.status as RoleStatus) : 'idle'
       return [{ name, state: str(r.state) ?? '', status }]
     })
+    const rounds: Round[] = list(t.rounds).flatMap((r, j) => {
+      const verdict = short(r.verdict, 12)
+      if (!verdict) return []
+      const findings = list(r.findings)
+        .flatMap(f => {
+          const what = short(f.what, 300)
+          return what ? [{ severity: short(f.severity, 20), origin: short(f.origin, 20), what, where: short(f.where, 200) }] : []
+        })
+        .slice(0, 10)
+      return [{ n: num(r.n) ?? j + 1, verdict, candidate: short(r.candidate, 64), note: short(r.note, 400), findings }]
+    }).slice(-10)
+    const evidence: Evidence[] = list(t.evidence)
+      .flatMap(e => {
+        const label = short(e.label, 60)
+        const path = short(e.path, 300)
+        return label && path ? [{ label, path }] : []
+      })
+      .slice(0, 6)
     return [{
       id: str(t.id) ?? `t${i + 1}`,
       title,
@@ -44,6 +64,8 @@ export function parseStatus(text: string): Status {
       blocking: num(t.blocking),
       followup: num(t.followup),
       roles,
+      ...(rounds.length > 0 && { rounds }),
+      ...(evidence.length > 0 && { evidence }),
     }]
   })
 

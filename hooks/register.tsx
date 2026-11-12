@@ -18,6 +18,8 @@ const status = atom(
   { file: '', mtime: 0, data: null, error: null } as StatusView,
   { shape: 'status-2' },
 )
+// The task whose detail view the pane shows (null: the list). Session state, not in the file.
+const detail = atom({ plugin: 'agent-team', key: 'detail' } as const, null as string | null, { shape: 'detail-1' })
 
 // Raw colors that read on a light and a dark pane alike (a theme key has no card fill).
 const CARD = {
@@ -91,6 +93,8 @@ async function refresh($: EngineInterface, file: string) {
   try {
     const text = await $.fs.read(file)
     const data = parseStatus(typeof text === 'string' ? text : '')
+    const open = await read($, detail)
+    if (open && !data.tasks.some(t => t.id === open)) await update($, detail, () => null)
     await update($, status, () => ({ file, mtime: mtimeMs, data, error: null }))
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err)
@@ -189,6 +193,8 @@ export const register: Register = (on, options) => {
       Svg ? <Svg source={dotSvg(hex)} alt={alt} width={8} height={8} /> : <Text color={themeKey}>●</Text>
     const m = await read($, mode)
     const { file, data, error } = await read($, status)
+    const openId = await read($, detail)
+    const open = openId ? data?.tasks.find(t => t.id === openId) : undefined
 
     const decisionCard = (d: Decision) => (
       <Box key={`d-${d.id}`} {...CARD}>
@@ -263,8 +269,62 @@ export const register: Register = (on, options) => {
             </Box>
           </Box>
         )}
+        <Button key={`detail-${t.id}`} label="Ayrıntı ›" onPress={() => void update($, detail, () => t.id)} />
       </Box>
     )
+
+    const detailView = (t: Task) => {
+      const last = t.rounds?.at(-1)
+      return (
+        <Box flexDirection="column" gap="md" padding="sm">
+          <Button key="detail-back" label="‹ Görevler" onPress={() => void update($, detail, () => null)} />
+          <Box flexDirection="column">
+            <Text size="heading" weight="semibold">{t.title}</Text>
+            {t.branch && <Text size="caption" mono dimColor wrap="truncate-end">{t.branch}</Text>}
+            {t.candidate && <Text size="caption" mono dimColor>{t.candidate.slice(0, 7)}</Text>}
+            {last && <Text size="caption" dimColor>{`${last.verdict} · ${last.n} tur`}</Text>}
+          </Box>
+          {t.rounds && (
+            <Box flexDirection="column" gap="sm">
+              <Text weight="semibold">Turlar</Text>
+              {t.rounds.map((r, i) => (
+                <Box key={`round-${i}`} {...CARD}>
+                  <Box flexDirection="row" justifyContent="space-between" gap="sm">
+                    <Text weight="semibold" color={r.verdict === 'GO' ? 'success' : r.verdict.startsWith('NO') ? 'error' : undefined}>{`Tur ${r.n} · ${r.verdict}`}</Text>
+                    {r.candidate && <Text size="caption" mono dimColor>{r.candidate.slice(0, 7)}</Text>}
+                  </Box>
+                  {r.findings.map((f, j) => (
+                    <Box key={`round-${i}-f-${j}`} flexDirection="column">
+                      <Text size="caption" weight="medium" color={f.severity === 'BLOCKING' ? 'error' : undefined}>
+                        {[f.severity, f.origin].filter(Boolean).join(' · ')}
+                      </Text>
+                      <Text>{f.what}</Text>
+                      {f.where && <Text size="caption" mono dimColor>{f.where}</Text>}
+                    </Box>
+                  ))}
+                  {r.note && <Text size="caption" dimColor>{r.note}</Text>}
+                </Box>
+              ))}
+            </Box>
+          )}
+          {t.evidence && (
+            <Box flexDirection="column" gap="xs">
+              <Text weight="semibold">Kanıt</Text>
+              {t.evidence.map((e, i) => (
+                <Box key={`ev-${i}`} flexDirection="column">
+                  <Text>{e.label}</Text>
+                  {/* Not a Link: the desktop surface draws a non-https href as plain text (engine report in the test), so the path is mono text. */}
+                  <Text size="caption" mono dimColor wrap="truncate-middle">{e.path}</Text>
+                </Box>
+              ))}
+            </Box>
+          )}
+          <Button key="detail-ask" label="Lead'e sor" onPress={() => void $.prompt.fill({ text: `${t.title} hakkında: `, mode: 'replace' })} />
+        </Box>
+      )
+    }
+
+    if (open) return detailView(open)
 
     const updated = clockOf(data?.updatedAt)
     const lim = data?.limits
