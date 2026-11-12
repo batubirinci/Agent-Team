@@ -218,6 +218,50 @@ test('the footer chip turns team mode on and off, keeps the engine labels, and n
   expect(appended[1]).toMatch(/^\[Agent Team modu kapandı\]/)
 })
 
+test('the footer Pane button opens the pane next to the chip, with team mode off or on, and never flips the mode', async ($, on) => {
+  // Source: owner's request 2026-11-12 "alt satırdaki tek tıkla açılsın"; criteria 1-2 of the pane-button task.
+  const opened: unknown[] = []
+  const appended: string[] = []
+  on('ui.open', (_, e) => {
+    opened.push(e)
+    return { value: { isPlaced: true } }
+  })
+  on('ui.close', () => ({ value: undefined }))
+  on('session.append', (_, e, next) => {
+    appended.push('x')
+    return next(e)
+  })
+
+  // Drawn order of the footer row, left to right: a Button is its key, the engine labels are their text.
+  const row = async (foot: Awaited<ReturnType<typeof $.ui.mount<'desktop', 'SessionMode'>>>) => {
+    const drawn = (await foot.drawn()) as { children: { props: { key?: string }; children?: string[] }[] }
+    return drawn.children.map(c => c.props.key ?? c.children?.join(''))
+  }
+  // Press Pane with the mode as it is; the chip must read the same on a fresh mount afterwards.
+  const pressPane = async (label: string) => {
+    opened.length = 0
+    appended.length = 0
+    const foot = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
+    expect(await row(foot)).toEqual(['team-mode', 'team-pane-open', 'İzinleri atla'])
+    expect((await foot.find({ key: 'team-pane-open' }))?.text).toBe('Pane')
+    await foot.press({ key: 'team-pane-open' })
+    await foot.unmount()
+    expect(opened).toMatchObject([{ id: 'agent-team' }])
+    expect(appended).toEqual([])
+    const after = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
+    expect((await after.find({ key: 'team-mode' }))?.text).toBe(label)
+    await after.unmount()
+  }
+
+  await pressPane('○ Agent Team')
+
+  const toggle = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
+  await toggle.press({ key: 'team-mode' })
+  await toggle.unmount()
+
+  await pressPane('● Agent Team')
+})
+
 test('in team mode an owner prompt carries the Lead role, outside it nothing is added', async ($, on) => {
   const seen: (readonly string[] | undefined)[] = []
   on('ui.open', () => ({ value: { isPlaced: true } }))
