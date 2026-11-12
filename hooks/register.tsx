@@ -161,7 +161,7 @@ export const register: Register = (on, options) => {
     return { text: "Agent Team pane'i açıldı." }
   })
 
-  // A chip left of the footer's mode labels turns team mode on and off; nothing is drawn above the prompt.
+  // A chip left of the footer's mode labels turns team mode on and off, a Pane button next to it opens the pane; nothing is drawn above the prompt.
   on('ui.render', { component: 'SessionMode' }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const { isOn } = await read($, mode)
@@ -174,6 +174,7 @@ export const register: Register = (on, options) => {
           label={isOn ? '● Agent Team' : '○ Agent Team'}
           onPress={() => void setMode($, !isOn)}
         />
+        <Button key="team-pane-open" variant="secondary" label="Pane" onPress={() => void $.ui.open(PANE_OPEN)} />
         {e.props.modes.length > 0 && <Text dimColor>{e.props.modes.join(' & ')}</Text>}
       </Box>
     )

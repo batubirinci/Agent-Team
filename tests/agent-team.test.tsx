@@ -218,6 +218,45 @@ test('the footer chip turns team mode on and off, keeps the engine labels, and n
   expect(appended[1]).toMatch(/^\[Agent Team modu kapandı\]/)
 })
 
+test('the footer Pane button opens the pane next to the chip, with team mode off or on, and never flips the mode', async ($, on) => {
+  // Source: owner's request 2026-11-12 "alt satırdaki tek tıkla açılsın"; criteria 1-2 of the pane-button task.
+  const opened: unknown[] = []
+  const appended: string[] = []
+  on('ui.open', (_, e) => {
+    opened.push(e)
+    return { value: { isPlaced: true } }
+  })
+  on('ui.close', () => ({ value: undefined }))
+  on('session.append', (_, e, next) => {
+    appended.push('x')
+    return next(e)
+  })
+
+  const off = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
+  const offKeys = (await off.findAll({ type: 'Button' })).map(b => b.key)
+  expect(offKeys).toEqual(['team-mode', 'team-pane-open'])
+  expect((await off.find({ key: 'team-pane-open' }))?.text).toBe('Pane')
+  expect(await off.find({ type: 'Text', text: /İzinleri atla/ })).toBeDefined()
+  await off.press({ key: 'team-pane-open' })
+  await off.unmount()
+  expect(opened).toMatchObject([{ id: 'agent-team' }])
+  expect(appended).toEqual([])
+
+  const toggle = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
+  await toggle.press({ key: 'team-mode' })
+  await toggle.unmount()
+  // turning the mode on opens the pane by itself (existing behaviour); start counting from here
+  appended.length = 0
+  opened.length = 0
+
+  const on2 = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
+  expect((await on2.findAll({ type: 'Button' })).map(b => b.key)).toEqual(['team-mode', 'team-pane-open'])
+  await on2.press({ key: 'team-pane-open' })
+  await on2.unmount()
+  expect(opened).toMatchObject([{ id: 'agent-team' }])
+  expect(appended).toEqual([])
+})
+
 test('in team mode an owner prompt carries the Lead role, outside it nothing is added', async ($, on) => {
   const seen: (readonly string[] | undefined)[] = []
   on('ui.open', () => ({ value: { isPlaced: true } }))
