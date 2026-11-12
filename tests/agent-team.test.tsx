@@ -46,6 +46,12 @@ const PANE = {
   },
 } as const
 
+const FOOTER = {
+  plugin: 'agent-team',
+  component: 'SessionMode',
+  props: { modes: ['İzinleri atla'] },
+} as const
+
 const BAND = {
   plugin: 'agent-team',
   component: 'AbovePrompt',
@@ -176,25 +182,36 @@ test('desktop draws the bars as SVG with alt text, the terminal keeps the text f
   await term.unmount()
 })
 
-test('the band switch turns team mode on and tells the model', async ($, on) => {
+test('the footer chip turns team mode on and off, keeps the engine labels, and nothing sits above the prompt', async ($, on) => {
+  // Approved design "Öneri B · Alt satırda": a chip left of the footer labels; the band above the prompt is gone.
   const appended: string[] = []
   on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.close', () => ({ value: undefined }))
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine</Text>
+  })
   on('session.append', (_, e, next) => {
     const block = e.message.content[0]
     appended.push(block && 'text' in block ? String(block.text) : '')
     return next(e)
   })
 
-  const off = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  await off.press({ key: 'team-on' })
-  await off.unmount()
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await band.find({ type: 'Button' })).toBeUndefined()
+  await band.unmount()
 
-  expect(appended.length).toBe(1)
+  const foot = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
+  expect(await foot.find({ type: 'Text', text: /İzinleri atla/ })).toBeDefined()
+  await foot.press({ key: 'team-mode' })
+  await foot.unmount()
   expect(appended[0]).toMatch(/^\[Agent Team modu açıldı\]/)
 
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await band.find({ key: 'team-off' })).toBeDefined()
-  await band.unmount()
+  const onFoot = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
+  expect(await onFoot.find({ type: 'Text', text: /^●/ })).toBeDefined()
+  await onFoot.press({ key: 'team-mode' })
+  await onFoot.unmount()
+  expect(appended[1]).toMatch(/^\[Agent Team modu kapandı\]/)
 })
 
 test('in team mode an owner prompt carries the Lead role, outside it nothing is added', async ($, on) => {
@@ -209,9 +226,9 @@ test('in team mode an owner prompt carries the Lead role, outside it nothing is 
 
   const typed = { wait: false, origin: { kind: 'composer' } } as const
   await $.prompt.submit({ ...typed, text: 'merhaba' })
-  const off = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  await off.press({ key: 'team-on' })
-  await off.unmount()
+  const foot = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
+  await foot.press({ key: 'team-mode' })
+  await foot.unmount()
   await $.prompt.submit({ ...typed, text: 'tarih hatasını düzelt' })
 
   expect(seen[0] ?? []).toEqual([])

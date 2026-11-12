@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Decision, Mode, RoleStatus, StatusView, Task } from '../types'
-import { STAGE_LABELS, baseName, clockOf, expandHome, isInside, parseFolders, parseStatus, summary, trimSlash } from './status'
+import { STAGE_LABELS, baseName, clockOf, expandHome, isInside, parseFolders, parseStatus, trimSlash } from './status'
 import { BAD, CLAY, MUTED, OK, dotSvg, meterSvg, stagesSvg } from './svg'
 
 const PANE = 'agent-team'
@@ -144,31 +144,16 @@ export const register: Register = (on, options) => {
     return { text: "Agent Team pane'i açıldı." }
   })
 
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.props.hasSurvey) return next(e)
+  // A chip left of the footer's mode labels turns team mode on and off; nothing is drawn above the prompt.
+  on('ui.render', { component: 'SessionMode' }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
-    const m = await read($, mode)
-
-    if (!m.isOn) {
-      return (
-        <Box>
-          <Button key="team-on" plain dimColor label="Agent Team'i aç" onPress={() => void setMode($, true)} />
-        </Box>
-      )
-    }
-
-    const { data } = await read($, status)
+    const { isOn } = await read($, mode)
     return (
-      <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="sm">
-        <Text wrap="truncate-end">
-          <Text size="caption" color="claude">● </Text>
-          <Text weight="semibold">Agent Team</Text>
-          <Text dimColor> {summary(data)}</Text>
-        </Text>
-        <Box flexDirection="row" gap="xs">
-          <Button key="team-pane" label="Pane'i aç" onPress={() => void $.ui.open(PANE_OPEN)} />
-          <Button key="team-off" dimColor label="Kapat" onPress={() => void setMode($, false)} />
-        </Box>
+      <Box flexDirection="row" alignItems="center" gap="sm">
+        <Button key="team-mode" plain onPress={() => void setMode($, !isOn)}>
+          {isOn ? <Text color="claude">● Agent Team</Text> : <Text dimColor>○ Agent Team</Text>}
+        </Button>
+        {e.props.modes.length > 0 && <Text dimColor>{e.props.modes.join(' & ')}</Text>}
       </Box>
     )
   })
