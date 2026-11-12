@@ -38,7 +38,19 @@ every few seconds; a field it does not know is ignored, a missing optional field
         { "name": "Developer · Sonnet 5.5", "state": "teslim etti", "status": "done" },
         { "name": "QA · GPT-6 Astra", "state": "inceliyor", "status": "running" },
         { "name": "QA 2 · canlı kontrol", "state": "sırada", "status": "waiting" }
-      ]
+      ],
+      "rounds": [
+        {
+          "n": 1,
+          "verdict": "NO-GO",
+          "candidate": "<full SHA of that round>",
+          "note": "Aynı aile ikinci kez: mekanizma değişsin",
+          "findings": [
+            { "severity": "BLOCKING", "origin": "introduced", "what": "Kutu iki nesneye taşıyor", "where": "src/selection.ts:42" }
+          ]
+        }
+      ],
+      "evidence": [{ "label": "QA raporu", "path": "/Users/x/agent-team-evidence/<SHA>/qa.md" }]
     }
   ]
 }
@@ -58,6 +70,15 @@ Fields:
   by disposition. `roles` lists the roles working on the task now or last: `status` is one of
   `running`, `done`, `waiting`, `blocked`, `idle`; `state` is the short Turkish word the owner
   reads (`inceliyor`, `teslim etti`, `sırada`, `BLOCKED · <why>`).
+- `rounds` (optional, the task's detail view): one entry per review round, oldest first, at most 10:
+  `n`, `verdict` (`GO` or `NO-GO`), `candidate` (full SHA of that round), `note` (the Lead's note,
+  e.g. same family twice, so a mechanism change), `findings` (at most 10 per round): `severity`
+  (`BLOCKING`, `LOW`, ...), `origin` (`introduced` or `pre-existing`), `what`, `where` (`file:line`).
+  A round without `verdict` and a finding without `what` are dropped.
+- `evidence` (optional, at most 6): `label` and an absolute `path` of a report; both are required.
+  The pane shows the path as text. Long texts are cut (a finding 300 characters, a note 400).
+- Pressing `Ayrıntı ›` on a task card opens its detail view: rounds, findings, notes and evidence.
+  A task without `rounds` still opens, just without the Turlar section.
 
 Keep the texts short (one line each in a 380 px pane). Never put secrets, tokens or file contents
 in the file.

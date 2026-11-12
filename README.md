@@ -45,6 +45,7 @@ Mod açılınca pane da açılır. `/team-pane` de pane'i açar.
   `Karar (<id>): <seçenek>` gönderir.
 - **Görevler:** her görev için 5 aşamalı çizgi (Spec, Build, Review, Revise, Rapor) ve rollerin
   durumu.
+- **Ayrıntı:** görev kartındaki **Ayrıntı ›** turları, bulguları, Lead notunu ve kanıt yollarını açar.
 - **Kullanım çubukları:** 5 saatlik ve haftalık kullanım yüzdeleri.
 - **Pause:** Lead'e `Pause` mesajı gönderir; duraklatılmışken düğme **Devam** olur.
 

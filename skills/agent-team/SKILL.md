@@ -155,6 +155,7 @@ unverified premise is marked so.
   Codex `final.md` files, not raw logs. Mirror it in the pane's status file
   (`references/status.md`) at every change the owner would want to see: a task starts or changes
   stage, a role starts, finishes or blocks, a verdict lands, a decision opens or closes, Pause.
+  The Lead also mirrors each round's verdict, findings and the evidence paths into the status file.
 - **Evidence lives outside the scratchpad.** The session scratchpad can be deleted when the chat
   changes; worktrees may live there, but evidence, reports and gate logs go to the persistent
   evidence root named in the Lead's memory (`<evidence root>/<candidate SHA>/`), and every
