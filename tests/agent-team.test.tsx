@@ -203,12 +203,13 @@ test('the footer chip turns team mode on and off, keeps the engine labels, and n
 
   const foot = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
   expect(await foot.find({ type: 'Text', text: /İzinleri atla/ })).toBeDefined()
+  expect((await foot.find({ key: 'team-mode' }))?.props.variant).toBe('secondary')
   await foot.press({ key: 'team-mode' })
   await foot.unmount()
   expect(appended[0]).toMatch(/^\[Agent Team modu açıldı\]/)
 
   const onFoot = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
-  expect(await onFoot.find({ type: 'Text', text: /^●/ })).toBeDefined()
+  expect((await onFoot.find({ key: 'team-mode' }))?.props.variant).toBe('primary')
   await onFoot.press({ key: 'team-mode' })
   await onFoot.unmount()
   expect(appended[1]).toMatch(/^\[Agent Team modu kapandı\]/)

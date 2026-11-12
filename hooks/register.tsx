@@ -167,10 +167,13 @@ export const register: Register = (on, options) => {
     const { isOn } = await read($, mode)
     return (
       <Box flexDirection="row" alignItems="center" gap="sm">
-        <Button key="team-mode" plain onPress={() => void setMode($, !isOn)}>
-          {isOn ? <Text color="claude">● </Text> : <Text color="inactive">○ </Text>}
-          <Text weight={isOn ? 'medium' : 'regular'}>Agent Team</Text>
-        </Button>
+        {/* Desktop draws this slot dim and ignores text colors (seen live): the variant is what shows the state. */}
+        <Button
+          key="team-mode"
+          variant={isOn ? 'primary' : 'secondary'}
+          label={isOn ? '● Agent Team' : '○ Agent Team'}
+          onPress={() => void setMode($, !isOn)}
+        />
         {e.props.modes.length > 0 && <Text dimColor>{e.props.modes.join(' & ')}</Text>}
       </Box>
     )
