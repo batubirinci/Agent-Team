@@ -232,29 +232,34 @@ test('the footer Pane button opens the pane next to the chip, with team mode off
     return next(e)
   })
 
-  const off = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
-  const offKeys = (await off.findAll({ type: 'Button' })).map(b => b.key)
-  expect(offKeys).toEqual(['team-mode', 'team-pane-open'])
-  expect((await off.find({ key: 'team-pane-open' }))?.text).toBe('Pane')
-  expect(await off.find({ type: 'Text', text: /İzinleri atla/ })).toBeDefined()
-  await off.press({ key: 'team-pane-open' })
-  await off.unmount()
-  expect(opened).toMatchObject([{ id: 'agent-team' }])
-  expect(appended).toEqual([])
+  // Drawn order of the footer row, left to right: a Button is its key, the engine labels are their text.
+  const row = async (foot: Awaited<ReturnType<typeof $.ui.mount<'desktop', 'SessionMode'>>>) => {
+    const drawn = (await foot.drawn()) as { children: { props: { key?: string }; children?: string[] }[] }
+    return drawn.children.map(c => c.props.key ?? c.children?.join(''))
+  }
+  // Press Pane with the mode as it is; the chip must read the same on a fresh mount afterwards.
+  const pressPane = async (label: string) => {
+    opened.length = 0
+    appended.length = 0
+    const foot = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
+    expect(await row(foot)).toEqual(['team-mode', 'team-pane-open', 'İzinleri atla'])
+    expect((await foot.find({ key: 'team-pane-open' }))?.text).toBe('Pane')
+    await foot.press({ key: 'team-pane-open' })
+    await foot.unmount()
+    expect(opened).toMatchObject([{ id: 'agent-team' }])
+    expect(appended).toEqual([])
+    const after = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
+    expect((await after.find({ key: 'team-mode' }))?.text).toBe(label)
+    await after.unmount()
+  }
+
+  await pressPane('○ Agent Team')
 
   const toggle = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
   await toggle.press({ key: 'team-mode' })
   await toggle.unmount()
-  // turning the mode on opens the pane by itself (existing behaviour); start counting from here
-  appended.length = 0
-  opened.length = 0
 
-  const on2 = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
-  expect((await on2.findAll({ type: 'Button' })).map(b => b.key)).toEqual(['team-mode', 'team-pane-open'])
-  await on2.press({ key: 'team-pane-open' })
-  await on2.unmount()
-  expect(opened).toMatchObject([{ id: 'agent-team' }])
-  expect(appended).toEqual([])
+  await pressPane('● Agent Team')
 })
 
 test('in team mode an owner prompt carries the Lead role, outside it nothing is added', async ($, on) => {
