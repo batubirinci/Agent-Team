@@ -46,7 +46,7 @@ export function parseStatus(text: string): Status {
         })
         .slice(0, 10)
       return [{ n: num(r.n) ?? j + 1, verdict, candidate: short(r.candidate, 64), note: short(r.note, 400), findings }]
-    }).slice(0, 10)
+    }).slice(-10)
     const evidence: Evidence[] = list(t.evidence)
       .flatMap(e => {
         const label = short(e.label, 60)

@@ -70,7 +70,8 @@ Fields:
   by disposition. `roles` lists the roles working on the task now or last: `status` is one of
   `running`, `done`, `waiting`, `blocked`, `idle`; `state` is the short Turkish word the owner
   reads (`inceliyor`, `teslim etti`, `sırada`, `BLOCKED · <why>`).
-- `rounds` (optional, the task's detail view): one entry per review round, oldest first, at most 10:
+- `rounds` (optional, the task's detail view): one entry per review round, oldest first; the pane keeps the last 10 and
+  reads the header's round count from the last round's `n` (so write `n` as the true round number):
   `n`, `verdict` (`GO` or `NO-GO`), `candidate` (full SHA of that round), `note` (the Lead's note,
   e.g. same family twice, so a mechanism change), `findings` (at most 10 per round): `severity`
   (`BLOCKING`, `LOW`, ...), `origin` (`introduced` or `pre-existing`), `what`, `where` (`file:line`).

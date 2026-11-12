@@ -363,6 +363,7 @@ test('rounds and evidence are parsed with caps, malformed entries dropped, a fil
 test('a task card opens its detail view with rounds and evidence, back returns, ask fills the prompt', async ($, on) => {
   // Criteria 2, 3, 5 and the approved design: every round with findings and note, evidence, same on desktop and terminal.
   const filled: string[] = []
+  const modes: unknown[] = []
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('env.get', () => ({ value: '/Users/x' }))
@@ -373,6 +374,7 @@ test('a task card opens its detail view with rounds and evidence, back returns, 
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('prompt.fill', (_, e) => {
     filled.push(e.text)
+    modes.push(e.mode)
     return { isFilled: true }
   })
   await $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'desktop', isInteractive: true })
@@ -416,6 +418,8 @@ test('a task card opens its detail view with rounds and evidence, back returns, 
     await ui.unmount()
   }
   expect(filled).toEqual(['Seçim kutusu taşması hakkında: ', 'Seçim kutusu taşması hakkında: '])
+  // Review revision 1: the ask replaces what is in the prompt box, as the empty-pane examples do.
+  expect(modes).toEqual(['replace', 'replace'])
 })
 
 test('a task without rounds opens a detail view with no Turlar section, and a vanished task returns to the list', async ($, on) => {
@@ -447,4 +451,36 @@ test('a task without rounds opens a detail view with no Turlar section, and a va
   expect(await after.find({ key: 'detail-back' })).toBeUndefined()
   expect(await after.find({ key: 't-t9' })).toBeDefined()
   await after.unmount()
+
+  // Review revision 3: the open id is forgotten, so the same id coming back does not reopen the view by itself.
+  text = detailStatus({})
+  mtime = 3
+  await $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'desktop', isInteractive: true })
+  const back = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await back.find({ key: 'detail-back' })).toBeUndefined()
+  expect(await back.find({ key: 't-t1' })).toBeDefined()
+  await back.unmount()
+})
+
+test('with more than 10 rounds the last 10 are kept and the header reads the true round number', async ($, on) => {
+  // Review revision 1 (QA r1 BLOCKING): 12 rounds, the last one NO-GO; the owner must see the newest verdict and "12 tur".
+  const rounds = Array.from({ length: 12 }, (_, i) => ({ n: i + 1, verdict: i === 11 ? 'NO-GO' : 'GO', findings: [] }))
+  const text = detailStatus({ rounds })
+  expect(parseStatus(text).tasks[0]?.rounds?.map(r => r.n)).toEqual([3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('env.get', () => ({ value: '/Users/x' }))
+  on('fs.exists', () => ({ value: true }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: 1, isLink: false } }))
+  on('fs.read', () => ({ value: text }))
+  on('clock.every', () => ({ value: undefined }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'detail-t1' })
+  expect(await ui.find({ type: 'Text', text: /^NO-GO · 12 tur$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Tur 12 · NO-GO$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Tur 2 · GO$/ })).toBeUndefined()
+  await ui.unmount()
 })

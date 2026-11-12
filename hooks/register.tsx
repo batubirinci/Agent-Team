@@ -93,6 +93,8 @@ async function refresh($: EngineInterface, file: string) {
   try {
     const text = await $.fs.read(file)
     const data = parseStatus(typeof text === 'string' ? text : '')
+    const open = await read($, detail)
+    if (open && !data.tasks.some(t => t.id === open)) await update($, detail, () => null)
     await update($, status, () => ({ file, mtime: mtimeMs, data, error: null }))
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err)
@@ -280,7 +282,7 @@ export const register: Register = (on, options) => {
             <Text size="heading" weight="semibold">{t.title}</Text>
             {t.branch && <Text size="caption" mono dimColor wrap="truncate-end">{t.branch}</Text>}
             {t.candidate && <Text size="caption" mono dimColor>{t.candidate.slice(0, 7)}</Text>}
-            {last && <Text size="caption" dimColor>{`${last.verdict} · ${t.rounds?.length} tur`}</Text>}
+            {last && <Text size="caption" dimColor>{`${last.verdict} · ${last.n} tur`}</Text>}
           </Box>
           {t.rounds && (
             <Box flexDirection="column" gap="sm">
