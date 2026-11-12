@@ -34,24 +34,26 @@ gerekmez (slash komutları hariç). Üç yolu var:
 
 - `teamFolders` seçeneğindeki bir klasörde (ya da altında) açılan oturum kendiliğinden takım olur.
 - Alt satırdaki **Agent Team** hapına basmak (açıkken `● Agent Team`, kapalıyken `○ Agent Team`).
+  Aynı satırdaki **Pane** düğmesi pane'i yeniden açar.
 - `/team` yazmak; aç/kapa anahtarıdır.
 
-Mod açılınca pane da açılır. `/team-pane` pane'i yeniden açar.
+Mod açılınca pane da açılır. `/team-pane` de pane'i açar.
 
-**Pane ne gösterir.** Durum dosyası varsa: üstte Lead'in modeli ve son güncelleme saati; sağda
-**Pause** (duraklatılmışsa **Devam**). Altında, dosyada olanlar:
+**Pane ne gösterir.** Lead'in yazdığı durum dosyasını canlı gösterir:
 
 - **Senin sıran:** bekleyen kararlar. Bir seçeneğe basmak Lead'e sahibin kendi mesajı olarak
-  `Karar (<id>): <seçenek>` gönderir; ilk seçenek ana düğmedir.
-- **Görevler:** her görev için başlık, 5 aşamalı çizgi (Spec, Build, Review, Revise, Rapor) ve
-  rollerin durumu (çalışıyor, bitti, takıldı, sırada, boşta); varsa dal adı, tur sayısı, aday
-  SHA'nın ilk 7 hanesi ve sıfırdan büyük blocking / follow-up sayıları.
-- **5 saatlik / Haftalık** kullanım yüzdeleri.
+  `Karar (<id>): <seçenek>` gönderir.
+- **Görevler:** her görev için 5 aşamalı çizgi (Spec, Build, Review, Revise, Rapor) ve rollerin
+  durumu.
+- **Kullanım çubukları:** 5 saatlik ve haftalık kullanım yüzdeleri.
+- **Pause:** Lead'e `Pause` mesajı gönderir; duraklatılmışken düğme **Devam** olur.
 
-Durum dosyası yokken (okuma hatası da yoksa) pane boş ekranı gösterir. Takım modu açıksa bu
-"Takım hazır" ekranıdır: örnek istemler, akış adımları ve rol listesi. Mod kapalıysa "Agent Team
-kapalı" yazar ve "Bu sohbette aç" düğmesi çıkar. Pause, Lead'e `Pause` mesajı olarak gider
-(**Devam** düğmesi `Devam et`).
+Hangi alanın neyi çizdiği [`skills/agent-team/references/status.md`](skills/agent-team/references/status.md)
+içinde.
+
+Durum dosyası yokken pane boş ekranı gösterir. Takım modu açıksa bu "Takım hazır" ekranıdır:
+örnek istemler, akış adımları ve rol listesi. Mod kapalıysa "Agent Team kapalı" yazar ve "Bu
+sohbette aç" düğmesi çıkar.
 
 ## Seçenekler
 
@@ -76,7 +78,7 @@ gösterir.
 ## Durum dosyası
 
 Lead, pane'in okuduğu durumu `<evidenceRoot>/status/<proje>.json` dosyasına yazar; pane dosyayı 3
-saniyede bir kontrol eder, dosya değişmişse yeniden okur. Biçim: [`skills/agent-team/references/status.md`](skills/agent-team/references/status.md).
+saniyede bir kontrol eder. Biçim: [`skills/agent-team/references/status.md`](skills/agent-team/references/status.md).
 
 ## Geliştirme
 
