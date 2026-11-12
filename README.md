@@ -1,0 +1,95 @@
+# agent-team
+
+Claude Code için bir takım eklentisi: ana sohbet **Lead** olur, işi Analyst, Developer ve QA
+rollerine dağıtır; sahibe yalnızca karar gerekince döner. Eklenti dört parçadan oluşur:
+
+- **`agent-team` skill'i** (`skills/agent-team/SKILL.md`): Lead'in akışı. Spec, build, review,
+  revise, rapor; her devir Lead üzerinden geçer, roller birbirine doğrudan iş vermez.
+- **6 rol ajanı** (`agents/`): `team-analyst`, `team-analyst-high`, `team-developer-sonnet`,
+  `team-developer`, `team-qa2`, `team-helper`. Model ve çaba her ajan dosyasının başlığındadır.
+  Skill'e göre Analyst 2 ve QA rolleri ajan dosyası değil, Codex CLI (GPT-6 Astra) ile çalışır
+  (`skills/agent-team/references/gpt-roles.md`).
+- **Push / PR koruması** (`hooks/guard-push.sh`): Bash çağrılarında `git push`, `gh pr
+  create|merge|ready` ve yazma yapan `gh api` çağrıları için sahibin onayını ister. Komutu kabuk
+  kurallarıyla ayrıştırır (sarmalayıcılar, `bash -c`, heredoc); ayrıştıramazsa yine sorar.
+- **Masaüstü pane'i** (`hooks/register.tsx`): kararları, görevleri, rol durumlarını ve kullanım
+  yüzdelerini gösterir.
+
+## Kurulum
+
+Eklenti yerel bir marketplace olarak kurulur; klasörün kendisi okunur.
+
+```sh
+claude plugin marketplace add <repo klasörü>
+claude plugin install agent-team@agent-team-local
+```
+
+Klasördeki bir değişiklik `/reload-plugins` ile alınır.
+
+## Kullanım
+
+**Takım modunu açmak.** Mod açıkken oturumdaki her mesaj Lead'e gider; `/agent-team` yazmak
+gerekmez. Üç yolu var:
+
+- `teamFolders` seçeneğindeki bir klasörde (ya da altında) açılan oturum kendiliğinden takım olur.
+- Alt satırdaki **Agent Team** hapına basmak (açıkken `● Agent Team`, kapalıyken `○ Agent Team`).
+- `/team` yazmak; aç/kapa anahtarıdır.
+
+Mod açılınca pane da açılır. `/team-pane` pane'i yeniden açar.
+
+**Pane ne gösterir.** Üstte Lead'in modeli ve son güncelleme saati; sağda **Pause** (duraklatılmışsa
+**Devam**). Altında:
+
+- **Senin sıran:** bekleyen kararlar. Bir seçeneğe basmak Lead'e sahibin kendi mesajı olarak
+  `Karar (<id>): <seçenek>` gönderir; ilk seçenek ana düğmedir.
+- **Görevler:** her görev için dal adı, 5 aşamalı çizgi (Spec, Build, Review, Revise, Rapor), tur
+  sayısı, rollerin durumu (çalışıyor, bitti, takıldı, sırada, boşta), aday SHA'nın ilk 7 hanesi ve
+  blocking / follow-up sayıları.
+- **5 saatlik / Haftalık** kullanım yüzdeleri (durum dosyasında varsa).
+
+Durum dosyası yokken pane "Takım hazır" ekranını, örnek istemleri ve rol listesini gösterir.
+Pause, Lead'e `Pause` mesajı olarak gider.
+
+## Seçenekler
+
+`.claude-plugin/plugin.json` içindeki `userConfig`:
+
+| Seçenek | Anlamı | Varsayılan |
+|---|---|---|
+| `teamFolders` | Bu klasörlerde (ve altlarında) açılan oturumlar kendiliğinden Agent Team olur. Virgülle ayrılır, `~` kullanılabilir. | boş |
+| `evidenceRoot` | Lead'in raporlarını ve durum dosyasını yazdığı klasör. | `~/agent-team-evidence` |
+
+Etkileşimsiz ayarlamak için JSON nesnesini stdin'den ver (değerler tek satırlık metin olmalı,
+verilmeyen seçenekler eski değerini korur):
+
+```sh
+echo '{"teamFolders": "~/Projeler", "evidenceRoot": "~/agent-team-evidence"}' \
+  | claude plugin configure agent-team@agent-team-local --values-stdin
+```
+
+`claude plugin configure agent-team@agent-team-local` seçenekleri ve hangilerinin boş olduğunu
+gösterir.
+
+## Durum dosyası
+
+Lead, pane'in okuduğu durumu `<evidenceRoot>/status/<proje>.json` dosyasına yazar; pane dosyayı 3
+saniyede bir okur. Biçim: [`skills/agent-team/references/status.md`](skills/agent-team/references/status.md).
+
+## Geliştirme
+
+```sh
+claude plugin validate .
+claude plugin test .
+```
+
+`claude plugin test .` `tests/agent-team.test.tsx` içindeki testleri çalıştırır.
+
+## Bilinen sınırlar
+
+- Masaüstü, alt satırdaki Agent Team hapını soluk çizer; o yuvada metin renkleri yok sayılır.
+  Durum bu yüzden renkle değil düğme türüyle (açık = ana düğme) gösterilir (`hooks/register.tsx`
+  içindeki not).
+- Bir mod uygulamanın üst araç çubuğuna simge ekleyemez. (Sahibin canlı kullanımdaki gözlemi;
+  kodda yok.)
+- Eklentinin açtığı pane dar bir pencerede çizilmeden bekleyebilir; `/team-pane` onu açar.
+  (Sahibin canlı kullanımdaki gözlemi; kodda yok.)
