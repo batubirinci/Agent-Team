@@ -1,7 +1,7 @@
 import type { EngineInterface } from 'claude-code'
 
-import type { Decision, Role, RoleStatus, Task } from '../types'
-import { STAGE_LABELS } from './status'
+import type { Decision, Role, RoleStatus, Task, TaskState } from '../types'
+import { STAGE_LABELS, decisionTask } from './status'
 
 // The terminal drawing of the pane and the footer (approved design "Terminal arayüzü · şimdi ve öneri"):
 // text and theme colors only, no card fill, no Svg; state is a glyph, never a color alone; every press has a key.
@@ -61,14 +61,16 @@ export function termUsage({ Text }: UI, rows: readonly (readonly [string, number
   )
 }
 
-export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], say: (t: string) => void) {
+export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], tasks: Task[], say: (t: string) => void) {
   let n = 0
   return (
     <Box flexDirection="column" gap={1}>
       <Text color="claude">{`◆ ${'Senin sıran'.toLocaleUpperCase('tr')} · ${decisions.length} karar`}</Text>
-      {decisions.map(d => (
-        <Box key={`d-${d.id}`} {...TBOX}>
-          {d.kind && <Text color="claude">{d.kind}</Text>}
+      {decisions.map(d => {
+        const { kind, blocked } = decisionTask(d, tasks)
+        return (
+        <Box key={`d-${d.id}`} {...TBOX} borderColor={blocked ? 'error' : TBOX.borderColor}>
+          {kind && <Text color={blocked ? 'error' : 'claude'}>{kind}</Text>}
           <Text>{d.text}</Text>
           {d.meta && <Text dimColor>{d.meta}</Text>}
           {d.options.length > 0 && (
@@ -79,7 +81,8 @@ export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], 
             </Box>
           )}
         </Box>
-      ))}
+        )
+      })}
     </Box>
   )
 }
@@ -90,6 +93,20 @@ const stageLine = ({ Text }: UI, t: Task) => (
     {STAGE_LABELS.map((_, i) =>
       i === t.stage ? <Text color="claude" weight="bold">━━━ </Text> : <Text color={i < t.stage ? 'text' : 'inactive'}>━━━ </Text>,
     )}
+  </Text>
+)
+
+// "◐ çalışıyor" / "✗ TAKILDI" / "⏸ bekliyor", then the reason (task-state design).
+const STATE: Record<TaskState, [string, string]> = {
+  running: ['◐ çalışıyor', 'claude'],
+  blocked: ['✗ TAKILDI', 'error'],
+  waiting: ['⏸ bekliyor', 'warning'],
+}
+
+const stateLine = ({ Text }: UI, t: Task) => (
+  <Text>
+    <Text color={STATE[t.state][1]} weight="bold">{STATE[t.state][0]}</Text>
+    {t.reason && <Text color={t.state === 'blocked' ? 'error' : undefined} dimColor={t.state !== 'blocked'}>{` · ${t.reason}`}</Text>}
   </Text>
 )
 
@@ -119,22 +136,27 @@ const counts = ({ Text }: UI, t: Task) =>
   )
 
 // hasOn: pane-team-on is drawn and owns "o", so no task takes it.
-export function termTasks(ui: UI, tasks: Task[], running: number, hasOn: boolean, open: (id: string) => void) {
+export function termTasks(ui: UI, tasks: Task[], n: { running: number; blocked: number; waiting: number }, hasOn: boolean, open: (id: string) => void) {
   const { Box, Button, Text } = ui
   const keys = hasOn ? TASK_KEYS.slice(0, -1) : TASK_KEYS
   return (
     <Box flexDirection="column">
       <Box flexDirection="row" justifyContent="space-between" gap={2}>
-        <Text weight="bold">{`${'Görevler'.toLocaleUpperCase('tr')} · ${running} çalışıyor`}</Text>
+        <Text weight="bold">
+          {`${'Görevler'.toLocaleUpperCase('tr')} · ${n.running} çalışıyor`}
+          {n.blocked > 0 && <Text color="error" weight="bold">{` · ${n.blocked} takıldı`}</Text>}
+          {n.waiting > 0 && ` · ${n.waiting} bekliyor`}
+        </Text>
         <Text dimColor>{`${tasks.length} görev`}</Text>
       </Box>
       {tasks.map((t, ti) => {
         const tur = [t.round !== undefined && `Tur ${t.round}`, t.candidate && `aday ${t.candidate.slice(0, 7)}`].filter(Boolean).join(' · ')
         return (
-          <Box key={`t-${t.id}`} {...ROUND}>
+          <Box key={`t-${t.id}`} {...ROUND} borderColor={t.state === 'blocked' ? 'error' : ROUND.borderColor}>
             <Button key={`detail-${t.id}`} label={t.title} onPress={() => open(t.id)} {...(keys[ti] ? hk(keys[ti]) : { plain: true as const })}>
               <Text weight="bold" wrap="truncate-end">{t.title}</Text>
             </Button>
+            {stateLine(ui, t)}
             {tur && <Text dimColor>{tur}</Text>}
             {stageLine(ui, t)}
             {stageName(ui, t)}
@@ -160,6 +182,7 @@ export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void) {
       </Box>
       <Box key="detail-summary" {...ROUND}>
         <Text weight="bold">{t.title}</Text>
+        {stateLine(ui, t)}
         {where && <Text dimColor>{where}</Text>}
         <Text>{stageLine(ui, t)}{stageName(ui, t)}</Text>
         {counts(ui, t)}

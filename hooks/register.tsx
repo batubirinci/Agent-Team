@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Decision, Mode, RoleStatus, StatusView, Task } from '../types'
-import { STAGE_LABELS, baseName, clockOf, expandHome, isInside, parseFolders, parseStatus, trimSlash } from './status'
+import type { Decision, Mode, RoleStatus, StatusView, Task, TaskState } from '../types'
+import { STAGE_LABELS, baseName, clockOf, countStates, decisionTask, expandHome, isInside, parseFolders, parseStatus, trimSlash } from './status'
 import { BAD, CLAY, MUTED, OK, dotSvg, meterSvg, stagesSvg } from './svg'
 import { TBOX, hk, termDecisions, termFooter, termHeader, termDetail, termHint, termTasks, termUsage } from './terminal'
 
@@ -17,7 +17,7 @@ const mode = atom({ plugin: 'agent-team', key: 'mode' } as const, { isOn: false,
 const status = atom(
   { plugin: 'agent-team', key: 'status' } as const,
   { file: '', mtime: 0, data: null, error: null } as StatusView,
-  { shape: 'status-2' },
+  { shape: 'status-3' },
 )
 // The task whose detail view the pane shows (null: the list). Session state, not in the file.
 const detail = atom({ plugin: 'agent-team', key: 'detail' } as const, null as string | null, { shape: 'detail-1' })
@@ -48,6 +48,14 @@ const ROSTER = [
   ['QA 2 · canlı', 'Opus 5.5'],
   ['Helper', 'Haiku 5.5'],
 ] as const
+// Task state chips and the blocked edge (approved design "Takıldı / bekliyor durumları").
+const STATE_CHIP: Record<TaskState, [string, string, string]> = {
+  running: ['◐ Çalışıyor', 'rgba(217,119,87,0.18)', '#F0B9A5'],
+  blocked: ['✗ Takıldı', 'rgba(224,108,108,0.22)', '#F2A3A3'],
+  waiting: ['⏸ Bekliyor', 'rgba(229,192,123,0.18)', '#E5CC7A'],
+}
+const BLOCKED_EDGE = 'rgba(224,108,108,0.45)'
+const BLOCKED_INK = '#F2A3A3'
 const CHIP_BLOCKING = 'rgba(224,108,108,0.18)'
 const CHIP = 'rgba(128,128,128,0.2)'
 
@@ -208,10 +216,12 @@ export const register: Register = (on, options) => {
     const openId = await read($, detail)
     const open = openId ? data?.tasks.find(t => t.id === openId) : undefined
 
-    const decisionCard = (d: Decision) => (
-      <Box key={`d-${d.id}`} {...CARD}>
+    const decisionCard = (d: Decision) => {
+      const { kind, blocked } = decisionTask(d, data?.tasks ?? [])
+      return (
+      <Box key={`d-${d.id}`} {...CARD} borderColor={blocked ? BLOCKED_EDGE : CARD.borderColor}>
         <Box flexDirection="column">
-          {d.kind && <Text size="caption" weight="medium" color="claude">{d.kind}</Text>}
+          {kind && <Text size="caption" weight="medium" color={blocked ? BLOCKED_INK : 'claude'}>{kind}</Text>}
           <Text>{d.text}</Text>
           {d.meta && <Text size="caption" mono dimColor>{d.meta}</Text>}
         </Box>
@@ -228,20 +238,33 @@ export const register: Register = (on, options) => {
           </Box>
         )}
       </Box>
+      )
+    }
+
+    const stateChip = (t: Task) => (
+      <Box key={`chip-state-${t.id}`} backgroundColor={STATE_CHIP[t.state][1]} paddingX="xs">
+        <Text size="caption" weight="medium" color={STATE_CHIP[t.state][2]}>{STATE_CHIP[t.state][0]}</Text>
+      </Box>
     )
+    const reason = (t: Task) =>
+      t.reason && <Text size="caption" color={t.state === 'blocked' ? BLOCKED_INK : undefined} dimColor={t.state !== 'blocked'}>{t.reason}</Text>
 
     const taskCard = (t: Task) => (
-      <Box key={`t-${t.id}`} {...CARD}>
+      <Box key={`t-${t.id}`} {...CARD} borderColor={t.state === 'blocked' ? BLOCKED_EDGE : CARD.borderColor}>
         <Box flexDirection="column">
-          <Box flexDirection="row" justifyContent="space-between" gap="sm">
+          <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="sm">
             <Text weight="semibold" wrap="truncate-end">{t.title}</Text>
-            {t.round !== undefined && <Text size="caption" dimColor>Tur {t.round}</Text>}
+            <Box flexDirection="row" alignItems="center" gap="xs">
+              {t.round !== undefined && <Text size="caption" dimColor>Tur {t.round}</Text>}
+              {stateChip(t)}
+            </Box>
           </Box>
+          {reason(t)}
           {t.branch && <Text size="caption" mono dimColor wrap="truncate-end">{t.branch}</Text>}
         </Box>
         <Box flexDirection="column">
           {Svg ? (
-            <Svg source={stagesSvg(t.stage)} alt={`${STAGE_LABELS[t.stage]}, 5 aşamanın ${t.stage + 1}.`} />
+            <Svg source={stagesSvg(t.stage, 5, t.state === 'blocked')} alt={`${STAGE_LABELS[t.stage]}, 5 aşamanın ${t.stage + 1}.`} />
           ) : (
             <Text size="caption">
               {STAGE_LABELS.map((_, i) => (
@@ -292,6 +315,10 @@ export const register: Register = (on, options) => {
           <Button key="detail-back" label="‹ Görevler" {...key('b')} onPress={() => void update($, detail, () => null)} />
           <Box flexDirection="column">
             <Text size="heading" weight="semibold">{t.title}</Text>
+            <Box flexDirection="row" alignItems="center" gap="xs">
+              {stateChip(t)}
+              {reason(t)}
+            </Box>
             {t.branch && <Text size="caption" mono dimColor wrap="truncate-end">{t.branch}</Text>}
             {t.candidate && <Text size="caption" mono dimColor>{t.candidate.slice(0, 7)}</Text>}
             {last && <Text size="caption" dimColor>{`${last.verdict} · ${last.n} tur`}</Text>}
@@ -358,7 +385,7 @@ export const register: Register = (on, options) => {
         ['Haftalık', lim?.weeklyPct],
       ] as const
     ).filter((u): u is readonly [typeof u[0], number] => u[1] !== undefined)
-    const running = data ? data.tasks.filter(t => t.roles.some(r => r.status === 'running')).length : 0
+    const n = countStates(data?.tasks ?? [])
     const showOn = !!data && !m.isOn
 
     return (
@@ -455,9 +482,9 @@ export const register: Register = (on, options) => {
             </Text>
           ))}
 
-        {term && data && data.decisions.length > 0 && termDecisions(ui, data.decisions, t => void say($, t))}
+        {term && data && data.decisions.length > 0 && termDecisions(ui, data.decisions, data.tasks, t => void say($, t))}
 
-        {term && data && data.tasks.length > 0 && termTasks(ui, data.tasks, running, showOn, id => void update($, detail, () => id))}
+        {term && data && data.tasks.length > 0 && termTasks(ui, data.tasks, n, showOn, id => void update($, detail, () => id))}
 
         {term && data && termHint(ui)}
 
@@ -476,7 +503,7 @@ export const register: Register = (on, options) => {
           <Box flexDirection="column" gap="sm">
             <Box flexDirection="row" justifyContent="space-between">
               <Text weight="semibold">Görevler</Text>
-              <Text size="caption" dimColor>{`${running} çalışıyor · ${data.tasks.length} görev`}</Text>
+              <Text size="caption" dimColor>{`${n.running} çalışıyor${n.blocked ? ` · ${n.blocked} takıldı` : ''}${n.waiting ? ` · ${n.waiting} bekliyor` : ''} · ${data.tasks.length} görev`}</Text>
             </Box>
             {data.tasks.map(taskCard)}
           </Box>
