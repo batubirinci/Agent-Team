@@ -4,6 +4,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { Decision, Mode, RoleStatus, StatusView, Task } from '../types'
 import { STAGE_LABELS, baseName, clockOf, expandHome, isInside, parseFolders, parseStatus, trimSlash } from './status'
 import { BAD, CLAY, MUTED, OK, dotSvg, meterSvg, stagesSvg } from './svg'
+import { TBOX, hk, termDecisions, termFooter, termHeader, termHint, termTasks, termUsage } from './terminal'
 
 const PANE = 'agent-team'
 const PANE_OPEN = { id: PANE, title: 'Agent Team', columns: 48 } as const
@@ -175,6 +176,7 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'SessionMode' }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const { isOn } = await read($, mode)
+    if (e.surface === 'terminal') return termFooter($.ui.resolve(e), isOn, e.props.modes, () => void setMode($, !isOn), () => void $.ui.open(PANE_OPEN))
     return (
       <Box flexDirection="row" alignItems="center" gap="sm">
         {/* Desktop draws this slot dim and ignores text colors (seen live): the variant is what shows the state. */}
@@ -194,7 +196,11 @@ export const register: Register = (on, options) => {
     const ui = $.ui.resolve(e)
     const { Box, Button, Text } = ui
     // The terminal draws no Svg (its table may still name one): there the bars stay text.
-    const Svg = e.surface !== 'terminal' && 'Svg' in ui ? ui.Svg : undefined
+    const term = e.surface === 'terminal'
+    const Svg = !term && 'Svg' in ui ? ui.Svg : undefined
+    // On the terminal every Button is plain with its key; a card is a single-line box in a theme color.
+    const key = (k: string) => (term ? hk(k) : {})
+    const card = term ? TBOX : CARD
     const dot = (hex: string, themeKey: string, alt: string) =>
       Svg ? <Svg source={dotSvg(hex)} alt={alt} width={8} height={8} /> : <Text color={themeKey}>●</Text>
     const m = await read($, mode)
@@ -283,7 +289,7 @@ export const register: Register = (on, options) => {
       const last = t.rounds?.at(-1)
       return (
         <Box flexDirection="column" gap="md" padding="sm">
-          <Button key="detail-back" label="‹ Görevler" onPress={() => void update($, detail, () => null)} />
+          <Button key="detail-back" label="‹ Görevler" {...key('b')} onPress={() => void update($, detail, () => null)} />
           <Box flexDirection="column">
             <Text size="heading" weight="semibold">{t.title}</Text>
             {t.branch && <Text size="caption" mono dimColor wrap="truncate-end">{t.branch}</Text>}
@@ -294,7 +300,7 @@ export const register: Register = (on, options) => {
             <Box flexDirection="column" gap="sm">
               <Text weight="semibold">Turlar</Text>
               {t.rounds.map((r, i) => (
-                <Box key={`round-${i}`} {...CARD}>
+                <Box key={`round-${i}`} {...card}>
                   <Box flexDirection="row" justifyContent="space-between" gap="sm">
                     <Text weight="semibold" color={r.verdict === 'GO' ? 'success' : r.verdict.startsWith('NO') ? 'error' : undefined}>{`Tur ${r.n} · ${r.verdict}`}</Text>
                     {r.candidate && <Text size="caption" mono dimColor>{r.candidate.slice(0, 7)}</Text>}
@@ -325,7 +331,7 @@ export const register: Register = (on, options) => {
               ))}
             </Box>
           )}
-          <Button key="detail-ask" label="Lead'e sor" onPress={() => void $.prompt.fill({ text: `${t.title} hakkında: `, mode: 'replace' })} />
+          <Button key="detail-ask" label="Lead'e sor" {...key('s')} onPress={() => void $.prompt.fill({ text: `${t.title} hakkında: `, mode: 'replace' })} />
         </Box>
       )
     }
@@ -341,9 +347,18 @@ export const register: Register = (on, options) => {
       ] as const
     ).filter((u): u is readonly [typeof u[0], number] => u[1] !== undefined)
     const running = data ? data.tasks.filter(t => t.roles.some(r => r.status === 'running')).length : 0
+    const showOn = !!data && !m.isOn
 
     return (
       <Box flexDirection="column" gap="md" padding="sm">
+        {term ? (
+          termHeader(
+            ui,
+            [data?.lead && `Lead · ${data.lead}`, updated && updated, !m.isOn && 'mod kapalı'].filter(Boolean).join(' · ') || 'Lead',
+            data ? !!data.paused : undefined,
+            t => void say($, t),
+          )
+        ) : (
         <Box flexDirection="row" justifyContent="space-between" alignItems="flex-start" gap="sm">
           <Box flexDirection="column">
             <Text size="title">Agent Team</Text>
@@ -360,8 +375,9 @@ export const register: Register = (on, options) => {
               <Button key="pause" label="Pause" onPress={() => void say($, 'Pause')} />
             ))}
         </Box>
+        )}
 
-        {data && !m.isOn && <Button key="pane-team-on" variant="primary" label="Bu oturumda Agent Team'i aç" onPress={() => void setMode($, true)} />}
+        {showOn && <Button key="pane-team-on" variant="primary" label="Bu oturumda Agent Team'i aç" {...key('o')} onPress={() => void setMode($, true)} />}
 
         {error && <Text color="error" size="caption">Durum dosyası okunamadı: {error}</Text>}
 
@@ -378,11 +394,11 @@ export const register: Register = (on, options) => {
             {m.isOn ? (
               <Box flexDirection="column" gap="xs">
                 {EXAMPLES.map((x, i) => (
-                  <Button key={`ex-${i}`} label={`${x}…`} onPress={() => void $.prompt.fill({ text: x, mode: 'replace' })} />
+                  <Button key={`ex-${i}`} label={`${x}…`} {...key(String(i + 1))} onPress={() => void $.prompt.fill({ text: x, mode: 'replace' })} />
                 ))}
               </Box>
             ) : (
-              <Button key="pane-team-on" variant="primary" label="Bu sohbette aç" onPress={() => void setMode($, true)} />
+              <Button key="pane-team-on" variant="primary" label="Bu sohbette aç" {...key('o')} onPress={() => void setMode($, true)} />
             )}
             <Box flexDirection="column" gap="xs">
               <Text weight="semibold">Nasıl işler</Text>
@@ -390,7 +406,7 @@ export const register: Register = (on, options) => {
                 <Text size="caption" dimColor>{`${i + 1}. ${s}`}</Text>
               ))}
             </Box>
-            <Box {...CARD} gap="xs">
+            <Box {...card} gap="xs">
               <Box flexDirection="row" justifyContent="space-between">
                 <Text weight="semibold">Takım</Text>
                 <Text size="caption" dimColor>{`${ROSTER.length} rol hazır`}</Text>
@@ -406,7 +422,9 @@ export const register: Register = (on, options) => {
           </Box>
         )}
 
-        {usage.length > 0 &&
+        {term && termUsage(ui, usage.map(([label, pct]) => [label === '5 saatlik' ? '5 sa' : 'hafta', pct] as const))}
+
+        {!term && usage.length > 0 &&
           (Svg ? (
             <Box flexDirection="row" gap="md">
               {usage.map(([label, pct]) => (
@@ -425,7 +443,13 @@ export const register: Register = (on, options) => {
             </Text>
           ))}
 
-        {data && data.decisions.length > 0 && (
+        {term && data && data.decisions.length > 0 && termDecisions(ui, data.decisions, t => void say($, t))}
+
+        {term && data && data.tasks.length > 0 && termTasks(ui, data.tasks, running, showOn, id => void update($, detail, () => id))}
+
+        {term && data && termHint(ui)}
+
+        {!term && data && data.decisions.length > 0 && (
           <Box flexDirection="column" gap="sm">
             <Box flexDirection="row" alignItems="center" gap="xs">
               {dot(CLAY, 'claude', 'karar bekliyor')}
@@ -436,7 +460,7 @@ export const register: Register = (on, options) => {
           </Box>
         )}
 
-        {data && data.tasks.length > 0 && (
+        {!term && data && data.tasks.length > 0 && (
           <Box flexDirection="column" gap="sm">
             <Box flexDirection="row" justifyContent="space-between">
               <Text weight="semibold">Görevler</Text>

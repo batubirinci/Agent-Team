@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 
 import { isInside, parseFolders, parseStatus, summary } from '../hooks/status'
 import { CLAY, MUTED, TRACK, dotSvg, meterSvg, stagesSvg } from '../hooks/svg'
@@ -128,8 +129,14 @@ test('the pane draws the status file and a decision button speaks for the owner'
 
   for (const surface of ['desktop', 'terminal'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(await ui.find({ type: 'Text', text: /Seçim kutusu taşması/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /aday 3f9a1c2$/ })).toBeDefined()
+    // Terminal design (see "Terminal design" below): the title is the plain Button's label, the candidate line starts with the short sha.
+    if (surface === 'terminal') {
+      expect((await ui.find({ key: 'detail-t1' }))?.text).toBe('Seçim kutusu taşması')
+      expect(await ui.find({ type: 'Text', text: /^3f9a1c2 / })).toBeDefined()
+    } else {
+      expect(await ui.find({ type: 'Text', text: /Seçim kutusu taşması/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /aday 3f9a1c2$/ })).toBeDefined()
+    }
     expect(await ui.find({ type: 'Text', text: /Hangisi sayılsın\?/ })).toBeDefined()
     await ui.unmount()
   }
@@ -179,9 +186,11 @@ test('desktop draws the bars as SVG with alt text, the terminal keeps the text f
 
   const term = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await term.find({ type: 'Svg' })).toBeUndefined()
-  expect(await term.find({ type: 'Text', text: /5 saatlik %42/ })).toBeDefined()
-  expect(await term.find({ type: 'Text', text: /━━━/ })).toBeDefined()
-  expect(await term.find({ type: 'Text', text: /●/ })).toBeDefined()
+  // Terminal design: text bars with eighth blocks and stage/role glyphs instead of ━━━ and ●; the full strings are asserted in the terminal tests below.
+  expect(await term.find({ type: 'Text', text: /^5 sa  ████▏░░░░░ 42%   hafta █▊░░░░░░░░ 18%$/ })).toBeDefined()
+  expect(await term.find({ type: 'Text', text: /━━━/ })).toBeUndefined()
+  expect(await term.find({ type: 'Text', text: /●/ })).toBeUndefined()
+  expect(await term.find({ type: 'Text', text: /^✓ spec  ✓ build  ◉ review  ○ revise  ○ rapor$/ })).toBeDefined()
   await term.unmount()
 })
 
@@ -381,7 +390,7 @@ test('a task card opens its detail view with rounds and evidence, back returns, 
 
   for (const surface of ['desktop', 'terminal'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect((await ui.find({ key: 'detail-t1' }))?.text).toBe('Ayrıntı ›')
+    expect((await ui.find({ key: 'detail-t1' }))?.text).toBe(surface === 'terminal' ? 'Seçim kutusu taşması' : 'Ayrıntı ›')
     expect(await ui.find({ key: 'detail-back' })).toBeUndefined()
     await ui.press({ key: 'detail-t1' })
 
@@ -578,4 +587,255 @@ test('deleting the status file closes the open detail, and the same task id comi
   expect(await back.find({ key: 'detail-back' })).toBeUndefined()
   expect(await back.find({ key: 't-t1' })).toBeDefined()
   await back.unmount()
+})
+
+// Terminal design (owner request 2026-11-13 + the approved Claude Design board "Terminal arayüzü · şimdi ve öneri",
+// as written in the Lead's brief for the terminal-ui task; criteria 1-5 there). Every expected string below is
+// spelled out by hand from that design, never read back from the implementation.
+type Node = { type: string; props?: Record<string, unknown>; children?: (Node | string)[] }
+const nodesOf = (n: Node | string): Node[] => (typeof n === 'string' ? [] : [n, ...(n.children ?? []).flatMap(nodesOf)])
+const textOf = (n: Node | string): string => (typeof n === 'string' ? n : (n.children ?? []).map(textOf).join(''))
+const drawnOf = async (ui: { drawn: () => Promise<unknown> }) => (await ui.drawn()) as Node
+const textNode = (root: Node, re: RegExp) => nodesOf(root).find(n => n.type === 'Text' && re.test(textOf(n)))
+const buttons = (root: Node) => nodesOf(root).filter(n => n.type === 'Button')
+const hotkeys = (root: Node) => Object.fromEntries(buttons(root).map(b => [String(b.props?.key), b.props?.hotkey]))
+
+const TERM = JSON.stringify({
+  v: 1,
+  updatedAt: '2026-11-12T14:32:00+03:00',
+  lead: 'Opus 5.5',
+  limits: { fiveHourPct: 42, weeklyPct: 18 },
+  decisions: [
+    { id: 'd1', kind: 'Ürün kararı', text: 'Hangisi sayılsın?', options: ['Durumları gör', 'Sonra'] },
+    { id: 'd2', text: 'Birleşsin mi?', options: ['Evet'] },
+  ],
+  tasks: [
+    {
+      id: 't1',
+      title: 'Seçim kutusu taşması',
+      stage: 'review',
+      round: 2,
+      candidate: '3f9a1c2d4e5f60718293a4b5c6d7e8f901234567',
+      blocking: 1,
+      followup: 2,
+      roles: [
+        { name: 'QA · GPT-6 Astra', state: 'inceliyor', status: 'running' },
+        { name: 'Developer', state: 'teslim etti', status: 'done' },
+        { name: 'Analyst', state: 'sırada', status: 'waiting' },
+        { name: 'QA 2', state: 'takıldı', status: 'blocked' },
+        { name: 'Helper', state: 'boşta', status: 'idle' },
+      ],
+    },
+    { id: 't2', title: 'İkinci görev', stage: 'build' },
+  ],
+})
+
+// A mounted terminal session with the status text served from a fake file; mocks every call a pane or footer makes.
+const boot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], text: string, log: { say?: string[]; fill?: string[]; exists?: boolean } = {}) => {
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.close', () => ({ value: undefined }))
+  on('env.get', () => ({ value: '/Users/x' }))
+  on('fs.exists', () => ({ value: log.exists ?? true }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: 1, isLink: false } }))
+  on('fs.read', () => ({ value: text }))
+  on('clock.every', () => ({ value: undefined }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.append', (_, e, next) => next(e))
+  on('prompt.submit', (_, e) => {
+    log.say?.push(e.text)
+    return { text: e.text }
+  })
+  on('prompt.fill', (_, e) => {
+    log.fill?.push(e.text)
+    return { isFilled: true }
+  })
+  await $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'terminal', isInteractive: true })
+}
+const RAW_COLOR = /rgba?\(|#[0-9a-f]{3,8}\b/i
+
+test('terminal pane: header, bars, decisions, tasks, roles, candidate and hint line follow the approved design', async ($, on) => {
+  await boot($, on, TERM)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const root = await drawnOf(ui)
+
+  // Header: AGENT TEAM claude + bold, dim "Lead · <lead> · <hh:mm>" (design header line).
+  expect(textNode(root, /^AGENT TEAM$/)?.props).toMatchObject({ color: 'claude', weight: 'bold' })
+  expect(textNode(root, /^Lead · Opus 5\.5 · 14:32 · mod kapalı$/)?.props?.dimColor).toBe(true)
+
+  // Usage bars: 10 cells, 8 eighths per cell, filled eighths = floor(pct * 80 / 100). Eighth blocks ▏▎▍▌▋▊▉ = 1..7 eighths.
+  //   42 % -> 33.6 -> 33 eighths = 4 full cells + 1 eighth (▏) + 5 empty  -> ████▏░░░░░
+  //   18 % -> 14.4 -> 14 eighths = 1 full cell  + 6 eighths (▊) + 8 empty -> █▊░░░░░░░░
+  // Source: the design's own example line "5 sa  ████▏░░░░░ 42%   hafta █▊░░░░░░░░ 18%".
+  const usage = textNode(root, /^5 sa/)
+  expect(usage && textOf(usage)).toBe('5 sa  ████▏░░░░░ 42%   hafta █▊░░░░░░░░ 18%')
+  const fill42 = textNode(usage as Node, /^████▏$/)
+  expect(fill42?.props?.color).toBe('text')
+  expect(textNode(usage as Node, /^░░░░░$/)?.props?.color).toBe('subtle')
+  expect(await ui.find({ type: 'Svg' })).toBeUndefined()
+
+  // Decisions: "◆ SENİN SIRAN · <n> karar" in claude; Box with a single border in theme color; kind in claude.
+  expect(textNode(root, /^◆ SENİN SIRAN · 2 karar$/)?.props?.color).toBe('claude')
+  const card = nodesOf(root).find(n => n.props?.key === 'd-d1')
+  expect(card?.props).toMatchObject({ borderStyle: 'single', borderColor: 'subtle' })
+  expect(textNode(card as Node, /^Ürün kararı$/)?.props?.color).toBe('claude')
+  expect(buttons(card as Node).map(b => b.props?.label)).toEqual(['Durumları gör', 'Sonra'])
+
+  // Tasks: "GÖREVLER · <n> çalışıyor"; the title is the plain Button; "Tur <n>" dim; no card box.
+  expect(textNode(root, /^GÖREVLER · 1 çalışıyor$/)).toBeDefined()
+  expect(nodesOf(root).find(n => n.props?.key === 't-t1')?.props?.borderStyle).toBeUndefined()
+  expect(nodesOf(root).find(n => n.props?.key === 'detail-t1')?.props).toMatchObject({ label: 'Seçim kutusu taşması', plain: true })
+  expect(textNode(root, /^Tur 2$/)?.props?.dimColor).toBe(true)
+
+  // Stage line (stage review = 3rd of 5): done ✓ dim, current ◉ claude bold, future ○ inactive, lowercase labels.
+  const stages = textNode(root, /^✓ spec/)
+  expect(stages && textOf(stages)).toBe('✓ spec  ✓ build  ◉ review  ○ revise  ○ rapor')
+  const parts = (stages?.children ?? []).filter((c): c is Node => typeof c !== 'string')
+  expect(parts.map(p => [textOf(p), p.props?.color, p.props?.dimColor, p.props?.weight])).toEqual([
+    ['✓ spec', undefined, true, undefined],
+    ['✓ build', undefined, true, undefined],
+    ['◉ review', 'claude', undefined, 'bold'],
+    ['○ revise', 'inactive', undefined, undefined],
+    ['○ rapor', 'inactive', undefined, undefined],
+  ])
+
+  // Role glyphs per status: running ◐ claude, done ✓ success, waiting · inactive, blocked ✗ error, idle ○ inactive;
+  // a blocked state is drawn in the error color.
+  const glyph = (g: string, name: string) => nodesOf(root).find(n => n.type === 'Box' && textOf(n).startsWith(`${g}${name}`))
+  for (const [g, name, color] of [['◐', 'QA · GPT-6 Astra', 'claude'], ['✓', 'Developer', 'success'], ['·', 'Analyst', 'inactive'], ['✗', 'QA 2', 'error'], ['○', 'Helper', 'inactive']] as const) {
+    const row = glyph(g, name)
+    expect(row).toBeDefined()
+    expect(textNode(row as Node, new RegExp(`^${g}$`))?.props?.color).toBe(color)
+  }
+  expect(textNode(glyph('✗', 'QA 2') as Node, /^takıldı$/)?.props?.color).toBe('error')
+
+  // Candidate line: "<short sha>   <n> blocking · <m> follow-up", blocking in error + bold.
+  const cand = textNode(root, /^3f9a1c2 /)
+  expect(cand && textOf(cand)).toBe('3f9a1c2   1 blocking · 2 follow-up')
+  expect(textNode(cand as Node, /^1 blocking$/)?.props).toMatchObject({ color: 'error', weight: 'bold' })
+
+  // Hint line: dim, keys in claude.
+  const hint = textNode(root, /^a-o ayrıntı/)
+  expect(hint && textOf(hint)).toBe('a-o ayrıntı  1-9 karar  p pause  esc çık')
+  expect(hint?.props?.dimColor).toBe(true)
+  expect(textNode(hint as Node, /^a-o$/)?.props?.color).toBe('claude')
+  await ui.unmount()
+})
+
+test('terminal usage bar: 80 % and above fills in claude, below stays text color, clamped to 10 cells', async ($, on) => {
+  // Same eighths rule: 85 % -> 68 eighths = 8 full + 4 eighths (▌) + 1 empty; 79 % -> 63.2 -> 63 = 7 full + 7 eighths (▉) + 2 empty;
+  // 100 % -> 80 = 10 full, nothing empty; 150 % clamps to 100 %.
+  await boot($, on, TERM.replace('"fiveHourPct":42,"weeklyPct":18', '"fiveHourPct":85,"weeklyPct":79'))
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const usage = textNode(await drawnOf(ui), /^5 sa/) as Node
+  expect(textOf(usage)).toBe('5 sa  ████████▌░ 85%   hafta ███████▉░░ 79%')
+  expect(textNode(usage, /^████████▌$/)?.props?.color).toBe('claude')
+  expect(textNode(usage, /^███████▉$/)?.props?.color).toBe('text')
+  await ui.unmount()
+})
+
+test('terminal usage bar: above 100 % clamps to full 10 cells, 80 % exactly is claude with no partial cell', async ($, on) => {
+  // 150 % clamps to 100 % -> 80 eighths = 10 full cells; the label keeps the number as given. 80 % -> 64 eighths = 8 full + 2 empty.
+  await boot($, on, TERM.replace('"fiveHourPct":42,"weeklyPct":18', '"fiveHourPct":150,"weeklyPct":80'))
+  const hi = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const usage = textNode(await drawnOf(hi), /^5 sa/) as Node
+  expect(textOf(usage)).toBe('5 sa  ██████████ 150%   hafta ████████░░ 80%')
+  expect(textNode(usage, /^████████$/)?.props?.color).toBe('claude')
+  await hi.unmount()
+})
+
+test('terminal hotkeys: decisions 1-9 across all decisions, tasks a c d e f g h i j k m n o, reserved keys never reused, none duplicated', async ($, on) => {
+  // Source: the brief's design: digits numbered across all decisions in order (none past 9); task letters in
+  // the list "a c d e f g h i j k m n o" (b l p s t reserved); pause p.
+  const decisions = [1, 2, 3].map(i => ({ id: `x${i}`, text: `K${i}`, options: ['a', 'b', 'c', 'd'] }))
+  const tasks = Array.from({ length: 15 }, (_, i) => ({ id: `k${i}`, title: `G${i}`, stage: 'build' }))
+  await boot($, on, JSON.stringify({ v: 1, lead: 'L', decisions, tasks }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const keys = hotkeys(await drawnOf(ui))
+  const opt = Object.entries(keys).filter(([k]) => k.startsWith('d-x')).map(([, v]) => v)
+  expect(opt).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', undefined, undefined, undefined])
+  const task = Object.entries(keys).filter(([k]) => k.startsWith('detail-k')).map(([, v]) => v as string | undefined)
+  // Mode is off here, so pane-team-on (o) is drawn and the 13th task gives its letter up: the list stops at n.
+  expect(task).toEqual([...'acdefghijkmn', undefined, undefined, undefined])
+  expect(keys.pause).toBe('p')
+  expect(keys['pane-team-on']).toBe('o')
+  const used = Object.values(keys).filter(Boolean)
+  expect(new Set(used).size).toBe(used.length)
+  expect(task.some(k => k && 'blpst'.includes(k))).toBe(false)
+  expect(buttons(await drawnOf(ui)).every(b => b.props?.plain === true)).toBe(true)
+  await ui.unmount()
+})
+
+test('terminal: pressing by key does what it did, with the hotkeys beside it', async ($, on) => {
+  // Same actions as the desktop test above: a decision button speaks for the owner, Pause says Pause, a task opens its detail.
+  const say: string[] = []
+  await boot($, on, TERM, { say })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(hotkeys(await drawnOf(ui))).toMatchObject({ pause: 'p', 'd-d1-0': '1', 'd-d1-1': '2', 'd-d2-0': '3', 'detail-t1': 'a', 'detail-t2': 'c' })
+  await ui.press({ key: 'd-d2-0' })
+  await ui.press({ key: 'pause' })
+  expect(say).toEqual(['Karar (d2): Evet', 'Pause'])
+  await ui.press({ key: 'detail-t1' })
+  expect(await ui.find({ key: 'detail-back' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('terminal: no raw color in the list; the detail keeps plain Buttons b and s and a single-line round box', async ($, on) => {
+  // Criterion 2 walks the drawn tree; criterion 3 for the detail (back b, ask s); no Svg on the terminal.
+  const rawIn = (root: Node) => nodesOf(root).filter(n => RAW_COLOR.test(JSON.stringify(n.props ?? {})) || n.type === 'Svg').length
+  await boot($, on, DETAIL)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(rawIn(await drawnOf(ui))).toBe(0)
+  await ui.press({ key: 'detail-t1' })
+  const root = await drawnOf(ui)
+  expect(rawIn(root)).toBe(0)
+  expect(hotkeys(root)).toEqual({ 'detail-back': 'b', 'detail-ask': 's' })
+  expect(buttons(root).every(b => b.props?.plain === true)).toBe(true)
+  expect(nodesOf(root).find(n => n.props?.key === 'round-0')?.props).toMatchObject({ borderStyle: 'single', borderColor: 'subtle' })
+  await ui.unmount()
+})
+
+test('terminal empty pane: no raw color, mode off offers pane-team-on on o, mode on offers the examples on 1-3', async ($, on) => {
+  // Criterion 2 + 3 for the empty pane (hotkeys from the brief: examples 1-3, pane-team-on o).
+  const rawIn = (root: Node) => nodesOf(root).filter(n => RAW_COLOR.test(JSON.stringify(n.props ?? {})) || n.type === 'Svg').length
+  const fill: string[] = []
+  await boot($, on, '', { fill, exists: false })
+
+  const off = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const offRoot = await drawnOf(off)
+  expect(rawIn(offRoot)).toBe(0)
+  expect(hotkeys(offRoot)).toEqual({ 'pane-team-on': 'o' })
+  expect(buttons(offRoot).every(b => b.props?.plain === true)).toBe(true)
+  await off.press({ key: 'pane-team-on' })
+  await off.unmount()
+
+  const ready = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const readyRoot = await drawnOf(ready)
+  expect(rawIn(readyRoot)).toBe(0)
+  expect(hotkeys(readyRoot)).toEqual({ 'ex-0': '1', 'ex-1': '2', 'ex-2': '3' })
+  expect(buttons(readyRoot).every(b => b.props?.plain === true)).toBe(true)
+  await ready.press({ key: 'ex-1' })
+  await ready.unmount()
+  expect(fill).toEqual(['Yeni özellik ekle: '])
+})
+
+test('terminal footer: plain team-mode label that shows the state in words, pane on t, engine labels dim; desktop footer unchanged', async ($, on) => {
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.close', () => ({ value: undefined }))
+  on('session.append', (_, e, next) => next(e))
+  const off = await $.ui.mount({ ...FOOTER, surface: 'terminal' })
+  const offRoot = await drawnOf(off)
+  expect(buttons(offRoot).map(b => [b.props?.key, b.props?.label, b.props?.hotkey, b.props?.plain])).toEqual([
+    ['team-mode', '○ agent team', undefined, true],
+    ['team-pane-open', 'pane', 't', true],
+  ])
+  expect(textNode(offRoot, /^İzinleri atla$/)?.props?.dimColor).toBe(true)
+  expect(RAW_COLOR.test(JSON.stringify(nodesOf(offRoot).map(n => n.props)))).toBe(false)
+  await off.press({ key: 'team-mode' })
+  await off.unmount()
+
+  const onFoot = await $.ui.mount({ ...FOOTER, surface: 'terminal' })
+  expect((await onFoot.find({ key: 'team-mode' }))?.text).toBe('◉ agent team')
+  await onFoot.press({ key: 'team-mode' })
+  await onFoot.unmount()
 })
