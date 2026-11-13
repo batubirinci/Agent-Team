@@ -810,6 +810,47 @@ test('round 3: /clear then a quit before the first poll still leaves a record un
   expect(c.modeNow()).toEqual(SWITCH)
 })
 
+test('round 4: a team session turned off by the footer chip after /clear, before any poll, ends off and stays off after the poll', async ($, on) => {
+  // Source: QA round 2 finding 1 (mutant R4, probe I): the chip was drawn as on before /clear, its press is the owner's "off".
+  const c = await continuity($, on)
+  c.present.add(OLD)
+  await c.start()
+  await c.team()
+  const foot = await $.ui.mount({ ...FOOTER, surface: 'desktop' }) // drawn on
+  c.wipe(ID_NEW) // /clear: new id, atoms reset, no poll yet
+  await foot.press({ key: 'team-mode' })
+  await foot.unmount()
+  expect(c.modeNow()).toEqual(OFF)
+  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, OFF, {}))
+  await c.clock.advance(POLL)
+  expect(c.modeNow()).toEqual(OFF) // the poll must not bring the old mode back
+  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, OFF, {})) // and the record still says off
+})
+
+test('round 4: a folder session after /clear, chip pressed before any poll: no second announce row, the source stays folder', FOLDERS, async ($, on) => {
+  // Source: QA round 2 finding 1 (probe J) and criterion 7 (one announce per path).
+  const c = await continuity($, on)
+  await c.start()
+  expect(c.appended).toHaveLength(1)
+  c.wipe(ID_NEW)
+  await c.team() // the chip is drawn from the reset atoms (off): a press asks for "on"
+  expect(c.appended).toHaveLength(1)
+  expect(c.modeNow()).toEqual(FOLDER)
+  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, FOLDER, { announced: OLD }))
+})
+
+test('round 4: never-team session, /clear, /team, then a prompt before any poll: leadText carries the real file, never an empty path', async ($, on) => {
+  // Source: QA round 2 finding 2 (mutant R3b, probe H): follow restores the status atom first, whatever the store says.
+  const c = await continuity($, on)
+  await c.start()
+  c.wipe(ID_NEW)
+  await c.teamCommand()
+  const seen = await c.leadSees()
+  expect(seen.context).toContain(`dosyası: ${OLD} (biçimi`)
+  expect(seen.context).not.toContain('dosyası:  (')
+  expect(c.fileNow()).toBe(OLD)
+})
+
 test('criterion 1: a session switched off before /clear stays off; a session that was never a team session leaves no record', async ($, on) => {
   const c = await continuity($, on)
   await c.start()
