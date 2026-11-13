@@ -201,13 +201,16 @@ export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void) {
               <Text weight="bold" color={r.verdict === 'GO' ? 'success' : r.verdict.startsWith('NO') ? 'error' : undefined}>
                 {['Tur ' + r.n, r.verdict, r.candidate?.slice(0, 7)].filter(Boolean).join(' · ')}
               </Text>
-              {r.findings.map((f, j) => (
+              {r.findings.map((f, j) => {
+                const tag = [f.severity, f.origin].filter(Boolean).join(' · ')
+                return (
                 <Box key={`round-${i}-f-${j}`} flexDirection="column">
-                  <Text color={f.severity === 'BLOCKING' ? 'error' : undefined} dimColor={f.severity !== 'BLOCKING'}>{[f.severity, f.origin].filter(Boolean).join(' · ')}</Text>
+                  {!!tag && <Text color={f.severity === 'BLOCKING' ? 'error' : undefined} dimColor={f.severity !== 'BLOCKING'}>{tag}</Text>}
                   <Text>{f.what}</Text>
                   {f.where && <Text dimColor>{f.where}</Text>}
                 </Box>
-              ))}
+                )
+              })}
               {r.note && <Text color="warning">{`Not: ${r.note}`}</Text>}
             </Box>
           )).reverse()
