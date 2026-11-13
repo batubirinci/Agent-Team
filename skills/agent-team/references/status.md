@@ -78,7 +78,8 @@ Fields:
   write it for a task waiting on another task or on something outside the team.
 - Task state (the pane derives it; never written to the file), precedence blocked > running > waiting:
   - `blocked`: any role has `status: "blocked"`, or any open decision with `task` = this task's id has
-    a `kind` starting with `Takıldı`;
+    a `kind` that, trimmed and lowercased with Turkish rules, starts with `takıldı` (so
+    `Takıldı · Developer`, `takıldı`, `TAKILDI` and ` Takıldı` all match);
   - else `running`: any role has `status: "running"`;
   - else `waiting` (also a task with no roles).
   The pane shows the state on every task (a chip on the desktop, a `◐ çalışıyor` / `✗ TAKILDI` /

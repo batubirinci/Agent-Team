@@ -1006,6 +1006,11 @@ test('task state: blocked > running > waiting, and the reason line per state', a
   // Source: brief "Data rules". blocked if a role is blocked OR an open decision linked to the task has a kind starting "Takıldı".
   expect(stateOf([task({ roles: [stuck] })])).toEqual(['blocked', 'başlatılamadı'])
   expect(stateOf([task({ roles: [run] })], [ask('Takıldı · Developer')])).toEqual(['blocked', 'senden 1 karar bekliyor'])
+  // Lead's rule change (revision 1): the kind is trimmed and matched case-insensitively with Turkish rules ("TAKILDI" -> "takıldı").
+  for (const kind of ['takıldı', 'TAKILDI', ' Takıldı', 'Takıldı · Developer']) {
+    expect(stateOf([task({ roles: [run] })], [ask(kind)])).toEqual(['blocked', 'senden 1 karar bekliyor'])
+  }
+  expect(stateOf([task({ roles: [run] })], [ask('Bu takıldı mı')])[0]).toBe('running')
   // A linked decision that is not a "Takıldı" one does not block; a decision on another task does not link.
   expect(stateOf([task({ roles: [run] })], [ask('Ürün kararı')])).toEqual(['running', undefined])
   expect(stateOf([task({ roles: [idleRole] })], [ask('Takıldı', 't2')])).toEqual(['waiting', undefined])
@@ -1170,4 +1175,42 @@ test('detail views show the state: a line in the terminal summary, the chip and 
   expect(textOf(keyed(root, 'chip-state-tw'))).toBe('⏸ Bekliyor')
   expect(textNode(root, /^Koşan görev bitmeden başlamaz$/)).toBeDefined()
   await desk.unmount()
+})
+
+// Revision 1 (QA findings, LOW): a decision with no kind and no task draws no empty child; a decision naming a task that is not
+// in the file shows its kind only and is not red; zero parts are left out of the desktop header; the blocked reason caption is #F2A3A3.
+const LOOSE = JSON.stringify({
+  v: 1,
+  decisions: [
+    { id: 'dn', text: 'Kindsiz soru', options: ['Tamam'] },
+    { id: 'dx', kind: 'Takıldı · Developer', text: 'Olmayan görev', task: 'yok', options: ['Tamam'] },
+  ],
+  tasks: [task({ id: 'a', roles: [run] }), task({ id: 'b', roles: [run] })],
+})
+const emptyChild = (n: Node): boolean => (n.children ?? []).some(c => c === '' || (typeof c !== 'string' && emptyChild(c)))
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`${surface}: a decision with no kind and no task draws no empty child; an unknown task id shows the kind only, not red`, async ($, on) => {
+    await boot($, on, LOOSE)
+    const root = await drawnOf(await $.ui.mount({ ...PANE, surface }))
+    expect(emptyChild(keyed(root, 'd-dn'))).toBe(false)
+    expect(textNode(keyed(root, 'd-dn'), /Kindsiz soru/)).toBeDefined()
+    const dx = keyed(root, 'd-dx')
+    expect(textNode(dx, /^Takıldı · Developer$/)?.props?.color).toBe('claude')
+    expect(dx.props?.borderColor).toBe(surface === 'terminal' ? 'subtle' : 'rgba(128,128,128,0.28)')
+  })
+}
+
+test('desktop: the header leaves out takıldı and bekliyor at zero', async ($, on) => {
+  await boot($, on, LOOSE)
+  const root = await drawnOf(await $.ui.mount({ ...PANE, surface: 'desktop' }))
+  expect(textOf(textNode(root, /çalışıyor/) as Node)).toBe('2 çalışıyor · 2 görev')
+})
+
+test('desktop: the blocked reason caption is #F2A3A3, any other reason is dim', async ($, on) => {
+  await boot($, on, STATES)
+  const root = await drawnOf(await $.ui.mount({ ...PANE, surface: 'desktop' }))
+  expect(textNode(keyed(root, 't-tb'), /^senden 1 karar bekliyor$/)?.props?.color).toBe('#F2A3A3')
+  const wait = textNode(keyed(root, 't-tw'), /^Koşan görev bitmeden başlamaz$/)
+  expect([wait?.props?.color, wait?.props?.dimColor]).toEqual([undefined, true])
 })

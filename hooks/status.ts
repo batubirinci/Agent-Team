@@ -59,7 +59,7 @@ export function parseStatus(text: string): Status {
     const asked = decisions.filter(d => d.task === id)
     const blocked = roles.find(r => r.status === 'blocked')
     const state: TaskState =
-      blocked || asked.some(d => d.kind?.startsWith('Takıldı')) ? 'blocked' : roles.some(r => r.status === 'running') ? 'running' : 'waiting'
+      blocked || asked.some(d => d.kind?.trim().toLocaleLowerCase('tr').startsWith('takıldı')) ? 'blocked' : roles.some(r => r.status === 'running') ? 'running' : 'waiting'
     const reason =
       state === 'blocked' ? (asked.length ? `senden ${asked.length} karar bekliyor` : blocked?.state || undefined) : wait
     return [{
@@ -128,5 +128,5 @@ export const countStates = (tasks: readonly Task[]) => ({
 // The task a decision names (if it is in the file): its title joins the kind line, a blocked one draws the card in error.
 export function decisionTask(d: Decision, tasks: readonly Task[]) {
   const t = d.task ? tasks.find(x => x.id === d.task) : undefined
-  return { kind: [d.kind, t?.title].filter(Boolean).join(' · '), blocked: t?.state === 'blocked' }
+  return { kind: [d.kind, t?.title].filter(Boolean).join(' · ') || undefined, blocked: t?.state === 'blocked' }
 }
