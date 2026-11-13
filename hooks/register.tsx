@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Decision, Mode, RoleStatus, StatusView, Task, TaskState } from '../types'
-import { STAGE_LABELS, baseName, clockOf, countStates, decisionTask, expandHome, isInside, parseFolders, parseStatus, trimSlash } from './status'
+import { ANNOUNCE, STAGE_LABELS, announcedFile, baseName, clockOf, countStates, decisionTask, expandHome, isInside, parseFolders, parseStatus, trimSlash } from './status'
 import { BAD, CLAY, MUTED, OK, dotSvg, meterSvg, stagesSvg } from './svg'
 import { TBOX, hk, termDecisions, termFooter, termHeader, termDetail, termHint, termTasks, termUsage } from './terminal'
 
@@ -81,7 +81,7 @@ const leadText = (file: string) =>
     "Bu oturum bir Agent Team oturumu (agent-team plugin'i). Sen Lead'sin:",
     "sahibin her mesajını agent-team skill'inin akışıyla ele al; /agent-team yazılması gerekmez.",
     "Skill bu oturumda henüz yüklenmediyse önce Skill aracıyla agent-team skill'ini yükle.",
-    `Pane'in okuduğu durum dosyası: ${file} (biçimi skill'in references/status.md dosyasında).`,
+    `${ANNOUNCE} ${file} (biçimi skill'in references/status.md dosyasında).`,
   ].join(' ')
 
 // A press in the pane reaches the Lead as the owner's own message.
@@ -145,9 +145,19 @@ export const register: Register = (on, options) => {
     const home = (await $.env.get('HOME')) ?? ''
     const root = trimSlash(expandHome(String(options.evidenceRoot || '~/agent-team-evidence'), home))
     // One file per session: sessions in one folder (the SSH server's home) must not share a status.
-    // No usable id (the call fails or answers empty): the old <project>.json.
-    const sid = String(await $.session.id().catch(() => '')).slice(0, 8)
-    const file = `${root}/status/${baseName(e.cwd)}${sid ? `--${sid}` : ''}.json`
+    // A session keeps its first file whatever its id becomes: the one the atom holds (a reload), else the
+    // last one this plugin announced in the history (a resume under a new id), if it is on disk; else a new
+    // one. No usable id (the call fails or answers empty): the old <project>.json.
+    const dir = `${root}/status`
+    const held = (await read($, status)).file
+    const rows = await $.session.messages().catch(() => [])
+    const said = announcedFile(rows.filter(m => m.role === 'user').map(m => m.text), dir)
+    let file = ''
+    for (const old of [held, said]) if (!file && old && (await $.fs.exists(old))) file = old
+    if (!file) {
+      const sid = String(await $.session.id().catch(() => '')).slice(0, 8)
+      file = `${dir}/${baseName(e.cwd)}${sid ? `--${sid}` : ''}.json`
+    }
     await refresh($, file)
     $.clock.every(POLL_MS, () => refresh($, file))
 

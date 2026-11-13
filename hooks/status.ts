@@ -130,3 +130,13 @@ export function decisionTask(d: Decision, tasks: readonly Task[]) {
   const t = d.task ? tasks.find(x => x.id === d.task) : undefined
   return { kind: [d.kind, t?.title].filter(Boolean).join(' · ') || undefined, blocked: t?.state === 'blocked' }
 }
+
+// The sentence that tells the Lead the status path (register.tsx leadText): a resumed session finds its first path in it.
+export const ANNOUNCE = "Pane'in okuduğu durum dosyası:"
+
+// The last status file the plugin announced in `texts` (user rows of the history), or undefined. The history is
+// untrusted: only a file directly in <statusDir>/ counts, so a model-written path elsewhere (or with "..") is ignored.
+export function announcedFile(texts: readonly string[], statusDir: string): string | undefined {
+  const found = texts.flatMap(t => [...t.matchAll(new RegExp(`${ANNOUNCE} (.+?\\.json) \\(biçimi`, 'g'))].map(m => m[1]!))
+  return found.reverse().find(p => p.startsWith(`${statusDir}/`) && !p.slice(statusDir.length + 1).includes('/'))
+}
