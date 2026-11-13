@@ -57,8 +57,22 @@ export type StatusView = {
   error: string | null
 }
 
+// Another team session's pending decisions (read from its status file, shown read-only).
+export type OtherDecision = { id: string; kind?: string; text: string; options: string[]; stuck: boolean }
+
+export type Other = { file: string; project: string; name: string; when: string; decisions: OtherDecision[] }
+
+// One entry of $.fs.list.
+export type DirEntry = { name: string; kind: string; size: number; mtimeMs: number; isLink: boolean }
+
 declare module 'claude-code' {
   interface PluginState {
-    'agent-team': { mode: Shaped<Mode>; status: Shaped<StatusView>; detail: Shaped<string | null> }
+    'agent-team': {
+      mode: Shaped<Mode>
+      status: Shaped<StatusView>
+      detail: Shaped<string | null>
+      others: Shaped<Other[]>
+      othersOpen: Shaped<boolean>
+    }
   }
 }

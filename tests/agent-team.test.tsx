@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { decisionTask, isInside, parseFolders, parseStatus, summary } from '../hooks/status'
+import { decisionTask, isInside, otherFiles, parseFolders, parseStatus, summary } from '../hooks/status'
 import { CLAY, MUTED, STUCK, TRACK, dotSvg, meterSvg, stagesSvg } from '../hooks/svg'
 
 const fills = (svg: string) => [...svg.matchAll(/<rect [^>]*fill="([^"]+)"/g)].map(m => m[1])
@@ -1556,4 +1556,358 @@ test('criterion 8: "Henüz review turu yok." is not drawn for a task that has ro
     await ui.press({ key: 'detail-back' })
     await ui.unmount()
   }
+})
+
+// Other sessions' decisions (owner report 2026-11-13: a decision waited in another team session's pane; the approved design
+// "Diğer oturumların kararları", four frames; criteria 1-7 of the other-decisions task). Expected strings are spelled out from
+// that design and the brief, never read back from the implementation. A fixed clock and fixed mtimes; no real disk.
+const DIR = '/Users/x/agent-team-evidence/status'
+const OWN_PATH = `${DIR}/shop.json`
+const DAY = 86_400_000 // 24 h in ms, by hand: 24 * 60 * 60 * 1000
+const KIB256 = 262_144 // 256 KiB in bytes, by hand: 256 * 1024
+const NOW = new Date(2026, 10, 13, 15, 0).getTime() // local 15:00, the same clock as the mtimes below
+const at = (h: number, m: number) => new Date(2026, 10, 13, h, m).getTime()
+type Entry = { name: string; kind: 'file' | 'dir' | 'other'; size: number; mtimeMs: number; isLink: boolean }
+const entry = (name: string, over: Partial<Entry> = {}): Entry => ({ name, kind: 'file', size: 1000, mtimeMs: NOW - 60_000, isLink: false, ...over })
+const decisionsOnly = (n: number, extra: Record<string, unknown> = {}) =>
+  JSON.stringify({ v: 1, ...extra, decisions: Array.from({ length: n }, (_, i) => ({ id: `d${i}`, text: `Soru ${i}`, options: ['Evet', 'Hayır'] })) })
+const OWN = JSON.stringify({ v: 1, lead: 'Opus 5.5', tasks: [{ id: 't1', title: 'Kendi görevim', stage: 'build' }] })
+
+// The design's own two sessions: bbirinci (3 decisions, the first takıldı) and NorthScore (1), the second with no updatedAt (time from mtime).
+const BBIRINCI = JSON.stringify({
+  v: 1,
+  updatedAt: '2026-11-13T14:20:00+03:00',
+  decisions: [
+    { id: 'd1', kind: 'Takıldı', task: 't1', text: "Developer başlatılamadı: ajan başlatma hook'u reddetti. Ne yapayım?", options: ['Başlatmayı ben onaylarım', "Plugin'i kapat"] },
+    { id: 'd2', kind: 'Ürün kararı', task: 't2', text: "Katalog kodunu Faz A'yı beklemeden ayrı dalda başlatayım mı?", options: ['Başlat', "Faz A'yı bekle"] },
+    { id: 'd3', kind: 'Onay', task: 't3', text: "Aday 3b36da7 GO aldı. main'e birleştireyim mi?", options: ['Birleştir', 'Bekle'] },
+  ],
+  tasks: [
+    { id: 't1', title: 'C1 ai-deploy kapı çekirdeği', stage: 'build' },
+    { id: 't2', title: 'Faz M modül kataloğu', stage: 'build' },
+    { id: 't3', title: 'Faz A ön-uçuş', stage: 'review' },
+  ],
+})
+const NORTH = JSON.stringify({
+  v: 1,
+  decisions: [{ id: 'd1', kind: 'Soru', task: 't1', text: 'Grafik haftalık mı aylık mı gösterilsin?', options: ['Haftalık', 'Aylık'] }],
+  tasks: [{ id: 't1', title: 'Rapor sayfası', stage: 'build' }],
+})
+const BB = 'bbirinci--350e44d7.json'
+const NS = 'NorthScore--1a2b3c4d.json'
+const DESIGN_LISTING = [entry(BB, { mtimeMs: at(14, 25) }), entry(NS, { mtimeMs: at(13, 5) })]
+const DESIGN_FILES = { [BB]: BBIRINCI, [NS]: NORTH }
+
+type OtherLog = { read?: string[]; say?: string[]; fill?: string[]; appended?: string[]; own?: string | null }
+const bootOthers = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], surface: 'desktop' | 'terminal', listing: Entry[], files: Record<string, string>, log: OtherLog = {}) => {
+  const own = log.own === undefined ? OWN : log.own
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.close', () => ({ value: undefined }))
+  on('env.get', () => ({ value: '/Users/x' }))
+  on('fs.exists', (_, e) => ({ value: own !== null && e.path === OWN_PATH }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: 1, isLink: false } }))
+  on('fs.list', (_, e) => {
+    expect(e.path).toBe(DIR)
+    return { value: listing }
+  })
+  on('fs.read', (_, e) => {
+    if (e.path === OWN_PATH) return { value: own ?? '' }
+    const name = e.path.slice(DIR.length + 1)
+    log.read?.push(name)
+    if (!(name in files)) throw new Error('okunamadı')
+    return { value: files[name] as string }
+  })
+  on('clock.now', () => ({ value: NOW }))
+  on('clock.every', () => ({ value: undefined }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.append', (_, e, next) => {
+    log.appended?.push('row')
+    return next(e)
+  })
+  on('prompt.submit', (_, e) => {
+    log.say?.push(e.text)
+    return { text: e.text }
+  })
+  on('prompt.fill', (_, e) => {
+    log.fill?.push(e.text)
+    return { isFilled: true }
+  })
+  await $.session.start({ cwd: '/Users/x/Projeler/shop', surface, isInteractive: true })
+}
+const textIn = (root: Node, s: string) => nodesOf(root).some(n => n.type === 'Text' && textOf(n) === s)
+const otherBoxes = (root: Node) => nodesOf(root).filter(n => String(n.props?.key).startsWith('other-'))
+
+test('other sessions, which files count (criterion 1: regular, .json, not own, under 24 h, at most 256 KiB, newest 20)', async () => {
+  // Source: the brief's criterion 1; boundaries computed by hand (DAY, KIB256 above). Exactly 24 h old is not "in the last 24 hours".
+  const names = (l: Entry[]) => otherFiles(l, DIR, OWN_PATH, NOW).map(x => x.name)
+  expect(names([entry('a--1.json'), entry('shop.json')])).toEqual(['a--1.json'])
+  expect(names([entry('in.json', { mtimeMs: NOW - DAY + 1 }), entry('out.json', { mtimeMs: NOW - DAY })])).toEqual(['in.json'])
+  expect(names([entry('fit.json', { size: KIB256 }), entry('big.json', { size: KIB256 + 1 })])).toEqual(['fit.json'])
+  expect(names([entry('l1.json', { kind: 'other', isLink: true, size: 0, mtimeMs: 0 }), entry('l2.json', { isLink: true })])).toEqual([])
+  expect(names([entry('notes.txt'), entry('json'), entry('d.json', { kind: 'dir' })])).toEqual([])
+  // Newest first, at most 20: 21 entries, mtimes NOW-1s ... NOW-21s; the 21st (oldest) is left out.
+  const many = Array.from({ length: 21 }, (_, i) => entry(`f${i}.json`, { mtimeMs: NOW - 1000 * (i + 1) }))
+  const got = names([...many].reverse())
+  expect(got.length).toBe(20)
+  expect(got[0]).toBe('f0.json')
+  expect(got).not.toContain('f20.json')
+})
+
+test('other sessions, wiring: 21 files give 20 reads, an unreadable or unparsable file or one with no decision is skipped silently, own is not counted (criteria 1, 2)', async ($, on) => {
+  const read: string[] = []
+  const listing = [
+    entry('shop.json', { mtimeMs: NOW }), // own: never counted even with decisions
+    ...Array.from({ length: 21 }, (_, i) => entry(`p${i}--0000000${i % 10}.json`, { mtimeMs: NOW - 1000 * (i + 1) })),
+    entry('stale--aaaaaaaa.json', { mtimeMs: NOW - DAY }),
+  ]
+  const files: Record<string, string> = Object.fromEntries(listing.slice(1, 22).map(e => [e.name, decisionsOnly(1)]))
+  files['p3--00000003.json'] = 'not json' // unparsable
+  files['p4--00000004.json'] = JSON.stringify({ v: 1, decisions: [], tasks: [] }) // no decision
+  delete files['p5--00000005.json'] // read fails
+  files['stale--aaaaaaaa.json'] = decisionsOnly(1)
+  await bootOthers($, on, 'desktop', listing, files, { read, own: decisionsOnly(7) })
+  expect(read.length).toBe(20)
+  expect(read).not.toContain('p20--00000000.json')
+  expect(read).not.toContain('stale--aaaaaaaa.json')
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  // 20 read; 3 of them give nothing (unparsable, empty, unreadable): 17 sessions with 1 decision each; own's 7 are not in it.
+  expect(textIn(await drawnOf(ui), 'Diğer oturumlarda 17 karar bekliyor')).toBe(true)
+  await ui.unmount()
+})
+
+test('desktop: the strip under the header, collapsed first, then each session in a card; Göster/Gizle toggle and it is remembered (criteria 3, 4, 6)', async ($, on) => {
+  await bootOthers($, on, 'desktop', DESIGN_LISTING, DESIGN_FILES)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const root = await drawnOf(ui)
+
+  // Criterion 3 (design frame 1): amber 8 px dot, bold title, per-session counts, Göster; above "Senin sıran" / the tasks.
+  expect(textIn(root, 'Diğer oturumlarda 4 karar bekliyor')).toBe(true)
+  expect(textIn(root, 'bbirinci · 3 karar (1 takıldı) · NorthScore · 1 karar')).toBe(true)
+  expect(textNode(root, /^Diğer oturumlarda 4 karar bekliyor$/)?.props).toMatchObject({ weight: 'semibold' })
+  expect(nodesOf(root).find(n => n.props?.key === 'others-toggle')?.props?.label).toBe('Göster')
+  const dot = nodesOf(root).find(n => n.type === 'Svg' && n.props?.alt === 'diğer oturumlarda karar bekliyor')
+  expect(dot?.props).toMatchObject({ width: 8, height: 8 })
+  expect(String(dot?.props?.source)).toContain('fill="#E5C07B"')
+  expect(textIn(root, 'Diğer oturumlar')).toBe(false)
+  const order = nodesOf(root).map(n => String(n.props?.key))
+  expect(order.indexOf('others-toggle')).toBeGreaterThan(order.indexOf('pause'))
+  expect(order.indexOf('others-toggle')).toBeLessThan(order.indexOf('t-t1'))
+  expect(otherBoxes(root)).toEqual([])
+
+  // Criterion 4 (design frame 2): header row, a card per session newest first, options as text, the footnote.
+  await ui.press({ key: 'others-toggle' })
+  const open = await drawnOf(ui)
+  expect(textIn(open, 'Diğer oturumlarda 4 karar bekliyor')).toBe(false)
+  expect(textNode(open, /^Diğer oturumlar$/)?.props).toMatchObject({ weight: 'semibold' })
+  expect(textIn(open, '4 karar')).toBe(true)
+  expect(nodesOf(open).find(n => n.props?.key === 'others-toggle')?.props?.label).toBe('Gizle')
+  expect(otherBoxes(open).map(b => b.props?.key)).toEqual([`other-${BB}`, `other-${NS}`])
+  const [bb, ns] = otherBoxes(open) as [Node, Node]
+  expect(bb.props).toMatchObject({ backgroundColor: 'rgba(128,128,128,0.10)', borderColor: 'rgba(224,108,108,0.45)' })
+  expect(ns.props).toMatchObject({ backgroundColor: 'rgba(128,128,128,0.10)', borderColor: 'rgba(128,128,128,0.28)' })
+  expect(textIn(bb, 'bbirinci · 350e44d7')).toBe(true)
+  expect(textIn(bb, 'son yazım 14:20')).toBe(true) // from updatedAt, not the 14:25 mtime
+  expect(textIn(ns, 'NorthScore · 1a2b3c4d')).toBe(true)
+  expect(textIn(ns, 'son yazım 13:05')).toBe(true) // no updatedAt: from the mtime
+  expect(textNode(bb, /^Takıldı · C1 ai-deploy kapı çekirdeği$/)?.props).toMatchObject({ color: '#F2A3A3' })
+  expect(textIn(bb, "Developer başlatılamadı: ajan başlatma hook'u reddetti. Ne yapayım?")).toBe(true)
+  expect(textNode(bb, /^Başlatmayı ben onaylarım · Plugin'i kapat$/)?.props).toMatchObject({ dimColor: true })
+  expect(textNode(bb, /^Ürün kararı · Faz M modül kataloğu$/)?.props).toMatchObject({ color: 'claude' })
+  expect(textIn(bb, "Faz A'yı bekle")).toBe(false) // an option alone is no text node: they are joined
+  expect(textIn(ns, 'Haftalık · Aylık')).toBe(true)
+  expect(textIn(open, 'Cevabı o oturumda ver; seçenekler buradan gönderilemez. 24 saattir güncellenmeyen dosyalar sayılmaz.')).toBe(true)
+  // Options are text, never buttons: the only buttons are the pane's own and the toggle.
+  expect(buttons(open).map(b => b.props?.key)).toEqual(['pause', 'others-toggle', 'pane-team-on', 'detail-t1'])
+
+  // Remembered for the session: a new mount of the pane keeps it open; the toggle closes it again.
+  await ui.unmount()
+  const again = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(otherBoxes(await drawnOf(again)).length).toBe(2)
+  await again.press({ key: 'others-toggle' })
+  expect(otherBoxes(await drawnOf(again)).length).toBe(0)
+  expect(textIn(await drawnOf(again), 'Diğer oturumlarda 4 karar bekliyor')).toBe(true)
+  await again.unmount()
+})
+
+test('desktop: nothing in this section sends, fills or submits anything (criterion 4)', async ($, on) => {
+  const log: OtherLog = { say: [], fill: [], appended: [] }
+  await bootOthers($, on, 'desktop', DESIGN_LISTING, DESIGN_FILES, log)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'others-toggle' })
+  await ui.press({ key: 'others-toggle' })
+  await ui.unmount()
+  expect(log.say).toEqual([])
+  expect(log.fill).toEqual([])
+  expect(log.appended).toEqual([])
+})
+
+test('desktop: a decision whose linked task is blocked, and any spelling of takıldı the parser accepts, draws in error; a card with one gets the error border (criterion 2)', async ($, on) => {
+  const viaTask = JSON.stringify({
+    v: 1,
+    decisions: [{ id: 'd1', kind: 'Onay', task: 't1', text: 'Devam mı?', options: ['Evet'] }],
+    tasks: [{ id: 't1', title: 'Takılı iş', stage: 'build', roles: [{ name: 'Developer', state: 'hook reddetti', status: 'blocked' }] }],
+  })
+  const spelled = JSON.stringify({
+    v: 1,
+    decisions: [
+      { id: 'd1', kind: '  TAKILDI: hook', text: 'Büyük harf', options: [] },
+      { id: 'd2', kind: 'takıldı', text: 'Küçük harf', options: [] },
+      { id: 'd3', kind: 'Soru', text: 'Normal', options: [] },
+      { id: 'd4', kind: 'Takildi (ASCII)', text: 'Noktasız yazım', options: [] },
+    ],
+  })
+  await bootOthers($, on, 'desktop', [entry('a--aaaaaaaa.json'), entry('b--bbbbbbbb.json', { mtimeMs: NOW - 120_000 }), entry('c--cccccccc.json', { mtimeMs: NOW - 180_000 })], {
+    'a--aaaaaaaa.json': viaTask,
+    'b--bbbbbbbb.json': spelled,
+    'c--cccccccc.json': decisionsOnly(1),
+  })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'others-toggle' })
+  const root = await drawnOf(ui)
+  const [a, b, c] = otherBoxes(root) as [Node, Node, Node]
+  expect(a.props?.borderColor).toBe('rgba(224,108,108,0.45)')
+  expect(textNode(a, /^Onay · Takılı iş$/)?.props?.color).toBe('#F2A3A3')
+  expect(b.props?.borderColor).toBe('rgba(224,108,108,0.45)')
+  expect(textNode(b, /TAKILDI: hook/)?.props?.color).toBe('#F2A3A3')
+  expect(textNode(b, /^takıldı$/)?.props?.color).toBe('#F2A3A3')
+  expect(textNode(b, /^Soru$/)?.props?.color).toBe('claude')
+  expect(textNode(b, /^Takildi \(ASCII\)$/)?.props?.color).toBe('#F2A3A3')
+  expect(c.props?.borderColor).toBe('rgba(128,128,128,0.28)')
+  // The strip's counts: a has 1 stuck decision of 1, b has 3 of 4, c none.
+  await ui.press({ key: 'others-toggle' })
+  expect(textIn(await drawnOf(ui), 'a · 1 karar (1 takıldı) · b · 4 karar (3 takıldı) · c · 1 karar')).toBe(true)
+  await ui.unmount()
+})
+
+test('desktop: nothing is drawn when no other session has a decision, and a failing listing is no error (criteria 1, 3)', async ($, on) => {
+  await bootOthers($, on, 'desktop', [entry('quiet--11111111.json')], { 'quiet--11111111.json': JSON.stringify({ v: 1, decisions: [], tasks: [] }) })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const root = await drawnOf(ui)
+  expect(nodesOf(root).some(n => n.props?.key === 'others-toggle')).toBe(false)
+  expect(textNode(root, /Diğer oturum/)).toBeUndefined()
+  expect(nodesOf(root).some(n => n.type === 'Svg' && String(n.props?.alt).startsWith('diğer'))).toBe(false)
+  expect(textNode(root, /okunamadı/)).toBeUndefined()
+  await ui.unmount()
+})
+
+test('empty pane shows the strip; a task detail does not (criterion 6)', async ($, on) => {
+  const log: OtherLog = { own: null }
+  await bootOthers($, on, 'desktop', DESIGN_LISTING, DESIGN_FILES, log)
+  const empty = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const root = await drawnOf(empty)
+  expect(textIn(root, 'Agent Team kapalı')).toBe(true) // the empty pane
+  expect(textIn(root, 'Diğer oturumlarda 4 karar bekliyor')).toBe(true)
+  await empty.unmount()
+})
+
+test('a task detail has no strip, on either surface (criterion 6)', async ($, on) => {
+  await bootOthers($, on, 'desktop', DESIGN_LISTING, DESIGN_FILES)
+  for (const surface of ['desktop', 'terminal'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(nodesOf(await drawnOf(ui)).some(n => n.props?.key === 'others-toggle')).toBe(true)
+    await ui.press({ key: 'detail-t1' })
+    const detail = await drawnOf(ui)
+    expect(nodesOf(detail).some(n => n.props?.key === 'others-toggle')).toBe(false)
+    expect(textNode(detail, /Diğer oturum/)).toBeUndefined()
+    await ui.press({ key: 'detail-back' })
+    await ui.unmount()
+  }
+})
+
+test('terminal: the collapsed line, the expanded boxes, v toggles, no number keys on those decisions (criteria 5, 6)', async ($, on) => {
+  await bootOthers($, on, 'terminal', DESIGN_LISTING, DESIGN_FILES)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const root = await drawnOf(ui)
+
+  // Collapsed (design frame 3): warning ◇ line with "v: göster" on the right, the dim per-session count line, hint with "v diğer".
+  const head = nodesOf(root).find(n => n.type === 'Box' && textOf(n) === '◇ Diğer oturumlarda 4 karar') as Node
+  expect(head?.props).toMatchObject({ flexDirection: 'row', justifyContent: 'space-between' })
+  expect(textNode(head, /^◇ $/)?.props).toMatchObject({ color: 'warning' })
+  expect(textNode(head, /^Diğer oturumlarda 4 karar$/)?.props).toMatchObject({ color: 'warning', weight: 'bold' })
+  const toggle = nodesOf(head).find(n => n.type === 'Button') as Node
+  expect(toggle.props).toMatchObject({ key: 'others-toggle', label: 'göster', plain: true, hotkey: 'v' })
+  expect(textNode(root, /^ {2}bbirinci 3/)?.props).toMatchObject({ dimColor: true })
+  expect(textOf(textNode(root, /^ {2}bbirinci 3/) as Node)).toBe('  bbirinci 3 (1 takıldı) · NorthScore 1')
+  expect(textOf(textNode(root, /^a-o ayrıntı/) as Node)).toBe('a-o ayrıntı  1-9 karar  v diğer  p pause  esc çık')
+  expect(otherBoxes(root)).toEqual([])
+  // v is its own key: no other button shares it, none of the task keys a c d e f g h i j k m n o, none reserved b l p s t.
+  const keys = hotkeys(root)
+  expect(keys['others-toggle']).toBe('v')
+  const used = Object.values(keys).filter(Boolean)
+  expect(new Set(used).size).toBe(used.length)
+
+  // Expanded (design frame 4).
+  await ui.press({ key: 'others-toggle' })
+  const open = await drawnOf(ui)
+  const title = nodesOf(open).find(n => n.type === 'Box' && textOf(n) === '◇ DİĞER OTURUMLAR · 4 karar') as Node
+  expect(title?.props).toMatchObject({ flexDirection: 'row', justifyContent: 'space-between' })
+  expect(textNode(title, /^◇ DİĞER OTURUMLAR$/)?.props).toMatchObject({ color: 'warning', weight: 'bold' })
+  expect(textNode(title, /^ · 4 karar$/)?.props).toMatchObject({ dimColor: true })
+  expect(nodesOf(title).find(n => n.type === 'Button')?.props).toMatchObject({ label: 'gizle', hotkey: 'v', plain: true })
+  expect(otherBoxes(open).map(b => b.props?.key)).toEqual([`other-${BB}`, `other-${NS}`])
+  const [bb, ns] = otherBoxes(open) as [Node, Node]
+  expect(bb.props).toMatchObject({ borderStyle: 'single', borderColor: 'error' }) // square corners; takıldı inside
+  expect(ns.props).toMatchObject({ borderStyle: 'single', borderColor: 'subtle' })
+  const first = bb.children?.[0] as Node
+  expect(first.props).toMatchObject({ flexDirection: 'row', justifyContent: 'space-between' })
+  expect(textOf(first)).toBe('bbirinci · 350e44d714:20')
+  expect(textNode(first, /^bbirinci · 350e44d7$/)?.props).toMatchObject({ weight: 'bold' })
+  expect(textNode(first, /^14:20$/)?.props).toMatchObject({ dimColor: true })
+  expect(textOf(ns.children?.[0] as Node)).toBe('NorthScore · 1a2b3c4d13:05')
+  // ✗ takıldı in error, ◆ the others in claude; text; the dim options line; one blank row between decisions (gap 1).
+  expect(textNode(bb, /^✗ Takıldı · C1 ai-deploy kapı çekirdeği$/)?.props).toMatchObject({ color: 'error', weight: 'bold' })
+  expect(textNode(bb, /^◆ Ürün kararı · Faz M modül kataloğu$/)?.props).toMatchObject({ color: 'claude', weight: 'bold' })
+  expect(textNode(bb, /^◆ Onay · Faz A ön-uçuş$/)?.props).toMatchObject({ color: 'claude' })
+  expect(textIn(bb, "Katalog kodunu Faz A'yı beklemeden ayrı dalda başlatayım mı?")).toBe(true)
+  expect(textNode(bb, /Plugin'i kapat/)?.props).toMatchObject({ dimColor: true })
+  expect(textOf(textNode(bb, /Plugin'i kapat/) as Node)).toBe("  Başlatmayı ben onaylarım / Plugin'i kapat")
+  expect(textOf(textNode(ns, /Haftalık/) as Node)).toBe('  Haftalık / Aylık')
+  expect((bb.children?.[1] as Node).props).toMatchObject({ flexDirection: 'column', gap: 1 })
+  expect(textNode(open, /^Cevabı o oturumda ver; buradan gönderilemez\.$/)?.props).toMatchObject({ dimColor: true })
+  // No number hotkeys on these decisions: no Button inside a session box, and the own keys stay as they were.
+  expect(buttons(bb).length + buttons(ns).length).toBe(0)
+  expect(hotkeys(open)).toEqual({ pause: 'p', 'others-toggle': 'v', 'pane-team-on': 'o', 'detail-t1': 'a' })
+  expect(RAW_COLOR.test(JSON.stringify(nodesOf(open).map(n => n.props)))).toBe(false)
+  expect(nodesOf(open).some(n => n.type === 'Svg')).toBe(false)
+
+  // v toggles back; remembered over a new mount.
+  await ui.press({ key: 'others-toggle' })
+  expect(otherBoxes(await drawnOf(ui)).length).toBe(0)
+  await ui.press({ key: 'others-toggle' })
+  await ui.unmount()
+  const again = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(otherBoxes(await drawnOf(again)).length).toBe(2)
+  await again.unmount()
+})
+
+test('terminal: a decision linked to a blocked task shows ✗ in error; the strip also shows on the empty pane (criteria 2, 6)', async ($, on) => {
+  const viaTask = JSON.stringify({
+    v: 1,
+    decisions: [{ id: 'd1', kind: 'Onay', task: 't1', text: 'Devam mı?', options: ['Evet', 'Hayır'] }],
+    tasks: [{ id: 't1', title: 'Takılı iş', stage: 'build', roles: [{ name: 'Developer', state: 'hook reddetti', status: 'blocked' }] }],
+  })
+  await bootOthers($, on, 'terminal', [entry('proj.json')], { 'proj.json': viaTask }, { own: null })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const closed = await drawnOf(ui)
+  expect(textIn(closed, '  proj 1 (1 takıldı)')).toBe(true)
+  expect(textNode(closed, /^a-o ayrıntı/)).toBeUndefined() // the empty pane has no hint line today
+  await ui.press({ key: 'others-toggle' })
+  const root = await drawnOf(ui)
+  const box = otherBoxes(root)[0] as Node
+  expect(box.props).toMatchObject({ borderStyle: 'single', borderColor: 'error' })
+  expect(textOf(box.children?.[0] as Node).startsWith('proj')).toBe(true)
+  expect(textNode(box, /^✗ Onay · Takılı iş$/)?.props).toMatchObject({ color: 'error' })
+  await ui.unmount()
+})
+
+test('terminal: zero total draws nothing and the hint has no "v diğer"; own keys unchanged (criteria 3, 5)', async ($, on) => {
+  await bootOthers($, on, 'terminal', [entry('quiet--11111111.json')], { 'quiet--11111111.json': JSON.stringify({ v: 1, decisions: [], tasks: [] }) })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const root = await drawnOf(ui)
+  expect(textNode(root, /Diğer oturum/)).toBeUndefined()
+  expect(nodesOf(root).some(n => n.props?.key === 'others-toggle')).toBe(false)
+  expect(textOf(textNode(root, /^a-o ayrıntı/) as Node)).toBe('a-o ayrıntı  1-9 karar  p pause  esc çık')
+  expect(hotkeys(root)).toEqual({ pause: 'p', 'pane-team-on': 'o', 'detail-t1': 'a' })
+  await ui.unmount()
 })

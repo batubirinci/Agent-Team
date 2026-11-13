@@ -1,10 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Decision, Mode, RoleStatus, StatusView, Task, TaskState } from '../types'
-import { ANNOUNCE, OPEN_ROW, STAGE_LABELS, announcedFile, baseName, clockOf, countStates, decisionTask, expandHome, isInside, parseFolders, parseStatus, trimSlash } from './status'
-import { BAD, CLAY, MUTED, OK, dotSvg, meterSvg, stagesSvg } from './svg'
-import { TBOX, hk, termDecisions, termFooter, termHeader, termDetail, termHint, termTasks, termUsage } from './terminal'
+import type { Decision, DirEntry, Mode, Other, RoleStatus, StatusView, Task, TaskState } from '../types'
+import { ANNOUNCE, OPEN_ROW, STAGE_LABELS, announcedFile, baseName, clockOf, countStates, decisionTask, expandHome, isInside, otherFiles, otherSession, parseFolders, parseStatus, trimSlash } from './status'
+import { AMBER, BAD, CLAY, MUTED, OK, dotSvg, meterSvg, stagesSvg } from './svg'
+import { TBOX, hk, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termTasks, termUsage } from './terminal'
 
 const PANE = 'agent-team'
 const PANE_OPEN = { id: PANE, title: 'Agent Team', columns: 48 } as const
@@ -21,6 +21,9 @@ const status = atom(
 )
 // The task whose detail view the pane shows (null: the list). Session state, not in the file.
 const detail = atom({ plugin: 'agent-team', key: 'detail' } as const, null as string | null, { shape: 'detail-1' })
+// Other team sessions' pending decisions (read-only strip) and whether it is open. Session state, starts collapsed.
+const others = atom({ plugin: 'agent-team', key: 'others' } as const, [] as Other[], { shape: 'others-1' })
+const othersOpen = atom({ plugin: 'agent-team', key: 'othersOpen' } as const, false, { shape: 'others-open-1' })
 
 // Raw colors that read on a light and a dark pane alike (a theme key has no card fill).
 const CARD = {
@@ -123,6 +126,35 @@ async function refresh($: EngineInterface, file: string) {
   }
 }
 
+// The other files of the status folder (see otherFiles): untrusted data, read-only; what fails to list, read or parse is skipped.
+// `seen` keeps the parse of a file by its size and mtime, so a quiet poll is one listing and no reads.
+type Seen = Map<string, { size: number; mtimeMs: number; other?: Other }>
+async function scanOthers($: EngineInterface, dir: string, own: string, seen: Seen) {
+  const one = async (e: DirEntry) => {
+    const hit = seen.get(e.name)
+    if (hit && hit.size === e.size && hit.mtimeMs === e.mtimeMs) return hit.other
+    let text: unknown
+    try {
+      text = await $.fs.read(`${dir}/${e.name}`)
+    } catch {
+      return undefined
+    }
+    let other: Other | undefined
+    try {
+      other = otherSession(e, parseStatus(typeof text === 'string' ? text : ''))
+    } catch {}
+    seen.set(e.name, { size: e.size, mtimeMs: e.mtimeMs, other })
+    return other
+  }
+  let next: Other[] = []
+  try {
+    const files = otherFiles(await $.fs.list(dir), dir, own, await $.clock.now())
+    next = (await Promise.all(files.map(one))).filter((o): o is Other => !!o)
+  } catch {}
+  const prev = await read($, others)
+  if (JSON.stringify(prev) !== JSON.stringify(next)) await update($, others, () => next)
+}
+
 async function setMode($: EngineInterface, isOn: boolean) {
   const was = await read($, mode)
   if (was.isOn === isOn) return
@@ -161,8 +193,10 @@ export const register: Register = (on, options) => {
       const sid = String(await $.session.id().catch(() => '')).slice(0, 8)
       file = `${dir}/${baseName(e.cwd)}${sid ? `--${sid}` : ''}.json`
     }
-    await refresh($, file)
-    $.clock.every(POLL_MS, () => refresh($, file))
+    const seen: Seen = new Map()
+    const poll = () => Promise.all([refresh($, file), scanOthers($, dir, file, seen)])
+    await poll()
+    $.clock.every(POLL_MS, poll)
 
     const current = await read($, mode)
     if (!current.isOn && isInside(e.cwd, parseFolders(options.teamFolders, home))) {
@@ -229,6 +263,9 @@ export const register: Register = (on, options) => {
     const dot = (hex: string, themeKey: string, alt: string) =>
       Svg ? <Svg source={dotSvg(hex)} alt={alt} width={8} height={8} /> : <Text color={themeKey}>●</Text>
     const m = await read($, mode)
+    const other = await read($, others)
+    const otherOpen = await read($, othersOpen)
+    const otherTotal = other.reduce((n, o) => n + o.decisions.length, 0)
     const { file, data, error } = await read($, status)
     const openId = await read($, detail)
     const open = openId ? data?.tasks.find(t => t.id === openId) : undefined
@@ -257,6 +294,50 @@ export const register: Register = (on, options) => {
           </Box>
         )}
       </Box>
+      )
+    }
+
+    // Other sessions' decisions, read-only: options are text, nothing here sends or fills (the owner answers in that session).
+    const stuckIn = (o: Other) => o.decisions.filter(d => d.stuck).length
+    const toggleOthers = () => void update($, othersOpen, v => !v)
+    const othersDesktop = () => {
+      const counts = other.map(o => `${o.project} · ${o.decisions.length} karar${stuckIn(o) ? ` (${stuckIn(o)} takıldı)` : ''}`).join(' · ')
+      return otherOpen ? (
+        <Box flexDirection="column" gap="sm">
+          <Box flexDirection="row" alignItems="center" justifyContent="space-between">
+            <Box flexDirection="row" alignItems="center" gap="xs">
+              {dot(AMBER, 'warning', 'diğer oturumlarda karar bekliyor')}
+              <Text weight="semibold">Diğer oturumlar</Text>
+              <Text dimColor size="caption">{`${otherTotal} karar`}</Text>
+            </Box>
+            <Button key="others-toggle" label="Gizle" onPress={toggleOthers} />
+          </Box>
+          {other.map(o => (
+            <Box key={`other-${o.file}`} {...CARD} borderColor={stuckIn(o) ? BLOCKED_EDGE : CARD.borderColor}>
+              <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="sm">
+                <Text weight="semibold" wrap="truncate-end">{o.name}</Text>
+                <Text size="caption" dimColor>{`son yazım ${o.when}`}</Text>
+              </Box>
+              {o.decisions.map((d, i) => (
+                <Box key={`odec-${o.file}-${i}`} flexDirection="column">
+                  {d.kind && <Text size="caption" weight="medium" color={d.stuck ? BLOCKED_INK : 'claude'}>{d.kind}</Text>}
+                  <Text>{d.text}</Text>
+                  {d.options.length > 0 && <Text size="caption" dimColor>{d.options.join(' · ')}</Text>}
+                </Box>
+              ))}
+            </Box>
+          ))}
+          <Text size="caption" dimColor>Cevabı o oturumda ver; seçenekler buradan gönderilemez. 24 saattir güncellenmeyen dosyalar sayılmaz.</Text>
+        </Box>
+      ) : (
+        <Box {...CARD} flexDirection="row" alignItems="center" borderColor="rgba(229,192,123,0.40)" backgroundColor="rgba(229,192,123,0.08)">
+          {dot(AMBER, 'warning', 'diğer oturumlarda karar bekliyor')}
+          <Box flexDirection="column" flexGrow={1}>
+            <Text weight="semibold">{`Diğer oturumlarda ${otherTotal} karar bekliyor`}</Text>
+            <Text size="caption" dimColor>{counts}</Text>
+          </Box>
+          <Button key="others-toggle" label="Göster" onPress={toggleOthers} />
+        </Box>
       )
     }
 
@@ -438,6 +519,8 @@ export const register: Register = (on, options) => {
         </Box>
         )}
 
+        {otherTotal > 0 && (term ? termOthers(ui, other, otherOpen, toggleOthers) : othersDesktop())}
+
         {showOn && <Button key="pane-team-on" variant="primary" label="Bu oturumda Agent Team'i aç" {...key('o')} onPress={() => void setMode($, true)} />}
 
         {errorLine}
@@ -508,7 +591,7 @@ export const register: Register = (on, options) => {
 
         {term && data && data.tasks.length > 0 && termTasks(ui, data.tasks, n, showOn, id => void update($, detail, () => id))}
 
-        {term && data && termHint(ui)}
+        {term && data && termHint(ui, otherTotal > 0)}
 
         {!term && data && data.decisions.length > 0 && (
           <Box flexDirection="column" gap="sm">
