@@ -1,9 +1,12 @@
 # Status file (read by the Agent Team pane)
 
-Path: `<evidence root>/status/<project>.json`, where `<project>` is the base name of the owner's
-checkout (the session's working directory, e.g. `/Users/x/Projeler/shop` → `shop.json`). The
-evidence root comes from the Lead's memory (default `~/agent-team-evidence`). Create the folder if
-missing.
+Path: write to the path the plugin gives you (the team-mode message and the per-prompt context
+name it): `<evidence root>/status/<project>--<first 8 characters of the session id>.json`, so two
+sessions in one folder never share a file. Only when no plugin path is given, fall back to
+`<evidence root>/status/<project>.json`, where `<project>` is the base name of the owner's checkout
+(the session's working directory, e.g. `/Users/x/Projeler/shop` → `shop.json`). The evidence root
+comes from the Lead's memory (default `~/agent-team-evidence`). Create the folder if missing.
+Old `<project>.json` files are no longer read by the pane (no migration); delete them or leave them.
 
 Write the whole file each time (Write tool, never append), valid JSON, UTF-8. The pane re-reads it
 every few seconds; a field it does not know is ignored, a missing optional field is not drawn.

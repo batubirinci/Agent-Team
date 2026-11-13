@@ -80,25 +80,28 @@ async function say($: EngineInterface, text: string) {
   await $.prompt.submit({ text, asUser: true })
 }
 
+// The one place the status view changes: an open detail whose task is not in the new view is closed
+// (file deleted, task removed), so the same id coming back does not reopen it by itself.
+async function setView($: EngineInterface, view: StatusView) {
+  await update($, status, () => view)
+  const open = await read($, detail)
+  if (open && !view.data?.tasks.some(t => t.id === open)) await update($, detail, () => null)
+}
+
 async function refresh($: EngineInterface, file: string) {
   const prev = await read($, status)
   if (!(await $.fs.exists(file))) {
-    if (prev.file !== file || prev.data || prev.error) {
-      await update($, status, () => ({ file, mtime: 0, data: null, error: null }))
-    }
+    if (prev.file !== file || prev.data || prev.error) await setView($, { file, mtime: 0, data: null, error: null })
     return
   }
   const { mtimeMs } = await $.fs.stat(file)
   if (prev.file === file && prev.mtime === mtimeMs) return
   try {
     const text = await $.fs.read(file)
-    const data = parseStatus(typeof text === 'string' ? text : '')
-    const open = await read($, detail)
-    if (open && !data.tasks.some(t => t.id === open)) await update($, detail, () => null)
-    await update($, status, () => ({ file, mtime: mtimeMs, data, error: null }))
+    await setView($, { file, mtime: mtimeMs, data: parseStatus(typeof text === 'string' ? text : ''), error: null })
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err)
-    await update($, status, () => ({ file, mtime: mtimeMs, data: prev.data, error }))
+    await setView($, { file, mtime: mtimeMs, data: prev.data, error })
   }
 }
 
@@ -132,7 +135,10 @@ export const register: Register = (on, options) => {
 
     const home = (await $.env.get('HOME')) ?? ''
     const root = trimSlash(expandHome(String(options.evidenceRoot || '~/agent-team-evidence'), home))
-    const file = `${root}/status/${baseName(e.cwd)}.json`
+    // One file per session: sessions in one folder (the SSH server's home) must not share a status.
+    // No usable id (the call fails or answers empty): the old <project>.json.
+    const sid = String(await $.session.id().catch(() => '')).slice(0, 8)
+    const file = `${root}/status/${baseName(e.cwd)}${sid ? `--${sid}` : ''}.json`
     await refresh($, file)
     $.clock.every(POLL_MS, () => refresh($, file))
 
