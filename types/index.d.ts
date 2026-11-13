@@ -50,6 +50,10 @@ export type Status = {
   tasks: Task[]
 }
 
+// What a session keeps in $.store under `session:<id>` (kept across /clear, which changes the id, and across a resume):
+// its status file, its team mode, when it was written (ISO time), and the path the Lead was last told (once per path).
+export type SessionRecord = { file: string; mode: Mode; at: string; announced?: string }
+
 export type StatusView = {
   file: string
   mtime: number

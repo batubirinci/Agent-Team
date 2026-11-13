@@ -1,14 +1,15 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Decision, DirEntry, Mode, Other, RoleStatus, StatusView, Task, TaskState } from '../types'
-import { ANNOUNCE, OPEN_ROW, STAGE_LABELS, announcedFile, baseName, clockOf, countStates, decisionTask, expandHome, isInside, otherFiles, otherSession, parseFolders, parseStatus, trimSlash } from './status'
+import type { Decision, DirEntry, Mode, Other, RoleStatus, SessionRecord, StatusView, Task, TaskState } from '../types'
+import { ANNOUNCE, OPEN_ROW, STAGE_LABELS, baseName, clockOf, countStates, decisionTask, expandHome, isInside, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, trimSlash } from './status'
 import { AMBER, BAD, CLAY, MUTED, OK, dotSvg, meterSvg, stagesSvg } from './svg'
 import { TBOX, hk, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termTasks, termUsage } from './terminal'
 
 const PANE = 'agent-team'
 const PANE_OPEN = { id: PANE, title: 'Agent Team', columns: 48 } as const
 const POLL_MS = 3000
+const KEEP_MS = 30 * 86_400_000
 
 // Change a tag when that value's fields change: it declines what an earlier version stored.
 const mode = atom({ plugin: 'agent-team', key: 'mode' } as const, { isOn: false, source: 'off' } as Mode, {
@@ -85,6 +86,7 @@ const leadText = (file: string) =>
     "sahibin her mesajını agent-team skill'inin akışıyla ele al; /agent-team yazılması gerekmez.",
     "Skill bu oturumda henüz yüklenmediyse önce Skill aracıyla agent-team skill'ini yükle.",
     `${ANNOUNCE} ${file} (biçimi skill'in references/status.md dosyasında).`,
+    'Dosyada bu oturumdan kalma görevler ve kararlar olabilir: yazmadan önce oku, bitirmediklerini koru, yalnız değişeni güncelle.',
   ].join(' ')
 
 // A press in the pane reaches the Lead as the owner's own message.
@@ -159,11 +161,29 @@ async function scanOthers($: EngineInterface, dir: string, own: string, seen: Se
   } catch {}
 }
 
+// What a session keeps in $.store (one key per session, so two sessions never write one value): /clear changes the id and
+// resets every atom, so the new id's record is the old one carried over; a resumed process finds its record by its id.
+async function save($: EngineInterface, sid: string, rec: Omit<SessionRecord, 'at'>) {
+  if (sid) await $.store.set(`session:${sid}`, { ...rec, at: new Date(await $.clock.now()).toISOString() })
+}
+
+// Records of sessions untouched for 30 days go; one whose `at` cannot be read is left alone.
+async function sweep($: EngineInterface) {
+  const now = await $.clock.now()
+  for (const key of await $.store.keys()) {
+    if (!key.startsWith('session:')) continue
+    const held = await $.store.get(key)
+    if (now - Date.parse(String(typeof held === 'object' && held ? (held as { at?: unknown }).at : '')) > KEEP_MS) await $.store.delete(key)
+  }
+}
+
 async function setMode($: EngineInterface, isOn: boolean) {
   const was = await read($, mode)
   if (was.isOn === isOn) return
-  await update($, mode, () => ({ isOn, source: isOn ? 'switch' : 'off' }))
+  const now: Mode = { isOn, source: isOn ? 'switch' : 'off' }
+  await update($, mode, () => now)
   const { file } = await read($, status)
+  await save($, String(await $.session.id().catch(() => '')), { file, mode: now, ...(isOn && { announced: file }) })
   if (isOn) await announce($, file)
   else
     await $.session.append({
@@ -177,6 +197,9 @@ async function setMode($: EngineInterface, isOn: boolean) {
 }
 
 export const register: Register = (on, options) => {
+  // Set by session.start (it holds the status folder and the last id seen); until then there is nothing to follow.
+  let follow = async (_: EngineInterface) => {}
+
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'team', description: 'Agent Team modunu aç ya da kapat' })
     await $.command.register({ name: 'team-pane', description: "Agent Team pane'ini aç" })
@@ -184,34 +207,56 @@ export const register: Register = (on, options) => {
     const home = (await $.env.get('HOME')) ?? ''
     const root = trimSlash(expandHome(String(options.evidenceRoot || '~/agent-team-evidence'), home))
     // One file per session: sessions in one folder (the SSH server's home) must not share a status.
-    // A session keeps its first file whatever its id becomes: the one the atom holds (a reload), else the
-    // last one this plugin announced in the history (a resume under a new id), if it is on disk; else a new
-    // one. No usable id (the call fails or answers empty): the old <project>.json.
+    // A session keeps its first file whatever its id becomes: the one the atom holds (a reload), else the one in
+    // this session's store record (a resume), if it is on disk; else a new one. No usable id (the call fails or
+    // answers empty): the old <project>.json.
     const dir = `${root}/status`
-    const held = (await read($, status)).file
-    const rows = await $.session.messages().catch(() => [])
-    const said = announcedFile(rows.filter(m => m.role === 'user').map(m => m.text), dir, openRow)
+    const sid = String(await $.session.id().catch(() => ''))
+    const rec = sid ? parseRecord(await $.store.get(`session:${sid}`).catch(() => undefined), dir) : undefined
     let file = ''
-    for (const old of [held, said]) if (!file && old && (await $.fs.exists(old))) file = old
-    if (!file) {
-      const sid = String(await $.session.id().catch(() => '')).slice(0, 8)
-      file = `${dir}/${baseName(e.cwd)}${sid ? `--${sid}` : ''}.json`
+    for (const old of [(await read($, status)).file, rec?.file]) if (!file && old && (await $.fs.exists(old))) file = old
+    if (!file) file = `${dir}/${baseName(e.cwd)}${sid ? `--${sid.slice(0, 8)}` : ''}.json`
+    // /clear: a new id, no session.start, every atom reset. `follow` sees the id change, carries the record over to the
+    // new id and puts the mode and the path back: the poll, a prompt and /team all run it before they read the atoms.
+    let last = sid
+    follow = async $ => {
+      // Nothing in here may throw out: it runs in the poll, in prompt.submit and in a command.
+      const was = last
+      try {
+        const id = String(await $.session.id().catch(() => ''))
+        if (!id || id === was) return
+        last = id
+        const old = was ? parseRecord(await $.store.get(`session:${was}`), dir) : undefined
+        if (!old) return
+        await save($, id, old)
+        if (old.mode.isOn) await update($, mode, () => old.mode)
+        await refresh($, file)
+      } catch {
+        last = was
+      }
     }
     const seen: Seen = new Map()
     // Independent: one failing stops neither the other nor the clock.
-    const poll = () => Promise.allSettled([refresh($, file), scanOthers($, dir, file, seen)])
+    const poll = () => Promise.allSettled([follow($), refresh($, file), scanOthers($, dir, file, seen)])
     await poll()
     $.clock.every(POLL_MS, poll)
 
-    const current = await read($, mode)
-    if (!current.isOn && isInside(e.cwd, parseFolders(options.teamFolders, home))) {
-      await update($, mode, () => ({ isOn: true, source: 'folder' }))
+    let m = await read($, mode)
+    if (!m.isOn) {
+      const to: Mode | undefined = isInside(e.cwd, parseFolders(options.teamFolders, home)) ? { isOn: true, source: 'folder' } : rec?.mode.isOn ? rec.mode : undefined
+      if (to) await update($, mode, () => (m = to))
     }
-    if ((await read($, mode)).isOn) {
+    let announced = rec?.announced
+    if (m.isOn) {
       void $.ui.open(PANE_OPEN)
-      // Team mode by folder writes no switch row: tell the Lead the path once per path, so a resume finds it.
-      if (said !== file) await announce($, file).catch(() => undefined)
+      // The path goes to the Lead once per path (the store says so): a reload or a resume does not repeat it.
+      if (announced !== file) await announce($, file).then(() => (announced = file), () => undefined)
     }
+    // A session that never was a team session leaves no record.
+    try {
+      if (m.isOn || rec) await save($, sid, { file, mode: m, announced })
+      await sweep($)
+    } catch {} // a store that fails must not stop the start
 
     return next(e)
   })
@@ -220,12 +265,14 @@ export const register: Register = (on, options) => {
   // system-prompt section: another plugin may pass prompt.compose on past this one, and a running
   // thread's system prompt does not change.
   on('prompt.submit', async ($, e, next) => {
+    await follow($)
     if (e.command || e.isMeta || !(await read($, mode)).isOn) return next(e)
     const { file } = await read($, status)
     return next({ ...e, context: [...(e.context ?? []), leadText(file)] })
   })
 
   on('command.run', { command: 'team' }, async $ => {
+    await follow($)
     const isOn = !(await read($, mode)).isOn
     await setMode($, isOn)
     return { text: isOn ? "Agent Team açık: bu oturumda her mesaj Lead'e gider." : 'Agent Team kapandı.' }

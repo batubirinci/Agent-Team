@@ -1,4 +1,4 @@
-import type { Decision, DirEntry, Evidence, Finding, Other, Role, Round, RoleStatus, Status, Task, TaskState } from '../types'
+import type { Decision, DirEntry, Evidence, Finding, Mode, Other, Role, Round, RoleStatus, SessionRecord, Status, Task, TaskState } from '../types'
 
 export const STAGES = ['spec', 'build', 'review', 'revise', 'report'] as const
 export const STAGE_LABELS = ['Spec', 'Build', 'Review', 'Revise', 'Rapor'] as const
@@ -143,17 +143,15 @@ export function decisionTask(d: Decision, tasks: readonly Task[]) {
 export const ANNOUNCE = "Pane'in okuduğu durum dosyası:"
 export const OPEN_ROW = '[Agent Team modu açıldı] '
 
-// The last status file the plugin announced in `texts` (user rows of the history), or undefined. The history is
-// untrusted (pasted logs, model text): a row counts only if it is exactly what the plugin's own row would be for
-// that path (`rowFor`), and the path is a file directly in <statusDir>/ ending in .json.
-export function announcedFile(texts: readonly string[], statusDir: string, rowFor: (file: string) => string): string | undefined {
-  const files = texts.flatMap(t => {
-    const from = t.indexOf(`${ANNOUNCE} `)
-    const to = t.lastIndexOf(' (biçimi')
-    const file = from < 0 || to < 0 ? '' : t.slice(from + ANNOUNCE.length + 1, to)
-    return file && t === rowFor(file) ? [file] : []
-  })
-  return files.reverse().find(p => p.endsWith('.json') && p.startsWith(`${statusDir}/`) && !p.slice(statusDir.length + 1).includes('/'))
+const MODE_SOURCES: readonly string[] = ['folder', 'switch', 'off']
+
+// A store record is data on disk: it counts only if it is well formed and its file is directly in <statusDir>/ and ends in .json.
+export function parseRecord(raw: unknown, statusDir: string): SessionRecord | undefined {
+  if (!isObj(raw) || typeof raw.file !== 'string' || typeof raw.at !== 'string' || !isObj(raw.mode)) return undefined
+  const { file, at, mode, announced } = raw
+  if (typeof mode.isOn !== 'boolean' || !MODE_SOURCES.includes(String(mode.source))) return undefined
+  if (!file.endsWith('.json') || !file.startsWith(`${statusDir}/`) || file.slice(statusDir.length + 1).includes('/')) return undefined
+  return { file, mode: { isOn: mode.isOn, source: mode.source as Mode['source'] }, at, ...(typeof announced === 'string' && { announced }) }
 }
 
 // Other team sessions' files in the status folder (the pane's read-only strip): a regular .json file that is not this
