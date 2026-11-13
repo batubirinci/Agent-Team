@@ -15,6 +15,8 @@ export type TaskState = 'running' | 'blocked' | 'waiting'
 
 export type Task = {
   id: string
+  // The id was made up by the parser (none in the file): no decision links to it.
+  generatedId?: true
   title: string
   branch?: string
   stage: number

@@ -1,4 +1,4 @@
-import type { Decision, Evidence, Role, Round, RoleStatus, Status, Task, TaskState } from '../types'
+import type { Decision, Evidence, Finding, Role, Round, RoleStatus, Status, Task, TaskState } from '../types'
 
 export const STAGES = ['spec', 'build', 'review', 'revise', 'report'] as const
 export const STAGE_LABELS = ['Spec', 'Build', 'Review', 'Revise', 'Rapor'] as const
@@ -39,13 +39,15 @@ export function parseStatus(text: string): Status {
     const rounds: Round[] = list(t.rounds).flatMap((r, j) => {
       const verdict = short(r.verdict, 12)
       if (!verdict) return []
-      const findings = list(r.findings)
-        .flatMap(f => {
-          const what = short(f.what, 300)
-          return what ? [{ severity: short(f.severity, 20), origin: short(f.origin, 20), what, where: short(f.where, 200) }] : []
-        })
-        .slice(0, 10)
-      return [{ n: num(r.n) ?? j + 1, verdict, candidate: short(r.candidate, 64), note: short(r.note, 400), findings }]
+      const all = list(r.findings).flatMap(f => {
+        const what = short(f.what, 300)
+        return what ? [{ severity: short(f.severity, 20), origin: short(f.origin, 20), what, where: short(f.where, 200) }] : []
+      })
+      // Over the cap, a BLOCKING finding is never dropped for a non-blocking one; the kept ones read BLOCKING first, then file order.
+      const blocking = (f: Finding) => f.severity?.toLowerCase() === 'blocking'
+      const findings = all.length > 10 ? [...all.filter(blocking), ...all.filter(f => !blocking(f))].slice(0, 10) : all
+      // A round numbered 0 (or with no valid number) is shown by its position.
+      return [{ n: num(r.n) || j + 1, verdict, candidate: short(r.candidate, 64), note: short(r.note, 400), findings }]
     }).slice(-10)
     const evidence: Evidence[] = list(t.evidence)
       .flatMap(e => {
@@ -54,18 +56,21 @@ export function parseStatus(text: string): Status {
         return label && path ? [{ label, path }] : []
       })
       .slice(0, 6)
-    const id = str(t.id) ?? `t${i + 1}`
+    // A task with no id in the file gets one for the UI only; a decision can name only an id that is written.
+    const written = str(t.id)
+    const id = written ?? `t${i + 1}`
     const wait = short(t.wait, 120)
-    const asked = decisions.filter(d => d.task === id)
+    const asked = written ? decisions.filter(d => d.task === written) : []
     const blocked = roles.find(r => r.status === 'blocked')
     const state: TaskState =
-      blocked || asked.some(d => d.kind?.trim().toLocaleLowerCase('tr').startsWith('takıldı')) ? 'blocked' : roles.some(r => r.status === 'running') ? 'running' : 'waiting'
+      blocked || asked.some(d => d.kind?.trim().toLocaleLowerCase('tr').replace(/ı/g, 'i').startsWith('takildi')) ? 'blocked' : roles.some(r => r.status === 'running') ? 'running' : 'waiting'
     const reason =
       state === 'blocked' ? (asked.length ? `senden ${asked.length} karar bekliyor` : blocked?.state || undefined) : wait
     return [{
       id,
       title,
       branch: str(t.branch),
+      ...(!written && { generatedId: true as const }),
       stage: stage < 0 ? 0 : stage,
       round: num(t.round),
       candidate: str(t.candidate),
@@ -113,7 +118,7 @@ export function summary(s: Status | null): string {
   if (s.paused) return 'duraklatıldı'
   const parts: string[] = []
   if (s.decisions.length) parts.push(`${s.decisions.length} karar bekliyor`)
-  const running = s.tasks.flatMap(t => t.roles.filter(r => r.status === 'running').map(r => `${r.name.split(' · ')[0]} ${r.state}`))
+  const running = s.tasks.filter(t => t.state === 'running').flatMap(t => t.roles.filter(r => r.status === 'running').map(r => `${r.name.split(' · ')[0]} ${r.state}`))
   if (running[0]) parts.push(running[0])
   parts.push(`${s.tasks.length} görev`)
   return parts.join(' · ')
@@ -127,7 +132,7 @@ export const countStates = (tasks: readonly Task[]) => ({
 
 // The task a decision names (if it is in the file): its title joins the kind line, a blocked one draws the card in error.
 export function decisionTask(d: Decision, tasks: readonly Task[]) {
-  const t = d.task ? tasks.find(x => x.id === d.task) : undefined
+  const t = d.task ? tasks.find(x => x.id === d.task && !x.generatedId) : undefined
   return { kind: [d.kind, t?.title].filter(Boolean).join(' · ') || undefined, blocked: t?.state === 'blocked' }
 }
 

@@ -233,6 +233,8 @@ export const register: Register = (on, options) => {
     const openId = await read($, detail)
     const open = openId ? data?.tasks.find(t => t.id === openId) : undefined
 
+    const errorLine = error && <Text color="error" size="caption">Durum dosyası okunamadı: {error}</Text>
+
     const decisionCard = (d: Decision) => {
       const { kind, blocked } = decisionTask(d, data?.tasks ?? [])
       return (
@@ -330,6 +332,7 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="column" gap="md" padding="sm">
           <Button key="detail-back" label="‹ Görevler" {...key('b')} onPress={() => void update($, detail, () => null)} />
+          {errorLine}
           <Box flexDirection="column">
             <Text size="heading" weight="semibold">{t.title}</Text>
             <Box flexDirection="row" alignItems="center" gap="xs">
@@ -349,15 +352,16 @@ export const register: Register = (on, options) => {
                     <Text weight="semibold" color={r.verdict === 'GO' ? 'success' : r.verdict.startsWith('NO') ? 'error' : undefined}>{`Tur ${r.n} · ${r.verdict}`}</Text>
                     {r.candidate && <Text size="caption" mono dimColor>{r.candidate.slice(0, 7)}</Text>}
                   </Box>
-                  {r.findings.map((f, j) => (
+                  {r.findings.map((f, j) => {
+                    const tag = [f.severity, f.origin].filter(Boolean).join(' · ')
+                    return (
                     <Box key={`round-${i}-f-${j}`} flexDirection="column">
-                      <Text size="caption" weight="medium" color={f.severity === 'BLOCKING' ? 'error' : undefined}>
-                        {[f.severity, f.origin].filter(Boolean).join(' · ')}
-                      </Text>
+                      {!!tag && <Text size="caption" weight="medium" color={f.severity === 'BLOCKING' ? 'error' : undefined}>{tag}</Text>}
                       <Text>{f.what}</Text>
                       {f.where && <Text size="caption" mono dimColor>{f.where}</Text>}
                     </Box>
-                  ))}
+                    )
+                  })}
                   {r.note && <Text size="caption" dimColor>{r.note}</Text>}
                 </Box>
               ))}
@@ -383,6 +387,7 @@ export const register: Register = (on, options) => {
     if (open && term) {
       return (
         <Box flexDirection="column" padding="sm">
+          {errorLine}
           {termDetail(
             ui,
             open,
@@ -435,7 +440,7 @@ export const register: Register = (on, options) => {
 
         {showOn && <Button key="pane-team-on" variant="primary" label="Bu oturumda Agent Team'i aç" {...key('o')} onPress={() => void setMode($, true)} />}
 
-        {error && <Text color="error" size="caption">Durum dosyası okunamadı: {error}</Text>}
+        {errorLine}
 
         {!data && !error && (
           <Box flexDirection="column" gap="md">

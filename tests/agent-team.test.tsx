@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { isInside, parseFolders, parseStatus, summary } from '../hooks/status'
+import { decisionTask, isInside, parseFolders, parseStatus, summary } from '../hooks/status'
 import { CLAY, MUTED, STUCK, TRACK, dotSvg, meterSvg, stagesSvg } from '../hooks/svg'
 
 const fills = (svg: string) => [...svg.matchAll(/<rect [^>]*fill="([^"]+)"/g)].map(m => m[1])
@@ -1418,4 +1418,142 @@ test('desktop: the blocked reason caption is #F2A3A3, any other reason is dim', 
   expect(textNode(keyed(root, 't-tb'), /^senden 1 karar bekliyor$/)?.props?.color).toBe('#F2A3A3')
   const wait = textNode(keyed(root, 't-tw'), /^Koşan görev bitmeden başlamaz$/)
   expect([wait?.props?.color, wait?.props?.dimColor]).toEqual([undefined, true])
+})
+
+// QA follow-ups (task qa-fixes). Sources: the Lead's brief for the qa-fixes task, criteria 1-8 (each group names its number),
+// and the owner decision of 2026-11-13 for 7. Every expected value is written by hand from those criteria.
+
+test('criterion 1: an open detail shows the read error line, desktop and terminal, and keeps its content', async ($, on) => {
+  let text = DETAIL
+  let mtime = 1
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('env.get', () => ({ value: '/Users/x' }))
+  on('fs.exists', () => ({ value: true }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: mtime, isLink: false } }))
+  on('fs.read', () => ({ value: text }))
+  on('clock.every', () => ({ value: undefined }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  const start = () => $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'desktop', isInteractive: true })
+  await start()
+  const ERR = /^Durum dosyası okunamadı: ./
+  for (const surface of ['desktop', 'terminal'] as const) {
+    text = DETAIL
+    mtime += 1
+    await start()
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await ui.press({ key: 'detail-t1' })
+    // Read fine: no error line in the detail.
+    expect(textNode(await drawnOf(ui), ERR)).toBeUndefined()
+    await ui.unmount()
+
+    text = '{ bozuk'
+    mtime += 1
+    await start()
+    const bad = await $.ui.mount({ ...PANE, surface })
+    const root = await drawnOf(bad)
+    expect(textNode(root, ERR)?.props?.color).toBe('error')
+    // The detail itself is unchanged: still open, with its title and rounds from the last good read.
+    expect(keyed(root, 'detail-back')).toBeDefined()
+    expect(textNode(root, /^Seçim kutusu taşması$/)).toBeDefined()
+    expect(textNode(root, /^Tur 2 · GO/)).toBeDefined()
+    await bad.press({ key: 'detail-back' })
+    await bad.unmount()
+  }
+})
+
+test('criterion 2: a round with n 0, missing or invalid gets its position (j+1), "Tur 0" is never drawn', async ($, on) => {
+  const rounds = [{ n: 0, verdict: 'GO' }, { verdict: 'GO' }, { n: 5, verdict: 'GO' }, { n: -1, verdict: 'GO' }, { n: 'x', verdict: 'NO-GO' }]
+  const text = detailStatus({ rounds })
+  expect(parseStatus(text).tasks[0]?.rounds?.map(r => r.n)).toEqual([1, 2, 5, 4, 5])
+  await boot($, on, detailStatus({ rounds: [{ n: 0, verdict: 'GO' }] }))
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await ui.press({ key: 'detail-t1' })
+    const root = await drawnOf(ui)
+    expect(textNode(root, /Tur 0/)).toBeUndefined()
+    expect(textNode(root, /^Tur 1 · GO$/)).toBeDefined()
+    if (surface === 'desktop') expect(textNode(root, /^GO · 1 tur$/)).toBeDefined()
+    await ui.press({ key: 'detail-back' })
+    await ui.unmount()
+  }
+})
+
+test('criterion 3: above 10 findings keep 10, BLOCKING (any case) first; at most 10 stay in file order', async () => {
+  const whats = (findings: unknown[]) => parseStatus(detailStatus({ rounds: [{ n: 1, verdict: 'GO', findings }] })).tasks[0]?.rounds?.[0]?.findings.map(f => f.what)
+  const f = (i: number, severity?: string) => ({ what: `f${i}`, severity })
+  // 12 findings: BLOCKING at positions 10 (upper case) and 11 (lower case) are kept, the last two non-blocking (f8, f9) drop.
+  const mixed = [...Array.from({ length: 10 }, (_, i) => f(i, 'LOW')), f(10, 'BLOCKING'), f(11, 'blocking')]
+  expect(whats(mixed)).toEqual(['f10', 'f11', 'f0', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7'])
+  // Interleaved: blocking first, then the rest in file order.
+  const inter = [f(0, 'LOW'), f(1, 'BLOCKING'), f(2), f(3, 'LOW'), f(4, 'Blocking'), ...Array.from({ length: 7 }, (_, i) => f(i + 5, 'LOW'))]
+  expect(whats(inter)).toEqual(['f1', 'f4', 'f0', 'f2', 'f3', 'f5', 'f6', 'f7', 'f8', 'f9'])
+  // 11 non-blocking: the first 10 in file order; 12 blocking: the first 10 in file order.
+  expect(whats(Array.from({ length: 11 }, (_, i) => f(i, 'LOW')))).toEqual(Array.from({ length: 10 }, (_, i) => `f${i}`))
+  expect(whats(Array.from({ length: 12 }, (_, i) => f(i, 'BLOCKING')))).toEqual(Array.from({ length: 10 }, (_, i) => `f${i}`))
+  // 10 or fewer: nothing is dropped, file order kept.
+  expect(whats([f(0, 'LOW'), f(1, 'BLOCKING')])).toEqual(['f0', 'f1'])
+})
+
+test('criterion 4: a finding without severity and origin draws the "what" line first, desktop and terminal', async ($, on) => {
+  await boot($, on, detailStatus({ rounds: [{ n: 1, verdict: 'GO', findings: [{ what: 'Yalnız ne', where: 'a.ts:1' }, { severity: 'LOW', what: 'Etiketli' }, { origin: 'introduced', what: 'Kökenli' }] }] }))
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await ui.press({ key: 'detail-t1' })
+    const root = await drawnOf(ui)
+    expect((keyed(root, 'round-0-f-0').children as Node[]).map(textOf)).toEqual(['Yalnız ne', 'a.ts:1'])
+    expect((keyed(root, 'round-0-f-1').children as Node[]).map(textOf)).toEqual(['LOW', 'Etiketli'])
+    expect((keyed(root, 'round-0-f-2').children as Node[]).map(textOf)).toEqual(['introduced', 'Kökenli'])
+    await ui.press({ key: 'detail-back' })
+    await ui.unmount()
+  }
+})
+
+test('criterion 5: summary() names a running role only from running tasks, not from a blocked one', async () => {
+  const sum = (tasks: unknown[], decisions: unknown[] = []) => summary(parseStatus(JSON.stringify({ v: 1, tasks, decisions })))
+  const qa = { name: 'QA · GPT-6 Astra', state: 'inceliyor', status: 'running' }
+  // Blocked by a role: its running role is not shown.
+  expect(sum([task({ roles: [run, stuck] })])).toBe('1 görev')
+  // Blocked by a "Takıldı" decision: the decision count shows, the running role does not.
+  expect(sum([task({ roles: [run] })], [ask('Takıldı')])).toBe('1 karar bekliyor · 1 görev')
+  // The running role of the next, running task is the one named.
+  expect(sum([task({ roles: [run, stuck] }), task({ id: 't2', roles: [qa] })])).toBe('QA inceliyor · 2 görev')
+  // Unchanged for a running task.
+  expect(sum([task({ roles: [run] })])).toBe('Developer yazıyor · 1 görev')
+})
+
+test('criterion 6: a task without an id gets a generated id, but no decision links to it', async () => {
+  const text = JSON.stringify({
+    v: 1,
+    decisions: [ask('Takıldı · Developer', 't1')],
+    tasks: [{ title: 'Kimliksiz', stage: 'build', roles: [run] }],
+  })
+  const s = parseStatus(text)
+  expect(s.tasks[0]?.id).toBe('t1')
+  expect([s.tasks[0]?.state, s.tasks[0]?.reason]).toEqual(['running', undefined])
+  expect(decisionTask(s.decisions[0]!, s.tasks)).toEqual({ kind: 'Takıldı · Developer', blocked: false })
+  // A written id links as before.
+  const w = parseStatus(JSON.stringify({ v: 1, decisions: [ask('Takıldı · Developer', 't1')], tasks: [{ id: 't1', title: 'Kimlikli', stage: 'build', roles: [run] }] }))
+  expect([w.tasks[0]?.state, w.tasks[0]?.reason]).toEqual(['blocked', 'senden 1 karar bekliyor'])
+  expect(decisionTask(w.decisions[0]!, w.tasks)).toEqual({ kind: 'Takıldı · Developer · Kimlikli', blocked: true })
+})
+
+test('criterion 7: a decision kind starting with takıldı or takildi in any letter case blocks the task', async () => {
+  for (const kind of ['Takildi', 'TAKILDI', 'TAKİLDİ', 'takildi · Developer', ' TAKİLDİ', 'Takıldı', 'takıldı']) {
+    expect(stateOf([task({ roles: [run] })], [ask(kind)])).toEqual(['blocked', 'senden 1 karar bekliyor'])
+  }
+  for (const kind of ['Bu takildi mı', 'Takilmis', 'Ürün kararı']) expect(stateOf([task({ roles: [run] })], [ask(kind)])[0]).toBe('running')
+})
+
+test('criterion 8: "Henüz review turu yok." is not drawn for a task that has rounds (terminal; the desktop has no such line)', async ($, on) => {
+  await boot($, on, DETAIL)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await ui.press({ key: 'detail-t1' })
+    const root = await drawnOf(ui)
+    expect(textNode(root, /Tur 1/)).toBeDefined()
+    expect(textNode(root, /Henüz review turu yok/)).toBeUndefined()
+    await ui.press({ key: 'detail-back' })
+    await ui.unmount()
+  }
 })

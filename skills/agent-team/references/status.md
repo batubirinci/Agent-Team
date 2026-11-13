@@ -74,7 +74,8 @@ Fields:
   button labels, the first drawn as the main action; a press sends the Lead
   `Karar (<id>): <option>`. A push approval is `kind: "Push onayı"` with
   `options: ["Onayla", "Reddet"]` and the branch and short SHA in `meta`.
-- `tasks`: every task not yet reported (Flow 5). `stage` is one of `spec`, `build`, `review`,
+- `tasks`: every task not yet reported (Flow 5). Write each task's `id`: a task without one still
+  draws (the pane makes up an id), but no decision can link to it. `stage` is one of `spec`, `build`, `review`,
   `revise`, `report`. `round` is the review round (omit before the first review). `candidate` is
   the full SHA copied from Git (the pane shortens it); `blocking` / `followup` count open findings
   by disposition. `roles` lists the roles working on the task now or last: `status` is one of
@@ -84,8 +85,9 @@ Fields:
   write it for a task waiting on another task or on something outside the team.
 - Task state (the pane derives it; never written to the file), precedence blocked > running > waiting:
   - `blocked`: any role has `status: "blocked"`, or any open decision with `task` = this task's id has
-    a `kind` that, trimmed and lowercased with Turkish rules, starts with `takıldı` (so
-    `Takıldı · Developer`, `takıldı`, `TAKILDI` and ` Takıldı` all match);
+    a `kind` that, trimmed and lowercased with Turkish rules, starts with `takıldı` or `takildi`
+    (both spellings count, any letter case: `Takıldı · Developer`, `takıldı`, `TAKILDI`, ` Takıldı`,
+    `Takildi`, `TAKİLDİ` all match);
   - else `running`: any role has `status: "running"`;
   - else `waiting` (also a task with no roles).
   The pane shows the state on every task (a chip on the desktop, a `◐ çalışıyor` / `✗ TAKILDI` /
@@ -96,9 +98,9 @@ Fields:
   `çalışıyor` is always shown.
 - `rounds` (optional, the task's detail view): one entry per review round, oldest first; the pane keeps the last 10 and
   reads the header's round count from the last round's `n` (so write `n` as the true round number):
-  `n`, `verdict` (`GO` or `NO-GO`), `candidate` (full SHA of that round), `note` (the Lead's note,
-  e.g. same family twice, so a mechanism change), `findings` (at most 10 per round): `severity`
-  (`BLOCKING`, `LOW`, ...), `origin` (`introduced` or `pre-existing`), `what`, `where` (`file:line`).
+  `n` (a round with `n` 0, missing or invalid is shown by its position, 1 for the first), `verdict` (`GO` or `NO-GO`), `candidate` (full SHA of that round), `note` (the Lead's note,
+  e.g. same family twice, so a mechanism change), `findings` (at most 10 per round; over 10 the pane keeps the
+  `BLOCKING` ones first, any case, then the rest in file order): `severity` (`BLOCKING`, `LOW`, ...), `origin` (`introduced` or `pre-existing`), `what`, `where` (`file:line`).
   A round without `verdict` and a finding without `what` are dropped.
 - `evidence` (optional, at most 6): `label` and an absolute `path` of a report; both are required.
   The pane shows the path as text. Long texts are cut (a finding 300 characters, a note 400).
