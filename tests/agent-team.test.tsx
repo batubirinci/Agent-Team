@@ -484,3 +484,98 @@ test('with more than 10 rounds the last 10 are kept and the header reads the tru
   expect(await ui.find({ type: 'Text', text: /^Tur 2 · GO$/ })).toBeUndefined()
   await ui.unmount()
 })
+
+test('the status file is per session: <project>--<first 8 of the session id>.json, the same path goes to the Lead, no id falls back to <project>.json', async ($, on) => {
+  // Source: criteria 1-2 of the status-per-session task (owner request 2026-11-13).
+  let id: string | Error = 'abcdef12-3456-7890-abcd-ef1234567890'
+  const checked: string[] = []
+  const sent: (readonly string[] | undefined)[] = []
+  const appended: string[] = []
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.close', () => ({ value: undefined }))
+  on('env.get', () => ({ value: '/Users/x' }))
+  on('session.id', () => {
+    if (id instanceof Error) throw id
+    return { value: id }
+  })
+  on('fs.exists', (_, e) => {
+    checked.push(e.path)
+    return { value: false }
+  })
+  on('clock.every', () => ({ value: undefined }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.append', (_, e, next) => {
+    const block = e.message.content[0]
+    appended.push(block && 'text' in block ? String(block.text) : '')
+    return next(e)
+  })
+  on('prompt.submit', (_, e) => {
+    sent.push(e.context)
+    return { text: e.text }
+  })
+  const start = () => $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'desktop', isInteractive: true })
+  const ROOT = '/Users/x/agent-team-evidence/status'
+
+  await start()
+  expect(checked.at(-1)).toBe(`${ROOT}/shop--abcdef12.json`)
+  // Two sessions in one folder read two files; the same session again (a reload) reads the same one.
+  id = '99999999-0000-4000-8000-000000000000'
+  await start()
+  expect(checked.at(-1)).toBe(`${ROOT}/shop--99999999.json`)
+  id = 'abcdef12-3456-7890-abcd-ef1234567890'
+  await start()
+  expect(checked.at(-1)).toBe(`${ROOT}/shop--abcdef12.json`)
+
+  // The Lead is given the path the pane reads: in the mode-on row and in every prompt's context.
+  const foot = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
+  await foot.press({ key: 'team-mode' })
+  await foot.unmount()
+  await $.prompt.submit({ wait: false, origin: { kind: 'composer' }, text: 'merhaba' })
+  expect(appended[0]).toContain(`${ROOT}/shop--abcdef12.json `)
+  expect(sent[0]?.some(c => c.includes(`${ROOT}/shop--abcdef12.json `))).toBe(true)
+
+  // No usable id (the call fails, or answers empty): today's <project>.json.
+  id = new Error('no id')
+  await start()
+  expect(checked.at(-1)).toBe(`${ROOT}/shop.json`)
+  id = ''
+  await start()
+  expect(checked.at(-1)).toBe(`${ROOT}/shop.json`)
+})
+
+test('deleting the status file closes the open detail, and the same task id coming back shows the list', async ($, on) => {
+  // Source: criterion 4a of the status-per-session task (QA follow-up task-detail r2): one check clears the open detail.
+  let exists = true
+  let mtime = 1
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('env.get', () => ({ value: '/Users/x' }))
+  on('session.id', () => ({ value: 'abcdef12-3456' }))
+  on('fs.exists', () => ({ value: exists }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: mtime, isLink: false } }))
+  on('fs.read', () => ({ value: detailStatus({}) }))
+  on('clock.every', () => ({ value: undefined }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  const start = () => $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'desktop', isInteractive: true })
+  await start()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'detail-t1' })
+  expect(await ui.find({ key: 'detail-back' })).toBeDefined()
+  await ui.unmount()
+
+  exists = false
+  await start()
+  const gone = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await gone.find({ key: 'detail-back' })).toBeUndefined()
+  await gone.unmount()
+
+  exists = true
+  mtime = 2
+  await start()
+  const back = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await back.find({ key: 'detail-back' })).toBeUndefined()
+  expect(await back.find({ key: 't-t1' })).toBeDefined()
+  await back.unmount()
+})

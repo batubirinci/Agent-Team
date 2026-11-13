@@ -152,8 +152,8 @@ unverified premise is marked so.
 - **Status record:** keep a short status record current (state, SHAs, open items, first decision,
   next steps, last-update time) so "ne durumda?" is answered from it and a move to a fresh chat
   costs one note; update the project's task panel file too when it has one. Read agent reports and
-  Codex `final.md` files, not raw logs. Mirror it in the pane's status file
-  (`references/status.md`) at every change the owner would want to see: a task starts or changes
+  Codex `final.md` files, not raw logs. Mirror it in the pane's status file, at the path the plugin gives
+  (team-mode message or per-prompt context; `references/status.md`), at every change the owner would want to see: a task starts or changes
   stage, a role starts, finishes or blocks, a verdict lands, a decision opens or closes, Pause.
   The Lead also mirrors each round's verdict, findings and the evidence paths into the status file.
 - **Evidence lives outside the scratchpad.** The session scratchpad can be deleted when the chat
