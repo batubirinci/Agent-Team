@@ -5,6 +5,8 @@ export const MUTED = '#8A8880'
 export const CLAY = '#D97757'
 export const OK = '#4E9A47'
 export const BAD = '#D9534F'
+// The current stage part of a blocked task (the approved design's red).
+export const STUCK = '#E06C6C'
 
 const H = 4
 const n = (x: number) => Math.round(x * 100) / 100
@@ -24,12 +26,12 @@ export function meterSvg(pct: number): string {
 export const dotSvg = (color: string) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="4" fill="${color}"/></svg>`
 
-export function stagesSvg(current: number, count = 5): string {
+export function stagesSvg(current: number, count = 5, blocked = false): string {
   const w = 320
   const gap = 4
   const seg = (w - gap * (count - 1)) / count
   const parts = Array.from({ length: count }, (_, i) =>
-    rect(i * (seg + gap), seg, i < current ? MUTED : i === current ? CLAY : TRACK),
+    rect(i * (seg + gap), seg, i < current ? MUTED : i === current ? (blocked ? STUCK : CLAY) : TRACK),
   )
   return svg(w, parts.join(''))
 }

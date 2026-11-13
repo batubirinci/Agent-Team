@@ -10,6 +10,9 @@ export type Round = { n: number; verdict: string; candidate?: string; note?: str
 
 export type Evidence = { label: string; path: string }
 
+// Derived by the parser, never read from the file: blocked > running > waiting.
+export type TaskState = 'running' | 'blocked' | 'waiting'
+
 export type Task = {
   id: string
   title: string
@@ -19,6 +22,9 @@ export type Task = {
   candidate?: string
   blocking?: number
   followup?: number
+  wait?: string
+  state: TaskState
+  reason?: string
   roles: Role[]
   rounds?: Round[]
   evidence?: Evidence[]
@@ -29,6 +35,7 @@ export type Decision = {
   kind?: string
   text: string
   meta?: string
+  task?: string
   options: string[]
 }
 

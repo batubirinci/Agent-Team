@@ -24,6 +24,7 @@ every few seconds; a field it does not know is ignored, a missing optional field
       "kind": "Ürün kararı",
       "text": "Seçim kutusu iki nesneye taşıyorsa hangisi sayılsın?",
       "meta": "Analyst · 3 durum, gerçek yakalamalarla",
+      "task": "t1",
       "options": ["Durumları gör", "Sonra"]
     }
   ],
@@ -73,6 +74,20 @@ Fields:
   by disposition. `roles` lists the roles working on the task now or last: `status` is one of
   `running`, `done`, `waiting`, `blocked`, `idle`; `state` is the short Turkish word the owner
   reads (`inceliyor`, `teslim etti`, `sırada`, `BLOCKED · <why>`).
+- `wait` (optional, short, cut at 120 characters): why the task waits (`t2 bitmeden başlamaz`);
+  write it for a task waiting on another task or on something outside the team.
+- Task state (the pane derives it; never written to the file), precedence blocked > running > waiting:
+  - `blocked`: any role has `status: "blocked"`, or any open decision with `task` = this task's id has
+    a `kind` that, trimmed and lowercased with Turkish rules, starts with `takıldı` (so
+    `Takıldı · Developer`, `takıldı`, `TAKILDI` and ` Takıldı` all match);
+  - else `running`: any role has `status: "running"`;
+  - else `waiting` (also a task with no roles).
+  The pane shows the state on every task (a chip on the desktop, a `◐ çalışıyor` / `✗ TAKILDI` /
+  `⏸ bekliyor` line in the terminal) and a reason line: blocked, `senden <n> karar bekliyor` when
+  `n` > 0 decisions link to the task (any kind), else the first blocked role's `state`; waiting,
+  `wait` if given, else none; running, none (`wait` if given). The task section's header counts the
+  states: `<r> çalışıyor · <b> takıldı · <w> bekliyor`; `takıldı` and `bekliyor` are left out at zero,
+  `çalışıyor` is always shown.
 - `rounds` (optional, the task's detail view): one entry per review round, oldest first; the pane keeps the last 10 and
   reads the header's round count from the last round's `n` (so write `n` as the true round number):
   `n`, `verdict` (`GO` or `NO-GO`), `candidate` (full SHA of that round), `note` (the Lead's note,

@@ -1,4 +1,4 @@
-import type { Decision, Evidence, Role, Round, RoleStatus, Status, Task } from '../types'
+import type { Decision, Evidence, Role, Round, RoleStatus, Status, Task, TaskState } from '../types'
 
 export const STAGES = ['spec', 'build', 'review', 'revise', 'report'] as const
 export const STAGE_LABELS = ['Spec', 'Build', 'Review', 'Revise', 'Rapor'] as const
@@ -23,7 +23,7 @@ export function parseStatus(text: string): Status {
     const t = str(d.text)
     if (!t) return []
     const options = Array.isArray(d.options) ? d.options.filter((o): o is string => !!str(o)).slice(0, 4) : []
-    return [{ id: str(d.id) ?? `d${i + 1}`, kind: str(d.kind), text: t, meta: str(d.meta), options }]
+    return [{ id: str(d.id) ?? `d${i + 1}`, kind: str(d.kind), text: t, meta: str(d.meta), task: str(d.task), options }]
   })
 
   const tasks: Task[] = list(raw.tasks).flatMap((t, i) => {
@@ -54,8 +54,16 @@ export function parseStatus(text: string): Status {
         return label && path ? [{ label, path }] : []
       })
       .slice(0, 6)
+    const id = str(t.id) ?? `t${i + 1}`
+    const wait = short(t.wait, 120)
+    const asked = decisions.filter(d => d.task === id)
+    const blocked = roles.find(r => r.status === 'blocked')
+    const state: TaskState =
+      blocked || asked.some(d => d.kind?.trim().toLocaleLowerCase('tr').startsWith('takıldı')) ? 'blocked' : roles.some(r => r.status === 'running') ? 'running' : 'waiting'
+    const reason =
+      state === 'blocked' ? (asked.length ? `senden ${asked.length} karar bekliyor` : blocked?.state || undefined) : wait
     return [{
-      id: str(t.id) ?? `t${i + 1}`,
+      id,
       title,
       branch: str(t.branch),
       stage: stage < 0 ? 0 : stage,
@@ -63,6 +71,9 @@ export function parseStatus(text: string): Status {
       candidate: str(t.candidate),
       blocking: num(t.blocking),
       followup: num(t.followup),
+      wait,
+      state,
+      reason,
       roles,
       ...(rounds.length > 0 && { rounds }),
       ...(evidence.length > 0 && { evidence }),
@@ -106,4 +117,16 @@ export function summary(s: Status | null): string {
   if (running[0]) parts.push(running[0])
   parts.push(`${s.tasks.length} görev`)
   return parts.join(' · ')
+}
+
+export const countStates = (tasks: readonly Task[]) => ({
+  running: tasks.filter(t => t.state === 'running').length,
+  blocked: tasks.filter(t => t.state === 'blocked').length,
+  waiting: tasks.filter(t => t.state === 'waiting').length,
+})
+
+// The task a decision names (if it is in the file): its title joins the kind line, a blocked one draws the card in error.
+export function decisionTask(d: Decision, tasks: readonly Task[]) {
+  const t = d.task ? tasks.find(x => x.id === d.task) : undefined
+  return { kind: [d.kind, t?.title].filter(Boolean).join(' · ') || undefined, blocked: t?.state === 'blocked' }
 }

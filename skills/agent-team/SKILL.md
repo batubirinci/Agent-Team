@@ -156,6 +156,9 @@ unverified premise is marked so.
   (team-mode message or per-prompt context; `references/status.md`), at every change the owner would want to see: a task starts or changes
   stage, a role starts, finishes or blocks, a verdict lands, a decision opens or closes, Pause.
   The Lead also mirrors each round's verdict, findings and the evidence paths into the status file.
+  Every request to the owner (a question, or an action only the owner can take) is written at once as a
+  decision in the status file (`kind` e.g. `Takıldı` or `Ürün kararı`, `task` = the task it concerns,
+  `options` = the choices) and removed when answered; a task that waits on another gets `wait`.
 - **Evidence lives outside the scratchpad.** The session scratchpad can be deleted when the chat
   changes; worktrees may live there, but evidence, reports and gate logs go to the persistent
   evidence root named in the Lead's memory (`<evidence root>/<candidate SHA>/`), and every
