@@ -554,13 +554,13 @@ const ID_OLD = '66b9491d-0000-4000-8000-000000000000'
 const ID_NEW = 'dc57ef03-0000-4000-8000-000000000000'
 const KEY_OLD = `session:${ID_OLD}`
 const KEY_NEW = `session:${ID_NEW}`
-const NOW = Date.parse('2026-11-13T12:00:00.000Z')
-const DAY = 86_400_000
+const CLEAR_NOW = Date.parse('2026-11-13T12:00:00.000Z')
+const CLEAR_DAY = 86_400_000
 const SWITCH = { isOn: true, source: 'switch' } as const
 const FOLDER = { isOn: true, source: 'folder' } as const
 const OFF = { isOn: false, source: 'off' } as const
 // A store record as the task defines it: { file, mode, at (ISO time), announced? }.
-const rec = (file: string, mode: object, extra: object = {}, ms = NOW) => ({ file, mode, at: new Date(ms).toISOString(), ...extra })
+const rec = (file: string, mode: object, extra: object = {}, ms = CLEAR_NOW) => ({ file, mode, at: new Date(ms).toISOString(), ...extra })
 // The sentence leadText gains (criterion 9), spelled out by hand.
 const LEAD_RULE = 'Dosyada bu oturumdan kalma görevler ve kararlar olabilir: yazmadan önce oku, bitirmediklerini koru, yalnız değişeni güncelle.'
 const POLL = 3000
@@ -570,14 +570,17 @@ const FOLDERS = { options: { teamFolders: '/' } }
 // One session.start with a fake disk (`present` paths), a fake store and clock; reports what the pane read and what the Lead was told.
 const continuity = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], entries: Record<string, unknown> = {}) => {
   const present = new Set<string>()
-  const state = { id: ID_OLD, messagesCalls: 0 }
+  const state = { id: ID_OLD, messagesCalls: 0, storeFails: false }
   const read: string[] = []
   const appended: string[] = []
   const sent: (readonly string[] | undefined)[] = []
-  const clock = mock.clock(on, { now: NOW })
+  const clock = mock.clock(on, { now: CLEAR_NOW })
   // The test owns the plugin's store and its atoms (the engine's `$` has neither noun): a Map each, so a test reads them and /clear wipes the atoms.
   const store = new Map<string, unknown>(Object.entries(entries))
-  on('store.get', (_, e) => ({ value: store.get(e.key) }))
+  on('store.get', (_, e) => {
+    if (state.storeFails) throw new Error('store down')
+    return { value: store.get(e.key) }
+  })
   on('store.set', (_, e) => {
     store.set(e.key, JSON.parse(JSON.stringify(e.value)))
     return { value: undefined }
@@ -643,13 +646,17 @@ const continuity = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1
   const fileNow = () => (atoms.get('agent-team/status')?.value as { value: { file: string } } | undefined)?.value.file
   // What /clear does, as measured (log:12-13, 33-34): a new id, no session.start, every atom back to nothing (its default here);
   // then one poll of the live module.
-  const clear = async (id: string) => {
+  const wipe = (id: string) => {
     state.id = id
     atoms.clear()
+  }
+  const clear = async (id: string) => {
+    wipe(id)
     await clock.advance(POLL)
   }
+  const teamCommand = () => $.command.run({ command: 'team', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
   const recordOf = (id: string) => store.get(`session:${id}`)
-  return { store, present, state, read, appended, start, team, leadSees, paneTitle, modeNow, fileNow, clear, recordOf, clock }
+  return { store, wipe, teamCommand, present, state, read, appended, start, team, leadSees, paneTitle, modeNow, fileNow, clear, recordOf, clock }
 }
 
 test('criterion 1: after /clear a switch-mode session is on again within one poll, on the same file; the store holds the record under the new id', async ($, on) => {
@@ -663,7 +670,7 @@ test('criterion 1: after /clear a switch-mode session is on again within one pol
   expect(c.fileNow()).toBe(OLD)
   expect(c.read.at(-1)).toBe(OLD)
   expect(await c.paneTitle()).toBeDefined()
-  expect(await c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }, NOW + POLL))
+  expect(await c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }, CLEAR_NOW + POLL))
   const seen = await c.leadSees()
   expect(seen.context).toContain(`${OLD} `)
   expect(seen.context).not.toContain(NEW)
@@ -680,9 +687,58 @@ test('criterion 1: after /clear a folder-mode session is on again on the same fi
   await c.clear(ID_NEW)
   expect(c.modeNow()).toEqual(FOLDER)
   expect(c.fileNow()).toBe(OLD)
-  expect(await c.recordOf(ID_NEW)).toEqual(rec(OLD, FOLDER, { announced: OLD }, NOW + POLL))
+  expect(await c.recordOf(ID_NEW)).toEqual(rec(OLD, FOLDER, { announced: OLD }, CLEAR_NOW + POLL))
   expect(c.appended).toHaveLength(1) // /clear writes no second row: every prompt carries the path
   expect((await c.leadSees()).context).toContain(`${OLD} `)
+})
+
+test('round 2: after /clear, before any poll, the first prompt already carries leadText with the old file (switch and folder)', async ($, on) => {
+  // Source: the Lead's round-2 item 2 (the window of up to one poll after /clear must not show the reset atoms to a prompt).
+  const c = await continuity($, on)
+  c.present.add(OLD)
+  await c.start()
+  await c.team()
+  c.wipe(ID_NEW) // /clear: new id, atoms reset; the clock does not move, so no poll has run
+  const seen = await c.leadSees()
+  expect(seen.context).toContain(`${OLD} `)
+  expect(seen.context).toContain(LEAD_RULE)
+  expect(c.modeNow()).toEqual(SWITCH)
+  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }))
+})
+
+test('round 2: the same in a team folder: the first prompt after /clear, before any poll, carries leadText', FOLDERS, async ($, on) => {
+  const c = await continuity($, on)
+  await c.start()
+  c.wipe(ID_NEW)
+  const seen = await c.leadSees()
+  expect(seen.context).toContain(`${OLD} `)
+  expect(c.modeNow()).toEqual(FOLDER)
+})
+
+test('round 2: /team right after /clear, before any poll, toggles the restored mode (on to off), not the reset one', async ($, on) => {
+  const c = await continuity($, on)
+  c.present.add(OLD)
+  await c.start()
+  await c.team()
+  c.wipe(ID_NEW)
+  expect((await c.teamCommand()).text).toBe('Agent Team kapandı.') // it was on: a reset atom would have answered "açık"
+  expect(c.modeNow()).toEqual(OFF)
+  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, OFF, {})) // the file is the old one, not ''
+  expect((await c.leadSees()).context).toBe('') // off: nothing added
+})
+
+test('round 2: a store that fails cannot stop the prompt; the carry is tried again at the next prompt', async ($, on) => {
+  const c = await continuity($, on)
+  c.present.add(OLD)
+  await c.start()
+  await c.team()
+  c.wipe(ID_NEW)
+  c.state.storeFails = true
+  expect((await c.leadSees()).context).toBe('') // the prompt goes through; the atoms are still reset
+  expect(c.modeNow()).toEqual(OFF)
+  c.state.storeFails = false
+  expect((await c.leadSees()).context).toContain(`${OLD} `) // the failed carry was not counted as done
+  expect(c.modeNow()).toEqual(SWITCH)
 })
 
 test('criterion 1: a session switched off before /clear stays off; a session that was never a team session leaves no record', async ($, on) => {
@@ -693,7 +749,7 @@ test('criterion 1: a session switched off before /clear stays off; a session tha
   expect([...c.store.keys()]).toEqual([])
   await c.team()
   await c.team() // on, then off again
-  expect(await c.recordOf(ID_NEW)).toEqual(rec(OLD, OFF, {}, NOW + POLL))
+  expect(await c.recordOf(ID_NEW)).toEqual(rec(OLD, OFF, {}, CLEAR_NOW + POLL))
   await c.clear('99999999-0000-4000-8000-000000000000')
   expect(c.modeNow()).toEqual(OFF)
 })
@@ -814,11 +870,11 @@ test('criterion 7: mode off writes no row, start after start', async ($, on) => 
 
 test('criterion 8: at session.start only records older than 30 days go; the session\'s own record is kept and refreshed', async ($, on) => {
   const c = await continuity($, on, {
-    'session:stale': rec(OLD, SWITCH, {}, NOW - 31 * DAY),
-    'session:fresh': rec(OLD, SWITCH, {}, NOW - 29 * DAY),
+    'session:stale': rec(OLD, SWITCH, {}, CLEAR_NOW - 31 * CLEAR_DAY),
+    'session:fresh': rec(OLD, SWITCH, {}, CLEAR_NOW - 29 * CLEAR_DAY),
     'session:junk': 'not a record',
-    other: rec(OLD, SWITCH, {}, NOW - 99 * DAY),
-    [KEY_OLD]: rec(OLD, SWITCH, { announced: OLD }, NOW - 40 * DAY),
+    other: rec(OLD, SWITCH, {}, CLEAR_NOW - 99 * CLEAR_DAY),
+    [KEY_OLD]: rec(OLD, SWITCH, { announced: OLD }, CLEAR_NOW - 40 * CLEAR_DAY),
   })
   c.present.add(OLD)
   await c.start()

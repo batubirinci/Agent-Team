@@ -177,6 +177,29 @@ async function sweep($: EngineInterface) {
   }
 }
 
+// /clear: a new id, no session.start, every atom reset. `follow` sees the id change, carries the record over to the new
+// id and puts the mode and the path back; the poll, a prompt and /team all run it before they read the atoms.
+// `followed` is what session.start settled on: the status folder, the file it reads, the last session id seen.
+const followed = { dir: '', file: '', last: '' }
+
+async function follow($: EngineInterface) {
+  const { dir, file, last: was } = followed
+  if (!dir) return
+  // Nothing in here may throw out: it runs in the poll, in prompt.submit and in a command.
+  try {
+    const id = String(await $.session.id().catch(() => ''))
+    if (!id || id === was) return
+    followed.last = id
+    const old = was ? parseRecord(await $.store.get(`session:${was}`), dir) : undefined
+    if (!old) return
+    await save($, id, old)
+    if (old.mode.isOn) await update($, mode, () => old.mode)
+    await refresh($, file)
+  } catch {
+    followed.last = was
+  }
+}
+
 async function setMode($: EngineInterface, isOn: boolean) {
   const was = await read($, mode)
   if (was.isOn === isOn) return
@@ -197,9 +220,6 @@ async function setMode($: EngineInterface, isOn: boolean) {
 }
 
 export const register: Register = (on, options) => {
-  // Set by session.start (it holds the status folder and the last id seen); until then there is nothing to follow.
-  let follow = async (_: EngineInterface) => {}
-
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'team', description: 'Agent Team modunu aç ya da kapat' })
     await $.command.register({ name: 'team-pane', description: "Agent Team pane'ini aç" })
@@ -216,31 +236,7 @@ export const register: Register = (on, options) => {
     let file = ''
     for (const old of [(await read($, status)).file, rec?.file]) if (!file && old && (await $.fs.exists(old))) file = old
     if (!file) file = `${dir}/${baseName(e.cwd)}${sid ? `--${sid.slice(0, 8)}` : ''}.json`
-    // /clear: a new id, no session.start, every atom reset. `follow` sees the id change, carries the record over to the
-    // new id and puts the mode and the path back: the poll, a prompt and /team all run it before they read the atoms.
-    let last = sid
-    follow = async $ => {
-      // Nothing in here may throw out: it runs in the poll, in prompt.submit and in a command.
-      const was = last
-      try {
-        const id = String(await $.session.id().catch(() => ''))
-        if (!id || id === was) return
-        last = id
-        const old = was ? parseRecord(await $.store.get(`session:${was}`), dir) : undefined
-        if (!old) return
-        await save($, id, old)
-        if (old.mode.isOn) await update($, mode, () => old.mode)
-        await refresh($, file)
-      } catch {
-        last = was
-      }
-    }
-    const seen: Seen = new Map()
-    // Independent: one failing stops neither the other nor the clock.
-    const poll = () => Promise.allSettled([follow($), refresh($, file), scanOthers($, dir, file, seen)])
-    await poll()
-    $.clock.every(POLL_MS, poll)
-
+    Object.assign(followed, { dir, file, last: sid })
     let m = await read($, mode)
     if (!m.isOn) {
       const to: Mode | undefined = isInside(e.cwd, parseFolders(options.teamFolders, home)) ? { isOn: true, source: 'folder' } : rec?.mode.isOn ? rec.mode : undefined
@@ -257,6 +253,12 @@ export const register: Register = (on, options) => {
       if (m.isOn || rec) await save($, sid, { file, mode: m, announced })
       await sweep($)
     } catch {} // a store that fails must not stop the start
+
+    const seen: Seen = new Map()
+    // Independent: one failing stops neither the other nor the clock.
+    const poll = () => Promise.allSettled([follow($), refresh($, file), scanOthers($, dir, file, seen)])
+    await poll()
+    $.clock.every(POLL_MS, poll)
 
     return next(e)
   })
