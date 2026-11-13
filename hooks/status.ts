@@ -170,22 +170,35 @@ export const otherFiles = (entries: readonly DirEntry[], dir: string, own: strin
 
 const pad2 = (n: number) => String(n).padStart(2, '0')
 
+// The file is untrusted and the result goes in a state atom (4 MiB limit) and on the pane: cut what is drawn.
+const OTHER_KIND = 120
+const OTHER_TEXT = 400
+const OTHER_OPTION = 60
+const OTHER_DECISIONS = 10
+const cut = (x: string, n: number) => (x.length > n ? `${x.slice(0, n - 1)}…` : x)
+
 // One other session from its parsed file, or undefined when it asks nothing. <project>--<id8>.json is "<project> · <id8>",
-// <project>.json is "<project>"; the time is the file's updatedAt, else its mtime (local).
+// <project>.json is "<project>"; the time is the file's updatedAt, else its mtime (local). `count` and `stuckCount` are of ALL
+// the file's decisions, `decisions` keeps the first 10, cut.
 export function otherSession(e: DirEntry, s: Status): Other | undefined {
   if (!s.decisions.length) return undefined
   const base = e.name.replace(/\.json$/, '')
   const m = base.match(/^(.+)--([^-]{8})$/)
   const project = m?.[1] ?? base
   const d = new Date(e.mtimeMs)
+  const all = s.decisions.map(x => ({ x, ...decisionTask(x, s.tasks) }))
   return {
     file: e.name,
     project,
     name: m ? `${project} · ${m[2]}` : project,
     when: clockOf(s.updatedAt) ?? `${pad2(d.getHours())}:${pad2(d.getMinutes())}`,
-    decisions: s.decisions.map(x => {
-      const { kind, blocked } = decisionTask(x, s.tasks)
-      return { id: x.id, kind, text: x.text, options: x.options, stuck: blocked || isStuck(x.kind) }
-    }),
+    count: all.length,
+    stuckCount: all.filter(a => a.blocked || isStuck(a.x.kind)).length,
+    decisions: all.slice(0, OTHER_DECISIONS).map(({ x, kind, blocked }) => ({
+      kind: kind && cut(kind, OTHER_KIND),
+      text: cut(x.text, OTHER_TEXT),
+      options: x.options.map(o => cut(o, OTHER_OPTION)),
+      stuck: blocked || isStuck(x.kind),
+    })),
   }
 }

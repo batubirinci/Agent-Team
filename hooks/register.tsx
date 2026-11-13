@@ -22,7 +22,7 @@ const status = atom(
 // The task whose detail view the pane shows (null: the list). Session state, not in the file.
 const detail = atom({ plugin: 'agent-team', key: 'detail' } as const, null as string | null, { shape: 'detail-1' })
 // Other team sessions' pending decisions (read-only strip) and whether it is open. Session state, starts collapsed.
-const others = atom({ plugin: 'agent-team', key: 'others' } as const, [] as Other[], { shape: 'others-1' })
+const others = atom({ plugin: 'agent-team', key: 'others' } as const, [] as Other[], { shape: 'others-2' })
 const othersOpen = atom({ plugin: 'agent-team', key: 'othersOpen' } as const, false, { shape: 'others-open-1' })
 
 // Raw colors that read on a light and a dark pane alike (a theme key has no card fill).
@@ -146,13 +146,17 @@ async function scanOthers($: EngineInterface, dir: string, own: string, seen: Se
     seen.set(e.name, { size: e.size, mtimeMs: e.mtimeMs, other })
     return other
   }
+  // Nothing in here may throw out: another session's file must not stop this session's poll or start.
   let next: Other[] = []
   try {
     const files = otherFiles(await $.fs.list(dir), dir, own, await $.clock.now())
+    const names = new Set(files.map(f => f.name))
+    for (const name of seen.keys()) if (!names.has(name)) seen.delete(name)
     next = (await Promise.all(files.map(one))).filter((o): o is Other => !!o)
   } catch {}
-  const prev = await read($, others)
-  if (JSON.stringify(prev) !== JSON.stringify(next)) await update($, others, () => next)
+  try {
+    if (JSON.stringify(await read($, others)) !== JSON.stringify(next)) await update($, others, () => next)
+  } catch {}
 }
 
 async function setMode($: EngineInterface, isOn: boolean) {
@@ -194,7 +198,8 @@ export const register: Register = (on, options) => {
       file = `${dir}/${baseName(e.cwd)}${sid ? `--${sid}` : ''}.json`
     }
     const seen: Seen = new Map()
-    const poll = () => Promise.all([refresh($, file), scanOthers($, dir, file, seen)])
+    // Independent: one failing stops neither the other nor the clock.
+    const poll = () => Promise.allSettled([refresh($, file), scanOthers($, dir, file, seen)])
     await poll()
     $.clock.every(POLL_MS, poll)
 
@@ -265,7 +270,7 @@ export const register: Register = (on, options) => {
     const m = await read($, mode)
     const other = await read($, others)
     const otherOpen = await read($, othersOpen)
-    const otherTotal = other.reduce((n, o) => n + o.decisions.length, 0)
+    const otherTotal = other.reduce((n, o) => n + o.count, 0)
     const { file, data, error } = await read($, status)
     const openId = await read($, detail)
     const open = openId ? data?.tasks.find(t => t.id === openId) : undefined
@@ -298,10 +303,9 @@ export const register: Register = (on, options) => {
     }
 
     // Other sessions' decisions, read-only: options are text, nothing here sends or fills (the owner answers in that session).
-    const stuckIn = (o: Other) => o.decisions.filter(d => d.stuck).length
     const toggleOthers = () => void update($, othersOpen, v => !v)
     const othersDesktop = () => {
-      const counts = other.map(o => `${o.project} · ${o.decisions.length} karar${stuckIn(o) ? ` (${stuckIn(o)} takıldı)` : ''}`).join(' · ')
+      const counts = other.map(o => `${o.project} · ${o.count} karar${o.stuckCount ? ` (${o.stuckCount} takıldı)` : ''}`).join(' · ')
       return otherOpen ? (
         <Box flexDirection="column" gap="sm">
           <Box flexDirection="row" alignItems="center" justifyContent="space-between">
@@ -313,7 +317,7 @@ export const register: Register = (on, options) => {
             <Button key="others-toggle" label="Gizle" onPress={toggleOthers} />
           </Box>
           {other.map(o => (
-            <Box key={`other-${o.file}`} {...CARD} borderColor={stuckIn(o) ? BLOCKED_EDGE : CARD.borderColor}>
+            <Box key={`other-${o.file}`} {...CARD} borderColor={o.stuckCount ? BLOCKED_EDGE : CARD.borderColor}>
               <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="sm">
                 <Text weight="semibold" wrap="truncate-end">{o.name}</Text>
                 <Text size="caption" dimColor>{`son yazım ${o.when}`}</Text>
@@ -325,6 +329,7 @@ export const register: Register = (on, options) => {
                   {d.options.length > 0 && <Text size="caption" dimColor>{d.options.join(' · ')}</Text>}
                 </Box>
               ))}
+              {o.count > o.decisions.length && <Text size="caption" dimColor>{`+${o.count - o.decisions.length} karar daha`}</Text>}
             </Box>
           ))}
           <Text size="caption" dimColor>Cevabı o oturumda ver; seçenekler buradan gönderilemez. 24 saattir güncellenmeyen dosyalar sayılmaz.</Text>

@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { decisionTask, isInside, otherFiles, parseFolders, parseStatus, summary } from '../hooks/status'
+import { decisionTask, isInside, otherFiles, otherSession, parseFolders, parseStatus, summary } from '../hooks/status'
 import { CLAY, MUTED, STUCK, TRACK, dotSvg, meterSvg, stagesSvg } from '../hooks/svg'
 
 const fills = (svg: string) => [...svg.matchAll(/<rect [^>]*fill="([^"]+)"/g)].map(m => m[1])
@@ -1598,11 +1598,14 @@ const NS = 'NorthScore--1a2b3c4d.json'
 const DESIGN_LISTING = [entry(BB, { mtimeMs: at(14, 25) }), entry(NS, { mtimeMs: at(13, 5) })]
 const DESIGN_FILES = { [BB]: BBIRINCI, [NS]: NORTH }
 
-type OtherLog = { read?: string[]; say?: string[]; fill?: string[]; appended?: string[]; own?: string | null }
+type OtherLog = { read?: string[]; say?: string[]; fill?: string[]; appended?: string[]; opened?: string[]; ticks?: string[]; refused?: string[]; own?: string | null }
 const bootOthers = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], surface: 'desktop' | 'terminal', listing: Entry[], files: Record<string, string>, log: OtherLog = {}) => {
   const own = log.own === undefined ? OWN : log.own
   on('command.register', (_, e) => ({ value: { command: e.name } }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.open', () => {
+    log.opened?.push('open')
+    return { value: { isPlaced: true } }
+  })
   on('ui.close', () => ({ value: undefined }))
   on('env.get', () => ({ value: '/Users/x' }))
   on('fs.exists', (_, e) => ({ value: own !== null && e.path === OWN_PATH }))
@@ -1619,7 +1622,18 @@ const bootOthers = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1
     return { value: files[name] as string }
   })
   on('clock.now', () => ({ value: NOW }))
-  on('clock.every', () => ({ value: undefined }))
+  on('clock.every', () => {
+    log.ticks?.push('every')
+    return { value: undefined }
+  })
+  if (log.refused)
+    on('state.set', (_, e, next) => {
+      if (e.key === 'others') {
+        log.refused?.push('others')
+        return { deny: 'state.set reddedildi' }
+      }
+      return next(e)
+    })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.append', (_, e, next) => {
     log.appended?.push('row')
@@ -1909,5 +1923,120 @@ test('terminal: zero total draws nothing and the hint has no "v diğer"; own key
   expect(nodesOf(root).some(n => n.props?.key === 'others-toggle')).toBe(false)
   expect(textOf(textNode(root, /^a-o ayrıntı/) as Node)).toBe('a-o ayrıntı  1-9 karar  p pause  esc çık')
   expect(hotkeys(root)).toEqual({ pause: 'p', 'pane-team-on': 'o', 'detail-t1': 'a' })
+  await ui.unmount()
+})
+
+// Round 2 (QA r1: a huge or hostile file of another session must not stop this session's start; what is stored and drawn is bounded).
+// Source: the Lead's round-2 decision: kind 120, text 400, option 60 characters (cut with "…"), 10 decisions kept, counts of ALL decisions,
+// "+<m> karar daha" for the rest. The numbers below are the Lead's, written by hand.
+const decisionsOf = (n: number, over: Record<string, unknown> = {}) => Array.from({ length: n }, (_, i) => ({ id: `d${i}`, kind: 'Soru', text: `Soru ${i}`, options: ['A', 'B'], ...over }))
+
+test('other sessions, caps (round 2): kind 120, text 400, option 60 with …, first 10 kept, the counts are of all', async () => {
+  const e = entry('big--aaaaaaaa.json')
+  const long = (c: string, n: number) => c.repeat(n)
+  const status = parseStatus(
+    JSON.stringify({
+      v: 1,
+      tasks: [{ id: 't1', title: long('T', 200), stage: 'build' }],
+      decisions: [
+        { id: 'a', kind: 'Soru', task: 't1', text: long('x', 1000), options: [long('o', 100), 'kısa', 'b', 'c'] },
+        ...decisionsOf(10, { kind: 'Takıldı' }).map((d, i) => ({ ...d, id: `s${i}` })),
+        { id: 'z', kind: 'Takıldı', text: 'son', options: [] },
+      ],
+    }),
+  )
+  const o = otherSession(e, status)
+  expect(o?.count).toBe(12)
+  expect(o?.stuckCount).toBe(11) // all of them, also the ones past the tenth
+  expect(o?.decisions.length).toBe(10)
+  const first = o?.decisions[0]
+  expect(first?.kind?.length).toBe(120) // "Soru · TTTT…" joined, cut to 120 including the …
+  expect(first?.kind?.endsWith('…')).toBe(true)
+  expect(first?.text).toBe(`${'x'.repeat(399)}…`)
+  expect(first?.options).toEqual([`${'o'.repeat(59)}…`, 'kısa', 'b', 'c'])
+  expect(o?.decisions[1]?.text).toBe('Soru 0') // short values are not touched
+})
+
+test('other sessions, zero decisions are dropped from what is drawn (criterion 1; QA r1 M6)', async ($, on) => {
+  const quiet = JSON.stringify({ v: 1, decisions: [], tasks: [{ id: 't1', title: 'Boş', stage: 'build' }] })
+  const empty = JSON.stringify({ v: 1, decisions: [{ id: 'x', text: '' }] }) // the parser drops the only decision
+  await bootOthers($, on, 'desktop', [...DESIGN_LISTING, entry('quiet--11111111.json'), entry('empty--22222222.json')], { ...DESIGN_FILES, 'quiet--11111111.json': quiet, 'empty--22222222.json': empty })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(textIn(await drawnOf(ui), 'bbirinci · 3 karar (1 takıldı) · NorthScore · 1 karar')).toBe(true)
+  await ui.press({ key: 'others-toggle' })
+  expect(otherBoxes(await drawnOf(ui)).map(b => b.props?.key)).toEqual([`other-${BB}`, `other-${NS}`])
+  await ui.unmount()
+})
+
+// A second start after team mode is on: start must still poll, open the pane and announce the path, whatever the other files hold.
+const restartWith = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], listing: Entry[], files: Record<string, string>, extra: Partial<OtherLog> = {}) => {
+  const log: OtherLog = { appended: [], opened: [], ticks: [], ...extra }
+  const start: Entry[] = []
+  await bootOthers($, on, 'desktop', start, files, log)
+  const foot = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
+  await foot.press({ key: 'team-mode' }) // team mode on
+  await foot.unmount()
+  start.push(...listing)
+  const before = [log.appended?.length, log.opened?.length, log.ticks?.length]
+  await $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'desktop', isInteractive: true })
+  return { log, ran: [log.appended?.length, log.opened?.length, log.ticks?.length].map((n, i) => (n ?? 0) - (before[i] ?? 0)) }
+}
+
+test('other sessions, QA repro (round 2): one small file with a 60 KiB task title and 100 decisions: start completes, total 100, 10 drawn, "+90 karar daha"', async ($, on) => {
+  const bigFile = JSON.stringify({
+    v: 1,
+    tasks: [{ id: 't1', title: 'T'.repeat(60 * 1024), stage: 'build' }],
+    decisions: decisionsOf(100, { task: 't1' }),
+  })
+  const { ran } = await restartWith($, on, [entry('big--aaaaaaaa.json', { size: bigFile.length })], { 'big--aaaaaaaa.json': bigFile })
+  expect(ran).toEqual([1, 1, 1]) // announce row, pane opened, the clock registered: the rest of session.start ran
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const root = await drawnOf(ui)
+  expect(await ui.find({ key: 'detail-t1' })).toBeDefined() // the own pane draws
+  expect(textIn(root, 'Diğer oturumlarda 100 karar bekliyor')).toBe(true)
+  await ui.press({ key: 'others-toggle' })
+  const open = await drawnOf(ui)
+  expect(nodesOf(open).filter(n => String(n.props?.key).startsWith('odec-')).length).toBe(10)
+  expect(textIn(open, '+90 karar daha')).toBe(true)
+  expect(textIn(open, '100 karar')).toBe(true)
+  await ui.unmount()
+})
+
+test('other sessions, 17 files of 255 KiB (round 2): start completes and all 17 are counted', async ($, on) => {
+  const one = JSON.stringify({ v: 1, decisions: [{ id: 'd', text: 'x'.repeat(255 * 1024 - 60), options: [] }] })
+  const listing = Array.from({ length: 17 }, (_, i) => entry(`p${i}--0000000${i % 10}.json`, { size: 255 * 1024, mtimeMs: NOW - 1000 * (i + 1) }))
+  const files = Object.fromEntries(listing.map(e => [e.name, one]))
+  const { ran } = await restartWith($, on, listing, files)
+  expect(ran).toEqual([1, 1, 1])
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(textIn(await drawnOf(ui), 'Diğer oturumlarda 17 karar bekliyor')).toBe(true)
+  await ui.unmount()
+})
+
+test('other sessions, the atom update itself is refused (round 2): start completes, the own pane still draws, no strip', async ($, on) => {
+  const refused: string[] = []
+  const { log, ran } = await restartWith($, on, DESIGN_LISTING, DESIGN_FILES, { refused })
+  expect(refused.length).toBeGreaterThan(0) // the refusal really happened
+  expect(ran).toEqual([1, 1, 1])
+  expect(log.ticks?.length).toBeGreaterThan(0)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ key: 'detail-t1' })).toBeDefined()
+  expect(nodesOf(await drawnOf(ui)).some(n => n.props?.key === 'others-toggle')).toBe(false)
+  await ui.unmount()
+})
+
+test('terminal: more than 10 decisions end the box with a dim "+<m> karar daha", the counts are of all (round 2)', async ($, on) => {
+  const f = JSON.stringify({ v: 1, decisions: [...decisionsOf(11), { id: 'z', kind: 'Takıldı', text: 'on ikinci', options: [] }] })
+  await bootOthers($, on, 'terminal', [entry('many--bbbbbbbb.json')], { 'many--bbbbbbbb.json': f })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(textIn(await drawnOf(ui), '  many 12 (1 takıldı)')).toBe(true)
+  await ui.press({ key: 'others-toggle' })
+  const open = await drawnOf(ui)
+  const box = otherBoxes(open)[0] as Node
+  expect(box.props).toMatchObject({ borderColor: 'error' }) // the stuck one is past the tenth, the border still counts it
+  expect(nodesOf(box).filter(n => String(n.props?.key).startsWith('odec-')).length).toBe(10)
+  expect(textNode(box, /^\+2 karar daha$/)?.props).toMatchObject({ dimColor: true })
+  expect(box.children?.at(-1)).toBe(textNode(box, /^\+2 karar daha$/))
+  expect(textNode(open, /^ · 12 karar$/)).toBeDefined() // the title counts all 12
   await ui.unmount()
 })

@@ -58,9 +58,10 @@ export type StatusView = {
 }
 
 // Another team session's pending decisions (read from its status file, shown read-only).
-export type OtherDecision = { id: string; kind?: string; text: string; options: string[]; stuck: boolean }
+export type OtherDecision = { kind?: string; text: string; options: string[]; stuck: boolean }
 
-export type Other = { file: string; project: string; name: string; when: string; decisions: OtherDecision[] }
+// `count` and `stuckCount` count all the file's decisions; `decisions` keeps the first few, cut.
+export type Other = { file: string; project: string; name: string; when: string; count: number; stuckCount: number; decisions: OtherDecision[] }
 
 // One entry of $.fs.list.
 export type DirEntry = { name: string; kind: string; size: number; mtimeMs: number; isLink: boolean }

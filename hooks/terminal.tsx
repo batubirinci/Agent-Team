@@ -240,8 +240,7 @@ export function termHint({ Text }: UI, hasOthers = false) {
 
 // Other team sessions' decisions, read-only: no number keys, options as dim text; "v" opens and closes (approved design "Diğer oturumların kararları").
 export function termOthers({ Box, Button, Text }: UI, others: readonly Other[], open: boolean, toggle: () => void) {
-  const total = others.reduce((n, o) => n + o.decisions.length, 0)
-  const stuckIn = (o: Other) => o.decisions.filter(d => d.stuck).length
+  const total = others.reduce((n, o) => n + o.count, 0)
   const head = (title: JSX.Element, label: string) => (
     <Box flexDirection="row" justifyContent="space-between" gap={2}>
       {title}
@@ -258,7 +257,7 @@ export function termOthers({ Box, Button, Text }: UI, others: readonly Other[], 
           </Text>,
           'göster',
         )}
-        <Text dimColor>{`  ${others.map(o => `${o.project} ${o.decisions.length}${stuckIn(o) ? ` (${stuckIn(o)} takıldı)` : ''}`).join(' · ')}`}</Text>
+        <Text dimColor>{`  ${others.map(o => `${o.project} ${o.count}${o.stuckCount ? ` (${o.stuckCount} takıldı)` : ''}`).join(' · ')}`}</Text>
       </Box>
     )
   return (
@@ -271,7 +270,7 @@ export function termOthers({ Box, Button, Text }: UI, others: readonly Other[], 
         'gizle',
       )}
       {others.map(o => (
-        <Box key={`other-${o.file}`} {...TBOX} borderColor={stuckIn(o) ? 'error' : TBOX.borderColor}>
+        <Box key={`other-${o.file}`} {...TBOX} borderColor={o.stuckCount ? 'error' : TBOX.borderColor}>
           <Box flexDirection="row" justifyContent="space-between" gap={2}>
             <Text weight="bold">{o.name}</Text>
             <Text dimColor>{o.when}</Text>
@@ -285,6 +284,7 @@ export function termOthers({ Box, Button, Text }: UI, others: readonly Other[], 
               </Box>
             ))}
           </Box>
+          {o.count > o.decisions.length && <Text dimColor>{`+${o.count - o.decisions.length} karar daha`}</Text>}
         </Box>
       ))}
       <Text dimColor>Cevabı o oturumda ver; buradan gönderilemez.</Text>
