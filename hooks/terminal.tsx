@@ -1,7 +1,7 @@
 import type { EngineInterface } from 'claude-code'
 
 import type { Decision, Other, Role, RoleStatus, Task, TaskState } from '../types'
-import { STAGE_LABELS, decisionTask } from './status'
+import { STAGE_LABELS, decisionTask, pickedAt } from './status'
 
 // The terminal drawing of the pane and the footer (approved design "Terminal arayüzü · şimdi ve öneri"):
 // text and theme colors only, no card fill, no Svg; state is a glyph, never a color alone; every press has a key.
@@ -9,6 +9,8 @@ export type UI = Pick<ReturnType<EngineInterface['ui']['resolve']>, 'Box' | 'But
 
 export const TBOX = { flexDirection: 'column', borderStyle: 'single', borderColor: 'subtle', paddingX: 1 } as const
 export const ROUND = { ...TBOX, borderStyle: 'round' } as const
+// The press of a decision went out by submit (the box could not be filled): the card says when the Lead reads it.
+export const WENT = 'Gönderildi · Lead işini bitirince okuyacak'
 export const hk = (key: string) => ({ plain: true, hotkey: key }) as const
 // Not b l p s t (back, pause, ask, pane are the pane's own); "o" last, as pane-team-on takes it.
 const TASK_KEYS = 'acdefghijkmno'
@@ -61,13 +63,15 @@ export function termUsage({ Text }: UI, rows: readonly (readonly [string, number
   )
 }
 
-export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], tasks: Task[], say: (t: string) => void) {
+// A press writes the decision's line into the prompt box (`lines`: the decision lines now in it); `went`: ids sent by submit instead.
+export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], tasks: Task[], press: (d: Decision, o: string) => void, lines: readonly string[], went: readonly string[]) {
   let n = 0
   return (
     <Box flexDirection="column" gap={1}>
       <Text color="claude">{`◆ ${'Senin sıran'.toLocaleUpperCase('tr')} · ${decisions.length} karar`}</Text>
       {decisions.map(d => {
         const { kind, blocked } = decisionTask(d, tasks)
+        const at = pickedAt(lines, d)
         return (
         <Box key={`d-${d.id}`} {...TBOX} borderColor={blocked ? 'error' : TBOX.borderColor}>
           {kind && <Text color={blocked ? 'error' : 'claude'}>{kind}</Text>}
@@ -75,11 +79,20 @@ export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], 
           {d.meta && <Text dimColor>{d.meta}</Text>}
           {d.options.length > 0 && (
             <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-              {d.options.map((o, i) => (
-                <Button key={`d-${d.id}-${i}`} label={o} onPress={() => say(`Karar (${d.id}): ${o}`)} {...(n < 9 ? hk(String(++n)) : { plain: true as const })} />
-              ))}
+              {d.options.map((o, i) => {
+                const key = n < 9 ? hk(String(++n)) : { plain: true as const }
+                return i === at ? (
+                  <Button key={`d-${d.id}-${i}`} label={o} onPress={() => press(d, o)} {...key}>
+                    <Text color="success" weight="bold">{o}</Text>
+                  </Button>
+                ) : (
+                  <Button key={`d-${d.id}-${i}`} label={o} onPress={() => press(d, o)} {...key} />
+                )
+              })}
             </Box>
           )}
+          {at >= 0 && <Text color="success">{`✓ seçildi: ${d.options[at]} · Enter ile gider`}</Text>}
+          {at < 0 && went.includes(d.id) && <Text dimColor>{WENT}</Text>}
         </Box>
         )
       })}
@@ -233,9 +246,9 @@ export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void) {
   )
 }
 
-export function termHint({ Text }: UI, hasOthers = false) {
+export function termHint({ Text }: UI, hasOthers = false, picked = false) {
   const k = (s: string) => <Text color="claude">{s}</Text>
-  return <Text dimColor>{k('a-o')} ayrıntı  {k('1-9')} karar  {hasOthers && <Text>{k('v')} diğer  </Text>}{k('p')} pause  {k('esc')} çık</Text>
+  return <Text dimColor>{k('a-o')} ayrıntı  {k('1-9')} {picked ? 'karar seç' : 'karar'}  {hasOthers && <Text>{k('v')} diğer  </Text>}{k('p')} pause  {k('esc')} çık</Text>
 }
 
 // Other team sessions' decisions, read-only: no number keys, options as dim text; "v" opens and closes (approved design "Diğer oturumların kararları").

@@ -45,8 +45,8 @@ ayrıntıları (sırayla), `p` pause/devam, ayrıntıda `b` geri ve `s` Lead'e s
 
 **Pane ne gösterir.** Lead'in yazdığı durum dosyasını canlı gösterir:
 
-- **Senin sıran:** bekleyen kararlar. Bir seçeneğe basmak Lead'e sahibin kendi mesajı olarak
-  `Karar (<id>): <seçenek>` gönderir.
+- **Senin sıran:** bekleyen kararlar. Bir seçeneğe basmak mesaj kutusuna
+  `Karar (<id>): <seçenek>` satırını yazar; göndermek için Enter'a basarsın (birkaç karar tek Enter'la gider).
 - **Diğer oturumlar:** aynı makinedeki başka team oturumlarında bekleyen kararlar yalnızca okunur bir
   şeritte görünür (`Göster`/`Gizle`, terminalde `v`); cevap o oturumda verilir.
 - **Görevler:** her görev için 5 aşamalı çizgi (Spec, Build, Review, Revise, Rapor) ve rollerin

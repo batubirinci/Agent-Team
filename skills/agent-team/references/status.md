@@ -83,8 +83,9 @@ Fields:
 - `paused`: true after Pause; the pane shows it and turns the Pause button into Resume.
 - `limits`: the usage view's percentages as last read; leave out when not read this session.
 - `decisions`: open owner decisions only; remove one as soon as it is answered. `options` are the
-  button labels, the first drawn as the main action; a press sends the Lead
-  `Karar (<id>): <option>`. A push approval is `kind: "Push onayı"` with
+  button labels, the first drawn as the main action; a press writes the line
+  `Karar (<id>): <option>` into the owner's message box and the owner sends it with Enter, so answers arrive as
+  one or more such lines in one owner message: remove each answered decision from the file. A push approval is `kind: "Push onayı"` with
   `options: ["Onayla", "Reddet"]` and the branch and short SHA in `meta`.
 - `tasks`: every task not yet reported (Flow 5). Write each task's `id`: a task without one still
   draws (the pane makes up an id), but no decision can link to it. `stage` is one of `spec`, `build`, `review`,

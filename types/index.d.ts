@@ -78,6 +78,8 @@ declare module 'claude-code' {
       detail: Shaped<string | null>
       others: Shaped<Other[]>
       othersOpen: Shaped<boolean>
+      karar: Shaped<string[]>
+      sent: Shaped<string[]>
     }
   }
 }

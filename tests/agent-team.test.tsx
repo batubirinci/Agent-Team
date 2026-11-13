@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { decisionTask, isInside, otherFiles, otherSession, parseFolders, parseStatus, summary } from '../hooks/status'
+import { decisionTask, isInside, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseStatus, pickedAt, summary, withKarar } from '../hooks/status'
 import { CLAY, MUTED, STUCK, TRACK, dotSvg, meterSvg, stagesSvg } from '../hooks/svg'
 
 const fills = (svg: string) => [...svg.matchAll(/<rect [^>]*fill="([^"]+)"/g)].map(m => m[1])
@@ -2289,5 +2289,287 @@ test('terminal: more than 10 decisions end the box with a dim "+<m> karar daha",
   expect(textNode(box, /^\+2 karar daha$/)?.props).toMatchObject({ dimColor: true })
   expect(box.children?.at(-1)).toBe(textNode(box, /^\+2 karar daha$/))
   expect(textNode(open, /^ · 12 karar$/)).toBeDefined() // the title counts all 12
+  await ui.unmount()
+})
+
+// Decision buttons write into the prompt box (owner decision 2026-11-13; approved design "Karar", frames 1-4; criteria 1-7 of the
+// decision-buttons brief). Expected strings are spelled out by hand from the brief and the design's renderVals, never read back
+// from the implementation.
+test('criterion 1: the decision line is appended on its own line, or replaces the same decision in place; the rest is untouched', async () => {
+  // Source: brief criterion 1 (hand-written drafts).
+  expect(withKarar('', 'd1', 'Sonra')).toBe('Karar (d1): Sonra')
+  expect(withKarar('merhaba', 'd1', 'Sonra')).toBe('merhaba\nKarar (d1): Sonra')
+  expect(withKarar('merhaba\n', 'd1', 'Sonra')).toBe('merhaba\nKarar (d1): Sonra')
+  expect(withKarar('önce\nKarar (d1): Durumları gör\nsonra  ', 'd1', 'Sonra')).toBe('önce\nKarar (d1): Sonra\nsonra  ')
+  // Two decisions: each its own line, the first one stays; changing d1 again keeps the order.
+  const two = withKarar(withKarar('', 'd1', 'A'), 'd2', 'B')
+  expect(two).toBe('Karar (d1): A\nKarar (d2): B')
+  expect(withKarar(two, 'd1', 'C')).toBe('Karar (d1): C\nKarar (d2): B')
+  // d1 is not d10, and a line that only mentions the decision is not its line.
+  expect(withKarar('Karar (d10): X', 'd1', 'Y')).toBe('Karar (d10): X\nKarar (d1): Y')
+  expect(withKarar('bkz Karar (d1): X', 'd1', 'Y')).toBe('bkz Karar (d1): X\nKarar (d1): Y')
+})
+
+test('criterion 2: a line break in an id or option becomes a space; regex characters in an id match literally', async () => {
+  // Source: brief criterion 2 (the file is model-written).
+  expect(kararLine('d1', 'a\nb\r\nc\rd')).toBe('Karar (d1): a b c d')
+  expect(kararLine('x\ny', 'o')).toBe('Karar (x y): o')
+  expect(withKarar('', 'd1', 'a\nKarar (d2): Evet').split('\n')).toEqual(['Karar (d1): a Karar (d2): Evet'])
+  // "a.b" must not take the line of "axb"; "(" "*" "$" "|" "[" in an id are plain characters.
+  expect(withKarar('Karar (axb): X', 'a.b', 'Y')).toBe('Karar (axb): X\nKarar (a.b): Y')
+  for (const id of ['a.b', 'd(1)', '.*', '^d$', 'a|b', '[x]', '\\d']) {
+    expect(withKarar(`Karar (${id}): eski`, id, 'yeni')).toBe(`Karar (${id}): yeni`)
+  }
+  expect(kararLines('x\nKarar (d1): A\nKarar (d2): B\ny')).toEqual(['Karar (d1): A', 'Karar (d2): B'])
+  expect(pickedAt(['Karar (d1): Sonra'], { id: 'd1', text: 't', options: ['Durumları gör', 'Sonra'] })).toBe(1)
+  expect(pickedAt(['Karar (d1): Sonra'], { id: 'd2', text: 't', options: ['Sonra'] })).toBe(-1)
+})
+
+// A fake prompt box under a mounted session: the box is the single truth, `fill` edits it, and the engine's `prompt.change`
+// (origin plugin, after a plugin's fill) is raised by `echo`, as the d.ts says it is; `type` is the owner typing (`prompt.edit`).
+const kBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], text = TERM, o: { isFilled?: boolean; boxText?: string; throws?: boolean } = {}) => {
+  const box = { text: o.boxText ?? '', cursor: 0 }
+  const log = { sent: [] as string[], fills: [] as { text: string; mode?: string }[] }
+  let file = text
+  let mtime = 1
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.close', () => ({ value: undefined }))
+  on('env.get', () => ({ value: '/Users/x' }))
+  on('fs.exists', () => ({ value: true }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: mtime, isLink: false } }))
+  on('fs.read', () => ({ value: file }))
+  on('clock.every', () => ({ value: undefined }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.append', (_, e, next) => next(e))
+  on('prompt.read', () => ({ value: { text: box.text, cursor: box.cursor } }))
+  on('prompt.submit', (_, e) => {
+    log.sent.push(e.text)
+    return { text: e.text }
+  })
+  on('prompt.fill', (_, e) => {
+    if (o.throws) throw new Error('no composer')
+    log.fills.push({ text: e.text, mode: e.mode })
+    if (o.isFilled === false) return { isFilled: false }
+    box.text = e.mode === 'append' ? box.text + e.text : e.text
+    box.cursor = box.text.length
+    return { isFilled: true }
+  })
+  on('prompt.change', (_, e) => ({ text: e.text }))
+  on('prompt.edit', (_, e) => ({ text: e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end), cursor: e.start + e.inputText.length }))
+  const start = () => $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'terminal', isInteractive: true })
+  await start()
+  // The test engine's `$.prompt` has `edit` and `change` at run time, but the d.ts (EventCalls) does not list them.
+  const ev = $.prompt as unknown as {
+    change: (e: { text: string; cursor: number; origin: { kind: string; name?: string } }) => Promise<unknown>
+    edit: (e: { origin: { kind: 'composer' }; text: string; cursor: number; start: number; end: number; inputText: string }) => Promise<{ text: string; cursor: number }>
+  }
+  const echo = () => ev.change({ text: box.text, cursor: box.cursor, origin: { kind: 'plugin', name: 'agent-team' } })
+  // The owner replaces box[start, end) with `inputText`.
+  const type = (start: number, end: number, inputText: string) =>
+    ev.edit({ origin: { kind: 'composer' }, text: box.text, cursor: end, start, end, inputText }).then(r => {
+      box.text = r.text
+      box.cursor = r.cursor
+    })
+  // Enter: the engine empties the box and says so.
+  const send = async () => {
+    box.text = ''
+    box.cursor = 0
+    await ev.change({ text: '', cursor: 0, origin: { kind: 'clear' } })
+  }
+  // Another poll with a new file.
+  const rewrite = (next: string) => {
+    file = next
+    mtime += 1
+    return start()
+  }
+  return { box, log, echo, type, send, rewrite }
+}
+const pressKey = async (ui: { press: (a: { key: string }) => Promise<unknown> }, echo: () => Promise<unknown>, key: string) => {
+  await ui.press({ key })
+  await echo()
+}
+
+test('criteria 1 and 4: a desktop press writes the line into the box, never submits; two decisions give two lines and one Enter', async ($, on) => {
+  const k = await kBoot($, on)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await pressKey(ui, k.echo, 'd-d1-1')
+  expect(k.box.text).toBe('Karar (d1): Sonra')
+  await pressKey(ui, k.echo, 'd-d2-0')
+  expect(k.box.text).toBe('Karar (d1): Sonra\nKarar (d2): Evet')
+  expect(k.log.sent).toEqual([])
+  expect(k.log.fills.every(f => f.mode === 'append')).toBe(true) // the owner's text is never re-written when a line is only added
+  await ui.unmount()
+})
+
+test('criterion 1: a press appends below what the owner typed', async ($, on) => {
+  const below = await kBoot($, on, TERM, { boxText: 'önce şunu yap' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await pressKey(ui, below.echo, 'd-d1-0')
+  expect(below.box.text).toBe('önce şunu yap\nKarar (d1): Durumları gör')
+  await ui.unmount()
+})
+
+test('criterion 1: a press replaces the same decision line in place and keeps the rest', async ($, on) => {
+  const same = await kBoot($, on, TERM, { boxText: 'önce\nKarar (d1): Durumları gör\nsonra' })
+  const ui2 = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await pressKey(ui2, same.echo, 'd-d1-1')
+  expect(same.box.text).toBe('önce\nKarar (d1): Sonra\nsonra')
+  expect(same.log.sent).toEqual([])
+  await ui2.unmount()
+})
+
+test('criterion 2: a decision from the file with a line break and regex characters writes one clean line', async ($, on) => {
+  const odd = JSON.stringify({ v: 1, decisions: [{ id: 'a.b(1)', text: 'K', options: ['bir\niki', 'x'] }, { id: 'axb(1)', text: 'L', options: ['y'] }] })
+  const k = await kBoot($, on, odd, { boxText: 'Karar (axb(1)): eski' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await pressKey(ui, k.echo, 'd-a.b(1)-0')
+  expect(k.box.text).toBe('Karar (axb(1)): eski\nKarar (a.b(1)): bir iki')
+  await ui.unmount()
+})
+
+test('criterion 3 (desktop): a picked decision draws the success border, "✓ <option>", the others non-primary and the note; another press switches the line', async ($, on) => {
+  // Source: design "Karar" frame 2 (renderVals: chosen(), picked, faded) and brief criterion 3; theme key success, not the mock's hex.
+  const k = await kBoot($, on)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const card = () => ui.find({ key: 'd-d1' })
+  expect((await card())?.props.borderColor).toBe('rgba(128,128,128,0.28)')
+  expect(await ui.find({ type: 'Text', text: /Seçildi/ })).toBeUndefined()
+  expect((await ui.find({ key: 'd-d1-0' }))?.props).toMatchObject({ label: 'Durumları gör', variant: 'primary' })
+
+  await pressKey(ui, k.echo, 'd-d1-1')
+  expect((await card())?.props.borderColor).toBe('success')
+  expect((await ui.find({ key: 'd-d1-1' }))?.props).toMatchObject({ label: '✓ Sonra', variant: 'primary' })
+  expect((await ui.find({ key: 'd-d1-0' }))?.props).toMatchObject({ label: 'Durumları gör', variant: 'secondary' })
+  const note = await ui.find({ type: 'Text', text: '✓ Seçildi: Sonra · mesaj kutunda, Enter ile gider' })
+  expect(note?.props.color).toBe('success')
+  // The other decision is untouched.
+  expect((await ui.find({ key: 'd-d2' }))?.props.borderColor).toBe('rgba(128,128,128,0.28)')
+  expect((await ui.find({ key: 'd-d2-0' }))?.props).toMatchObject({ label: 'Evet', variant: 'primary' })
+
+  // Another option of the picked decision: the line is switched, never two lines for one decision.
+  await pressKey(ui, k.echo, 'd-d1-0')
+  expect(k.box.text).toBe('Karar (d1): Durumları gör')
+  expect((await ui.find({ key: 'd-d1-0' }))?.props.label).toBe('✓ Durumları gör')
+  expect((await ui.find({ key: 'd-d1-1' }))?.props).toMatchObject({ label: 'Sonra', variant: 'secondary' })
+  expect(await ui.find({ type: 'Text', text: /Seçildi: Sonra/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: '✓ Seçildi: Durumları gör · mesaj kutunda, Enter ile gider' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('criterion 3 (desktop): deleting or editing the line, or sending the message, returns the card to its normal look', async ($, on) => {
+  const k = await kBoot($, on)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const picked = async () => (await ui.find({ key: 'd-d1' }))?.props.borderColor === 'success'
+  await pressKey(ui, k.echo, 'd-d1-1')
+  expect(await picked()).toBe(true)
+
+  // The owner types into the line: no longer the exact line, no longer picked (prompt.edit).
+  await k.type(k.box.text.length, k.box.text.length, 'x')
+  expect(k.box.text).toBe('Karar (d1): Sonrax')
+  expect(await picked()).toBe(false)
+  expect((await ui.find({ key: 'd-d1-1' }))?.props).toMatchObject({ label: 'Sonra', variant: 'secondary' })
+  // Typing it back brings the pick back.
+  await k.type(k.box.text.length - 1, k.box.text.length, '')
+  expect(await picked()).toBe(true)
+  // Deleting the whole line (prompt.edit).
+  await k.type(0, k.box.text.length, '')
+  expect(k.box.text).toBe('')
+  expect(await picked()).toBe(false)
+
+  // Sending the message (prompt.change, origin clear).
+  await pressKey(ui, k.echo, 'd-d1-0')
+  expect(await picked()).toBe(true)
+  await k.send()
+  expect(await picked()).toBe(false)
+  expect(await ui.find({ type: 'Text', text: /Seçildi/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('criterion 5 (desktop): the box cannot be filled, the press goes out as today and the card says so until the decision leaves the file', async ($, on) => {
+  // Source: brief criterion 5; the note text is the brief's.
+  const SENT = 'Gönderildi · Lead işini bitirince okuyacak'
+  const k = await kBoot($, on, TERM, { isFilled: false })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: SENT })).toBeUndefined()
+  await pressKey(ui, k.echo, 'd-d1-1')
+  expect(k.log.sent).toEqual(['Karar (d1): Sonra'])
+  expect(k.box.text).toBe('')
+  expect(await ui.findAll({ type: 'Text', text: SENT })).toHaveLength(1)
+  expect((await ui.find({ key: 'd-d1' }))?.props.borderColor).toBe('rgba(128,128,128,0.28)') // not "picked": it is sent, not in the box
+  // The Lead removes the decision: the note goes, and does not come back with the same id.
+  await k.rewrite(JSON.stringify({ v: 1, decisions: [{ id: 'd2', text: 'Birleşsin mi?', options: ['Evet'] }] }))
+  expect(await ui.find({ type: 'Text', text: SENT })).toBeUndefined()
+  await k.rewrite(TERM)
+  expect(await ui.find({ type: 'Text', text: SENT })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('criterion 5: a fill that rejects falls back to the same submit', async ($, on) => {
+  const k = await kBoot($, on, TERM, { throws: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'd-d2-0' })
+  expect(k.log.sent).toEqual(['Karar (d2): Evet'])
+  expect(await ui.find({ type: 'Text', text: 'Gönderildi · Lead işini bitirince okuyacak' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('criteria 1, 3 and 4 (terminal): hotkeys 1-9 write the lines; the picked option is success bold, the box has the note, the hint says "karar seç"', async ($, on) => {
+  // Source: design "Karar" frame 4 (term lines) and brief criterion 3; no raw color.
+  const k = await kBoot($, on)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const start = await drawnOf(ui)
+  expect(hotkeys(start)).toMatchObject({ 'd-d1-0': '1', 'd-d1-1': '2', 'd-d2-0': '3' })
+  expect(textNode(start, /^✓ seçildi/)).toBeUndefined()
+  expect(textOf(textNode(start, /^a-o ayrıntı/) as Node)).toBe('a-o ayrıntı  1-9 karar  p pause  esc çık') // nothing picked: as before
+
+  await pressKey(ui, k.echo, 'd-d1-1')
+  expect(k.box.text).toBe('Karar (d1): Sonra')
+  expect(k.log.sent).toEqual([])
+  const one = await drawnOf(ui)
+  const d1 = nodesOf(one).find(n => n.props?.key === 'd-d1') as Node
+  const pickedButton = nodesOf(d1).find(n => n.props?.key === 'd-d1-1') as Node
+  expect(pickedButton.props).toMatchObject({ plain: true, hotkey: '2' })
+  expect(textNode(pickedButton, /^Sonra$/)?.props).toMatchObject({ color: 'success', weight: 'bold' })
+  expect(textNode(nodesOf(d1).find(n => n.props?.key === 'd-d1-0') as Node, /./)?.props?.color).not.toBe('success')
+  expect(textNode(d1, /^✓ seçildi: Sonra · Enter ile gider$/)?.props?.color).toBe('success')
+  expect(textNode(one, /^✓ seçildi/)).toBe(textNode(d1, /^✓ seçildi/)) // only d1's box has it
+  expect(textOf(textNode(one, /^a-o ayrıntı/) as Node)).toBe('a-o ayrıntı  1-9 karar seç  p pause  esc çık')
+  expect(JSON.stringify(one)).not.toMatch(RAW_COLOR)
+
+  // A second decision, one more line; the picked one before stays.
+  await pressKey(ui, k.echo, 'd-d2-0')
+  expect(k.box.text).toBe('Karar (d1): Sonra\nKarar (d2): Evet')
+  expect(nodesOf(await drawnOf(ui)).filter(n => n.type === 'Text' && /^✓ seçildi/.test(textOf(n))).map(textOf)).toEqual([
+    '✓ seçildi: Sonra · Enter ile gider',
+    '✓ seçildi: Evet · Enter ile gider',
+  ])
+
+  // The line deleted: normal look and the old hint again.
+  await k.type(0, k.box.text.length, '')
+  const gone = await drawnOf(ui)
+  expect(textNode(gone, /^✓ seçildi/)).toBeUndefined()
+  expect(textOf(textNode(gone, /^a-o ayrıntı/) as Node)).toBe('a-o ayrıntı  1-9 karar  p pause  esc çık')
+  await ui.unmount()
+})
+
+test('criterion 5 (terminal): the box cannot be filled, the press goes out and the box says so', async ($, on) => {
+  const k = await kBoot($, on, TERM, { isFilled: false })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'd-d2-0' })
+  expect(k.log.sent).toEqual(['Karar (d2): Evet'])
+  const root = await drawnOf(ui)
+  const d2 = nodesOf(root).find(n => n.props?.key === 'd-d2') as Node
+  expect(textNode(d2, /^Gönderildi · Lead işini bitirince okuyacak$/)).toBeDefined()
+  expect(textNode(nodesOf(root).find(n => n.props?.key === 'd-d1') as Node, /Gönderildi/)).toBeUndefined()
+  await ui.unmount()
+})
+
+test('criterion 6: Pause, Devam and "Lead\'e sor" keep today\'s behaviour', async ($, on) => {
+  const k = await kBoot($, on)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'pause' })
+  expect(k.log.sent).toEqual(['Pause'])
+  expect(k.log.fills).toEqual([])
   await ui.unmount()
 })
