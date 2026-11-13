@@ -131,12 +131,19 @@ export function decisionTask(d: Decision, tasks: readonly Task[]) {
   return { kind: [d.kind, t?.title].filter(Boolean).join(' · ') || undefined, blocked: t?.state === 'blocked' }
 }
 
-// The sentence that tells the Lead the status path (register.tsx leadText): a resumed session finds its first path in it.
+// The sentence that tells the Lead the status path (register.tsx leadText) and the prefix of the row that carries it.
 export const ANNOUNCE = "Pane'in okuduğu durum dosyası:"
+export const OPEN_ROW = '[Agent Team modu açıldı] '
 
 // The last status file the plugin announced in `texts` (user rows of the history), or undefined. The history is
-// untrusted: only a file directly in <statusDir>/ counts, so a model-written path elsewhere (or with "..") is ignored.
-export function announcedFile(texts: readonly string[], statusDir: string): string | undefined {
-  const found = texts.flatMap(t => [...t.matchAll(new RegExp(`${ANNOUNCE} (.+?\\.json) \\(biçimi`, 'g'))].map(m => m[1]!))
-  return found.reverse().find(p => p.startsWith(`${statusDir}/`) && !p.slice(statusDir.length + 1).includes('/'))
+// untrusted (pasted logs, model text): a row counts only if it is exactly what the plugin's own row would be for
+// that path (`rowFor`), and the path is a file directly in <statusDir>/ ending in .json.
+export function announcedFile(texts: readonly string[], statusDir: string, rowFor: (file: string) => string): string | undefined {
+  const files = texts.flatMap(t => {
+    const from = t.indexOf(`${ANNOUNCE} `)
+    const to = t.lastIndexOf(' (biçimi')
+    const file = from < 0 || to < 0 ? '' : t.slice(from + ANNOUNCE.length + 1, to)
+    return file && t === rowFor(file) ? [file] : []
+  })
+  return files.reverse().find(p => p.endsWith('.json') && p.startsWith(`${statusDir}/`) && !p.slice(statusDir.length + 1).includes('/'))
 }

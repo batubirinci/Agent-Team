@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Decision, Mode, RoleStatus, StatusView, Task, TaskState } from '../types'
-import { ANNOUNCE, STAGE_LABELS, announcedFile, baseName, clockOf, countStates, decisionTask, expandHome, isInside, parseFolders, parseStatus, trimSlash } from './status'
+import { ANNOUNCE, OPEN_ROW, STAGE_LABELS, announcedFile, baseName, clockOf, countStates, decisionTask, expandHome, isInside, parseFolders, parseStatus, trimSlash } from './status'
 import { BAD, CLAY, MUTED, OK, dotSvg, meterSvg, stagesSvg } from './svg'
 import { TBOX, hk, termDecisions, termFooter, termHeader, termDetail, termHint, termTasks, termUsage } from './terminal'
 
@@ -89,11 +89,13 @@ async function say($: EngineInterface, text: string) {
   await $.prompt.submit({ text, asUser: true })
 }
 
+const openRow = (file: string) => `${OPEN_ROW}${leadText(file)}`
+
 // The row that tells the Lead (and, later, a resumed session) the status path.
 // The system prompt of a running thread does not change mid-session: tell the model in a row.
 const announce = ($: EngineInterface, file: string) =>
   $.session.append({
-    message: { type: 'user', content: [{ type: 'text', text: `[Agent Team modu açıldı] ${leadText(file)}` }] },
+    message: { type: 'user', content: [{ type: 'text', text: openRow(file) }] },
   })
 
 // The one place the status view changes: an open detail whose task is not in the new view is closed
@@ -152,7 +154,7 @@ export const register: Register = (on, options) => {
     const dir = `${root}/status`
     const held = (await read($, status)).file
     const rows = await $.session.messages().catch(() => [])
-    const said = announcedFile(rows.filter(m => m.role === 'user').map(m => m.text), dir)
+    const said = announcedFile(rows.filter(m => m.role === 'user').map(m => m.text), dir, openRow)
     let file = ''
     for (const old of [held, said]) if (!file && old && (await $.fs.exists(old))) file = old
     if (!file) {
