@@ -129,10 +129,10 @@ test('the pane draws the status file and a decision button speaks for the owner'
 
   for (const surface of ['desktop', 'terminal'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    // Terminal design (see "Terminal design" below): the title is the plain Button's label, the candidate line starts with the short sha.
+    // Terminal design (see "Terminal design" below): the title is the plain Button's label, "Tur <n> · aday <sha7>" is its own line.
     if (surface === 'terminal') {
       expect((await ui.find({ key: 'detail-t1' }))?.text).toBe('Seçim kutusu taşması')
-      expect(await ui.find({ type: 'Text', text: /^3f9a1c2 / })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /^Tur 2 · aday 3f9a1c2$/ })).toBeDefined()
     } else {
       expect(await ui.find({ type: 'Text', text: /Seçim kutusu taşması/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /aday 3f9a1c2$/ })).toBeDefined()
@@ -186,11 +186,12 @@ test('desktop draws the bars as SVG with alt text, the terminal keeps the text f
 
   const term = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await term.find({ type: 'Svg' })).toBeUndefined()
-  // Terminal design: text bars with eighth blocks and stage/role glyphs instead of ━━━ and ●; the full strings are asserted in the terminal tests below.
+  // Terminal design: text usage bars with eighth blocks and role glyphs instead of ●; the stage is the five-segment ━━━ line again
+  // (terminal-boxes design) and the word line is gone; the full strings are asserted in the terminal tests below.
   expect(await term.find({ type: 'Text', text: /^5 sa  ████▏░░░░░ 42%   hafta █▊░░░░░░░░ 18%$/ })).toBeDefined()
-  expect(await term.find({ type: 'Text', text: /━━━/ })).toBeUndefined()
   expect(await term.find({ type: 'Text', text: /●/ })).toBeUndefined()
-  expect(await term.find({ type: 'Text', text: /^✓ spec  ✓ build  ◉ review  ○ revise  ○ rapor$/ })).toBeDefined()
+  expect(await term.find({ type: 'Text', text: /^Review · 3\/5$/ })).toBeDefined()
+  expect(await term.find({ type: 'Text', text: /spec/ })).toBeUndefined()
   await term.unmount()
 })
 
@@ -396,22 +397,10 @@ test('a task card opens its detail view with rounds and evidence, back returns, 
 
     expect(await ui.find({ key: 't-t1' })).toBeUndefined()
     expect((await ui.find({ key: 'detail-back' }))?.text).toBe('‹ Görevler')
-    for (const re of [
-      /^Seçim kutusu taşması$/,
-      /^feat\/sel$/,
-      /bbbbbbb$/,
-      /^GO · 2 tur$/,
-      /^Turlar$/,
-      /^Tur 1 · NO-GO$/,
-      /^Tur 2 · GO$/,
-      /^BLOCKING · introduced$/,
-      /^Kutu iki nesneye taşıyor$/,
-      /^src\/sel\.ts:42$/,
-      /^LOW · pre-existing$/,
-      /^Aynı aile ikinci kez: mekanizma değişsin$/,
-      /^Kanıt$/,
-      /^QA raporu$/,
-    ]) {
+    // Terminal strings are the terminal-boxes design's (own tests below); here only what both surfaces share.
+    for (const re of surface === 'terminal'
+      ? [/^Seçim kutusu taşması$/, /^feat\/sel · aday bbbbbbb$/, /^TURLAR$/, /^Tur 1 · NO-GO · aaaaaaa$/, /^Tur 2 · GO · bbbbbbb$/, /^BLOCKING · introduced$/, /^Kutu iki nesneye taşıyor$/, /^src\/sel\.ts:42$/, /^LOW · pre-existing$/, /^Not: Aynı aile ikinci kez: mekanizma değişsin$/, /^KANIT$/, /^QA raporu$/]
+      : [/^Seçim kutusu taşması$/, /^feat\/sel$/, /bbbbbbb$/, /^GO · 2 tur$/, /^Turlar$/, /^Tur 1 · NO-GO$/, /^Tur 2 · GO$/, /^BLOCKING · introduced$/, /^Kutu iki nesneye taşıyor$/, /^src\/sel\.ts:42$/, /^LOW · pre-existing$/, /^Aynı aile ikinci kez: mekanizma değişsin$/, /^Kanıt$/, /^QA raporu$/]) {
       expect(await ui.find({ type: 'Text', text: re })).toBeDefined()
     }
     expect((await ui.findAll({ type: 'Text', text: /aaaaaaa$/ })).length).toBe(1)
@@ -681,38 +670,69 @@ test('terminal pane: header, bars, decisions, tasks, roles, candidate and hint l
   expect(textNode(card as Node, /^Ürün kararı$/)?.props?.color).toBe('claude')
   expect(buttons(card as Node).map(b => b.props?.label)).toEqual(['Durumları gör', 'Sonra'])
 
-  // Tasks: "GÖREVLER · <n> çalışıyor"; the title is the plain Button; "Tur <n>" dim; no card box.
-  expect(textNode(root, /^GÖREVLER · 1 çalışıyor$/)).toBeDefined()
-  expect(nodesOf(root).find(n => n.props?.key === 't-t1')?.props?.borderStyle).toBeUndefined()
-  expect(nodesOf(root).find(n => n.props?.key === 'detail-t1')?.props).toMatchObject({ label: 'Seçim kutusu taşması', plain: true })
-  expect(textNode(root, /^Tur 2$/)?.props?.dimColor).toBe(true)
+  // Tasks (terminal-boxes design, Lead's brief; source for every string below): "GÖREVLER · <n> çalışıyor" left and a dim "<n> görev" right
+  // on one row; each task is its own round Box in subtle (key t-<id>); the title row holds only the plain Button, bold, cut at the end.
+  const head = nodesOf(root).find(n => n.type === 'Box' && textOf(n) === 'GÖREVLER · 1 çalışıyor2 görev')
+  expect(head?.props).toMatchObject({ flexDirection: 'row', justifyContent: 'space-between' })
+  expect(textNode(head as Node, /^GÖREVLER · 1 çalışıyor$/)?.props?.weight).toBe('bold')
+  expect(textNode(head as Node, /^2 görev$/)?.props?.dimColor).toBe(true)
+  const box = nodesOf(root).find(n => n.props?.key === 't-t1') as Node
+  expect(box.props).toMatchObject({ borderStyle: 'round', borderColor: 'subtle' })
+  expect(nodesOf(root).find(n => n.props?.key === 't-t2')?.props).toMatchObject({ borderStyle: 'round', borderColor: 'subtle' })
+  // Criterion 3 (the vertical "Tur 1" of the live screenshot came from a Text squeezed beside the Button in one row): no row of the
+  // task Box holds the title Button together with another element.
+  const btn = nodesOf(box).find(n => n.props?.key === 'detail-t1') as Node
+  expect(btn.props).toMatchObject({ plain: true, hotkey: 'a' })
+  expect(textOf(btn)).toBe('Seçim kutusu taşması')
+  expect(btn.children?.some(c => typeof c !== 'string' && c.props?.weight === 'bold' && c.props?.wrap === 'truncate-end')).toBe(true)
+  expect(nodesOf(box).some(n => n.props?.flexDirection === 'row' && (n.children ?? []).includes(btn))).toBe(false)
+  expect(box.children?.[0]).toBe(btn)
+  const tur = textNode(box, /^Tur 2 · aday 3f9a1c2$/)
+  expect(tur?.props?.dimColor).toBe(true)
+  expect(box.children?.[1]).toBe(tur)
+  // Only a round, only a candidate, neither (t2 has neither: no such line at all).
+  expect(textNode(nodesOf(root).find(n => n.props?.key === 't-t2') as Node, /^Tur |aday/)).toBeUndefined()
 
-  // Stage line (stage review = 3rd of 5): done ✓ dim, current ◉ claude bold, future ○ inactive, lowercase labels.
-  const stages = textNode(root, /^✓ spec/)
-  expect(stages && textOf(stages)).toBe('✓ spec  ✓ build  ◉ review  ○ revise  ○ rapor')
+  // Stage line (stage review = 3rd of 5): five "━━━ " segments, done text, current claude bold, future inactive; then dim "Review · 3/5".
+  const stages = textNode(box, /^━━━ /)
+  expect(stages && textOf(stages)).toBe('━━━ ━━━ ━━━ ━━━ ━━━ ')
   const parts = (stages?.children ?? []).filter((c): c is Node => typeof c !== 'string')
-  expect(parts.map(p => [textOf(p), p.props?.color, p.props?.dimColor, p.props?.weight])).toEqual([
-    ['✓ spec', undefined, true, undefined],
-    ['✓ build', undefined, true, undefined],
-    ['◉ review', 'claude', undefined, 'bold'],
-    ['○ revise', 'inactive', undefined, undefined],
-    ['○ rapor', 'inactive', undefined, undefined],
+  expect(parts.map(p => [textOf(p), p.props?.color, p.props?.weight])).toEqual([
+    ['━━━ ', 'text', undefined],
+    ['━━━ ', 'text', undefined],
+    ['━━━ ', 'claude', 'bold'],
+    ['━━━ ', 'inactive', undefined],
+    ['━━━ ', 'inactive', undefined],
   ])
+  expect(textNode(box, /^Review · 3\/5$/)?.props?.dimColor).toBe(true)
+  expect(textNode(root, /✓ spec|○ rapor/)).toBeUndefined()
 
-  // Role glyphs per status: running ◐ claude, done ✓ success, waiting · inactive, blocked ✗ error, idle ○ inactive;
-  // a blocked state is drawn in the error color.
-  const glyph = (g: string, name: string) => nodesOf(root).find(n => n.type === 'Box' && textOf(n).startsWith(`${g}${name}`))
-  for (const [g, name, color] of [['◐', 'QA · GPT-6 Astra', 'claude'], ['✓', 'Developer', 'success'], ['·', 'Analyst', 'inactive'], ['✗', 'QA 2', 'error'], ['○', 'Helper', 'inactive']] as const) {
-    const row = glyph(g, name)
-    expect(row).toBeDefined()
-    expect(textNode(row as Node, new RegExp(`^${g}$`))?.props?.color).toBe(color)
-  }
-  expect(textNode(glyph('✗', 'QA 2') as Node, /^takıldı$/)?.props?.color).toBe('error')
+  // Roles (criterion 5): row 1 "<glyph> <name>" (running ◐ claude, done ✓ success, waiting · inactive, blocked ✗ error, idle ○ inactive),
+  // row 2 the state on its own line, indented 4, dim; a blocked state is drawn in the error color.
+  const roleRows = [
+    ['◐', 'QA · GPT-6 Astra', 'claude', 'inceliyor'],
+    ['✓', 'Developer', 'success', 'teslim etti'],
+    ['·', 'Analyst', 'inactive', 'sırada'],
+    ['✗', 'QA 2', 'error', 'takıldı'],
+    ['○', 'Helper', 'inactive', 'boşta'],
+  ] as const
+  roleRows.forEach(([g, name, color, state], i) => {
+    const role = nodesOf(box).find(n => n.props?.key === `t-t1-r-${i}`) as Node
+    expect(role?.props?.flexDirection).toBe('column')
+    const [nameRow, stateRow] = role.children as Node[]
+    expect(textOf(nameRow as Node)).toBe(`${g}${name}`)
+    expect(textNode(nameRow as Node, new RegExp(`^${g}$`))?.props?.color).toBe(color)
+    expect(textNode(nameRow as Node, /^[^◐✓·✗○]/)?.props?.wrap).not.toBe('truncate-end')
+    expect(textOf(stateRow as Node)).toBe(state)
+    expect(stateRow?.props?.marginLeft).toBe(4)
+    expect(textNode(stateRow as Node, new RegExp(`^${state}$`))?.props).toMatchObject(color === 'error' ? { color: 'error' } : { dimColor: true })
+  })
 
-  // Candidate line: "<short sha>   <n> blocking · <m> follow-up", blocking in error + bold.
-  const cand = textNode(root, /^3f9a1c2 /)
-  expect(cand && textOf(cand)).toBe('3f9a1c2   1 blocking · 2 follow-up')
-  expect(textNode(cand as Node, /^1 blocking$/)?.props).toMatchObject({ color: 'error', weight: 'bold' })
+  // Counts line: "<n> blocking" error bold, " · <m> follow-up" dim; last line of the Box.
+  const cand = box.children?.at(-1) as Node
+  expect(textOf(cand)).toBe('1 blocking · 2 follow-up')
+  expect(textNode(cand, /^1 blocking$/)?.props).toMatchObject({ color: 'error', weight: 'bold' })
+  expect(textNode(cand, /^ · 2 follow-up$/)?.props?.dimColor).toBe(true)
 
   // Hint line: dim, keys in claude.
   const hint = textNode(root, /^a-o ayrıntı/)
@@ -780,7 +800,7 @@ test('terminal: pressing by key does what it did, with the hotkeys beside it', a
   await ui.unmount()
 })
 
-test('terminal: no raw color in the list; the detail keeps plain Buttons b and s and a single-line round box', async ($, on) => {
+test('terminal: no raw color in the list; the detail keeps plain Buttons b and s and a round box in subtle', async ($, on) => {
   // Criterion 2 walks the drawn tree; criterion 3 for the detail (back b, ask s); no Svg on the terminal.
   const rawIn = (root: Node) => nodesOf(root).filter(n => RAW_COLOR.test(JSON.stringify(n.props ?? {})) || n.type === 'Svg').length
   await boot($, on, DETAIL)
@@ -791,7 +811,7 @@ test('terminal: no raw color in the list; the detail keeps plain Buttons b and s
   expect(rawIn(root)).toBe(0)
   expect(hotkeys(root)).toEqual({ 'detail-back': 'b', 'detail-ask': 's' })
   expect(buttons(root).every(b => b.props?.plain === true)).toBe(true)
-  expect(nodesOf(root).find(n => n.props?.key === 'round-0')?.props).toMatchObject({ borderStyle: 'single', borderColor: 'subtle' })
+  expect(nodesOf(root).find(n => n.props?.key === 'round-0')?.props).toMatchObject({ borderStyle: 'round', borderColor: 'subtle' })
   await ui.unmount()
 })
 
@@ -838,4 +858,132 @@ test('terminal footer: plain team-mode label that shows the state in words, pane
   expect((await onFoot.find({ key: 'team-mode' }))?.text).toBe('◉ agent team')
   await onFoot.press({ key: 'team-mode' })
   await onFoot.unmount()
+})
+
+test('terminal hotkeys, mode on: the 13th task takes o, since pane-team-on is not drawn; 14th and 15th have none', async ($, on) => {
+  // Source: the brief (criterion 8, QA gap) and the key string "a c d e f g h i j k m n o" in README / design: o is the 13th task key, free once the mode is on.
+  const tasks = Array.from({ length: 15 }, (_, i) => ({ id: `k${i}`, title: `G${i}`, stage: 'build' }))
+  await boot($, on, JSON.stringify({ v: 1, lead: 'L', tasks }))
+  const off = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await off.press({ key: 'pane-team-on' })
+  await off.unmount()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const keys = hotkeys(await drawnOf(ui))
+  expect(keys['pane-team-on']).toBeUndefined()
+  const task = Object.entries(keys).filter(([k]) => k.startsWith('detail-k')).map(([, v]) => v as string | undefined)
+  expect(task).toEqual([...'acdefghijkmno', undefined, undefined])
+  const used = Object.values(keys).filter(Boolean)
+  expect(new Set(used).size).toBe(used.length)
+  await ui.unmount()
+})
+
+test('terminal: a paused status draws p: Devam (key resume, no pause) and pressing it says "Devam et"', async ($, on) => {
+  // Source: the brief (criterion 8, QA gap) and the existing desktop behavior: Devam says "Devam et", hotkey p as Pause.
+  const say: string[] = []
+  await boot($, on, TERM.replace('"v":1', '"v":1,"paused":true'), { say })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const root = await drawnOf(ui)
+  expect(hotkeys(root)).toMatchObject({ resume: 'p' })
+  expect(hotkeys(root).pause).toBeUndefined()
+  expect(nodesOf(root).find(n => n.props?.key === 'resume')?.props).toMatchObject({ label: 'Devam', plain: true })
+  await ui.press({ key: 'resume' })
+  expect(say).toEqual(['Devam et'])
+  await ui.unmount()
+})
+
+test('terminal list: a task with no candidate and no round has no Tur line, with counts only it shows them, with none no counts line', async ($, on) => {
+  // Source: the brief's list design: "leave out the part that is missing; no line if both missing"; counts line "when counts exist".
+  const tasks = [
+    { id: 'a', title: 'Yalnız yuvarlak', stage: 'spec', round: 3 },
+    { id: 'b', title: 'Yalnız sha', stage: 'revise', candidate: 'abcdef0123456789', followup: 4 },
+    { id: 'c', title: 'Hiçbiri', stage: 'report' },
+  ]
+  await boot($, on, JSON.stringify({ v: 1, tasks }))
+  const root = await drawnOf(await $.ui.mount({ ...PANE, surface: 'terminal' }))
+  const inBox = (id: string) => nodesOf(root).find(n => n.props?.key === `t-${id}`) as Node
+  expect(textNode(inBox('a'), /Tur|aday/) && textOf(textNode(inBox('a'), /Tur|aday/) as Node)).toBe('Tur 3')
+  expect(textOf(textNode(inBox('b'), /Tur|aday/) as Node)).toBe('aday abcdef0')
+  expect(textNode(inBox('c'), /Tur|aday/)).toBeUndefined()
+  expect(textNode(inBox('a'), /^Spec · 1\/5$/)).toBeDefined()
+  expect(textNode(inBox('c'), /^Rapor · 5\/5$/)).toBeDefined()
+  expect(textOf(inBox('b').children?.at(-1) as Node)).toBe('4 follow-up')
+  expect(textNode(inBox('c'), /blocking|follow-up/)).toBeUndefined()
+  expect(textNode(inBox('a'), /blocking|follow-up/)).toBeUndefined()
+})
+
+test('terminal detail: back and ask on one row, summary box, ROLLER, TURLAR newest first in round boxes, KANIT with the path dim', async ($, on) => {
+  // Source: the terminal-boxes design in the Lead's brief ("Detail view"), strings spelled out by hand from it.
+  await boot($, on, detailStatus({
+    roles: [{ name: 'Developer', state: 'yazıyor', status: 'running' }],
+    blocking: 1,
+    followup: 3,
+    rounds: [
+      { n: 1, verdict: 'NO-GO', candidate: SHA_A, note: 'Aynı aile', findings: [{ severity: 'BLOCKING', origin: 'introduced', what: 'Kutu taşıyor', where: 'src/sel.ts:42' }] },
+      { n: 2, verdict: 'GO', candidate: SHA_B, findings: [{ severity: 'LOW', origin: 'pre-existing', what: 'Eski ad', where: 'src/old.ts:7' }] },
+    ],
+    evidence: [{ label: 'QA raporu', path: '/Users/x/agent-team-evidence/qa report.md' }],
+  }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'detail-t1' })
+  const root = await drawnOf(ui)
+
+  // First line: b: ‹ Görevler left, s: Lead'e sor right, one row.
+  const top = nodesOf(root).find(n => n.props?.flexDirection === 'row' && (n.children ?? []).some(c => typeof c !== 'string' && c.props?.key === 'detail-back')) as Node
+  expect(top.props).toMatchObject({ flexDirection: 'row', justifyContent: 'space-between' })
+  expect(top.children?.map(c => (typeof c === 'string' ? c : c.props?.key))).toEqual(['detail-back', 'detail-ask'])
+  expect(top.children?.map(c => (typeof c === 'string' ? c : [c.props?.label, c.props?.hotkey]))).toEqual([['‹ Görevler', 'b'], ["Lead'e sor", 's']])
+
+  // Summary box: round subtle; title bold; "<branch> · aday <sha7>" dim; stage line + label; counts.
+  const sum = nodesOf(root).find(n => n.props?.key === 'detail-summary') as Node
+  expect(sum.props).toMatchObject({ borderStyle: 'round', borderColor: 'subtle' })
+  expect(textNode(sum, /^Seçim kutusu taşması$/)?.props?.weight).toBe('bold')
+  expect(textNode(sum, /^feat\/sel · aday bbbbbbb$/)?.props?.dimColor).toBe(true)
+  expect(textNode(sum, /^━━━ ━━━ ━━━ ━━━ ━━━ $/)).toBeDefined()
+  expect(textNode(sum, /^Review · 3\/5$/)?.props?.dimColor).toBe(true)
+  expect(textOf(sum.children?.at(-1) as Node)).toBe('1 blocking · 3 follow-up')
+
+  // Section order: summary, ROLLER (role in two lines, no box), TURLAR newest first, KANIT.
+  const order = ['detail-summary', 'ROLLER', 'TURLAR', 'KANIT'].map(k => nodesOf(root).findIndex(n => n.props?.key === k || (n.type === 'Text' && textOf(n) === k)))
+  expect(order.every(i => i >= 0) && [...order].sort((x, y) => x - y)).toEqual(order)
+  const role = nodesOf(root).find(n => n.props?.key === 'detail-r-0') as Node
+  expect(role.props?.borderStyle).toBeUndefined()
+  expect((role.children as Node[]).map(textOf)).toEqual(['◐Developer', 'yazıyor'])
+  expect(textNode(root, /^ROLLER$/)?.props?.weight).toBe('bold')
+
+  // Rounds: newest (Tur 2) is drawn before Tur 1, each in a round-0/round-1 Box (key = index in the file).
+  const all = nodesOf(root)
+  expect(all.findIndex(n => n.props?.key === 'round-1')).toBeLessThan(all.findIndex(n => n.props?.key === 'round-0'))
+  const r1 = all.find(n => n.props?.key === 'round-0') as Node
+  const r2 = all.find(n => n.props?.key === 'round-1') as Node
+  for (const r of [r1, r2]) expect(r.props).toMatchObject({ borderStyle: 'round', borderColor: 'subtle' })
+  expect(textNode(r1, /^Tur 1 · NO-GO · aaaaaaa$/)?.props).toMatchObject({ color: 'error', weight: 'bold' })
+  expect(textNode(r2, /^Tur 2 · GO · bbbbbbb$/)?.props).toMatchObject({ color: 'success', weight: 'bold' })
+  // Finding: three lines; BLOCKING in error, other severities dim; where dim; note in warning.
+  expect(textNode(r1, /^BLOCKING · introduced$/)?.props?.color).toBe('error')
+  expect(textNode(r2, /^LOW · pre-existing$/)?.props?.dimColor).toBe(true)
+  expect(textNode(r1, /^Kutu taşıyor$/)).toBeDefined()
+  expect(textNode(r1, /^src\/sel\.ts:42$/)?.props?.dimColor).toBe(true)
+  expect(textNode(r1, /^Not: Aynı aile$/)?.props?.color).toBe('warning')
+  expect(textNode(r2, /^Not: /)).toBeUndefined()
+
+  // Evidence: label, then the path dim, cut in the middle.
+  const ev = nodesOf(root).find(n => n.props?.key === 'ev-0') as Node
+  expect((ev.children as Node[]).map(textOf)).toEqual(['QA raporu', '/Users/x/agent-team-evidence/qa report.md'])
+  expect(ev.children?.[1] && (ev.children[1] as Node).props).toMatchObject({ dimColor: true, wrap: 'truncate-middle' })
+  await ui.unmount()
+})
+
+test('terminal detail: no rounds says so in one dim line, no evidence and no roles leave their sections out, a missing branch or candidate is left out', async ($, on) => {
+  // Source: the brief's detail design: "No rounds: one dim line Henüz review turu yok."; "No evidence: leave the section out"; "missing parts left out".
+  await boot($, on, JSON.stringify({ v: 1, tasks: [{ id: 't1', title: 'Yalın', stage: 'spec' }] }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'detail-t1' })
+  const root = await drawnOf(ui)
+  expect(textNode(root, /^TURLAR$/)).toBeDefined()
+  expect(textNode(root, /^Henüz review turu yok\.$/)?.props?.dimColor).toBe(true)
+  expect(textNode(root, /^KANIT$/)).toBeUndefined()
+  expect(textNode(root, /^ROLLER$/)).toBeUndefined()
+  expect(textNode(root, /aday|·  *$/)).toBeUndefined()
+  expect(textNode(root, /^Spec · 1\/5$/)).toBeDefined()
+  await ui.unmount()
 })

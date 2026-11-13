@@ -4,7 +4,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { Decision, Mode, RoleStatus, StatusView, Task } from '../types'
 import { STAGE_LABELS, baseName, clockOf, expandHome, isInside, parseFolders, parseStatus, trimSlash } from './status'
 import { BAD, CLAY, MUTED, OK, dotSvg, meterSvg, stagesSvg } from './svg'
-import { TBOX, hk, termDecisions, termFooter, termHeader, termHint, termTasks, termUsage } from './terminal'
+import { TBOX, hk, termDecisions, termFooter, termHeader, termDetail, termHint, termTasks, termUsage } from './terminal'
 
 const PANE = 'agent-team'
 const PANE_OPEN = { id: PANE, title: 'Agent Team', columns: 48 } as const
@@ -336,6 +336,18 @@ export const register: Register = (on, options) => {
       )
     }
 
+    if (open && term) {
+      return (
+        <Box flexDirection="column" padding="sm">
+          {termDetail(
+            ui,
+            open,
+            () => void update($, detail, () => null),
+            () => void $.prompt.fill({ text: `${open.title} hakkında: `, mode: 'replace' }),
+          )}
+        </Box>
+      )
+    }
     if (open) return detailView(open)
 
     const updated = clockOf(data?.updatedAt)

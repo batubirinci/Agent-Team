@@ -1,6 +1,6 @@
 import type { EngineInterface } from 'claude-code'
 
-import type { Decision, RoleStatus, Task } from '../types'
+import type { Decision, Role, RoleStatus, Task } from '../types'
 import { STAGE_LABELS } from './status'
 
 // The terminal drawing of the pane and the footer (approved design "Terminal arayüzü · şimdi ve öneri"):
@@ -8,6 +8,7 @@ import { STAGE_LABELS } from './status'
 export type UI = Pick<ReturnType<EngineInterface['ui']['resolve']>, 'Box' | 'Button' | 'Text'>
 
 export const TBOX = { flexDirection: 'column', borderStyle: 'single', borderColor: 'subtle', paddingX: 1 } as const
+export const ROUND = { ...TBOX, borderStyle: 'round' } as const
 export const hk = (key: string) => ({ plain: true, hotkey: key }) as const
 // Not b l p s t (back, pause, ask, pane are the pane's own); "o" last, as pane-team-on takes it.
 const TASK_KEYS = 'acdefghijkmno'
@@ -83,47 +84,125 @@ export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], 
   )
 }
 
+// The task bits shared by the list box and the detail: stage segments, role rows, counts (approved design "Terminal pane · yeniden tasarım").
+const stageLine = ({ Text }: UI, t: Task) => (
+  <Text>
+    {STAGE_LABELS.map((_, i) =>
+      i === t.stage ? <Text color="claude" weight="bold">━━━ </Text> : <Text color={i < t.stage ? 'text' : 'inactive'}>━━━ </Text>,
+    )}
+  </Text>
+)
+
+const stageName = ({ Text }: UI, t: Task) => <Text dimColor>{`${STAGE_LABELS[t.stage]} · ${t.stage + 1}/5`}</Text>
+
+const roleRows = ({ Box, Text }: UI, id: string, roles: Role[]) =>
+  roles.map((r, i) => (
+    <Box key={`${id}-r-${i}`} flexDirection="column">
+      <Box flexDirection="row" gap={1}>
+        <Text color={GLYPH[r.status][1]}>{GLYPH[r.status][0]}</Text>
+        <Text>{r.name}</Text>
+      </Box>
+      {r.state && (
+        <Box marginLeft={4}>
+          <Text color={r.status === 'blocked' ? 'error' : undefined} dimColor={r.status !== 'blocked'}>{r.state}</Text>
+        </Box>
+      )}
+    </Box>
+  ))
+
+const counts = ({ Text }: UI, t: Task) =>
+  !!(t.blocking || t.followup) && (
+    <Text>
+      {!!t.blocking && <Text color="error" weight="bold">{`${t.blocking} blocking`}</Text>}
+      {!!t.followup && <Text dimColor>{`${t.blocking ? ' · ' : ''}${t.followup} follow-up`}</Text>}
+    </Text>
+  )
+
 // hasOn: pane-team-on is drawn and owns "o", so no task takes it.
-export function termTasks({ Box, Button, Text }: UI, tasks: Task[], running: number, hasOn: boolean, open: (id: string) => void) {
+export function termTasks(ui: UI, tasks: Task[], running: number, hasOn: boolean, open: (id: string) => void) {
+  const { Box, Button, Text } = ui
   const keys = hasOn ? TASK_KEYS.slice(0, -1) : TASK_KEYS
   return (
-    <Box flexDirection="column" gap={1}>
-      <Text weight="bold">{`${'Görevler'.toLocaleUpperCase('tr')} · ${running} çalışıyor`}</Text>
+    <Box flexDirection="column">
+      <Box flexDirection="row" justifyContent="space-between" gap={2}>
+        <Text weight="bold">{`${'Görevler'.toLocaleUpperCase('tr')} · ${running} çalışıyor`}</Text>
+        <Text dimColor>{`${tasks.length} görev`}</Text>
+      </Box>
       {tasks.map((t, ti) => {
-        const bits: (string | JSX.Element)[] = []
-        if (t.blocking) bits.push(<Text color="error" weight="bold">{`${t.blocking} blocking`}</Text>)
-        if (t.followup) bits.push(...(bits.length ? [' · '] : []), <Text>{`${t.followup} follow-up`}</Text>)
+        const tur = [t.round !== undefined && `Tur ${t.round}`, t.candidate && `aday ${t.candidate.slice(0, 7)}`].filter(Boolean).join(' · ')
         return (
-          <Box key={`t-${t.id}`} flexDirection="column">
-            <Box flexDirection="row" justifyContent="space-between" gap={2}>
-              <Button key={`detail-${t.id}`} label={t.title} onPress={() => open(t.id)} {...(keys[ti] ? hk(keys[ti]) : { plain: true as const })} />
-              {t.round !== undefined && <Text dimColor>{`Tur ${t.round}`}</Text>}
-            </Box>
-            <Text>
-              {STAGE_LABELS.flatMap((l, i) => {
-                const label = l.toLowerCase()
-                const part =
-                  i < t.stage ? <Text dimColor>{`✓ ${label}`}</Text>
-                  : i === t.stage ? <Text color="claude" weight="bold">{`◉ ${label}`}</Text>
-                  : <Text color="inactive">{`○ ${label}`}</Text>
-                return i ? ['  ', part] : [part]
-              })}
-            </Text>
-            {t.roles.length > 0 && (
-              <Box flexDirection="column" marginLeft={2}>
-                {t.roles.map((r, i) => (
-                  <Box key={`t-${t.id}-r-${i}`} flexDirection="row" gap={1}>
-                    <Text color={GLYPH[r.status][1]}>{GLYPH[r.status][0]}</Text>
-                    <Text wrap="truncate-end">{r.name}</Text>
-                    {r.state && <Text color={r.status === 'blocked' ? 'error' : undefined} dimColor={r.status !== 'blocked'}>{r.state}</Text>}
-                  </Box>
-                ))}
-              </Box>
-            )}
-            {t.candidate && <Text><Text dimColor>{t.candidate.slice(0, 7)}</Text>{bits.length > 0 && '   '}{bits}</Text>}
+          <Box key={`t-${t.id}`} {...ROUND}>
+            <Button key={`detail-${t.id}`} label={t.title} onPress={() => open(t.id)} {...(keys[ti] ? hk(keys[ti]) : { plain: true as const })}>
+              <Text weight="bold" wrap="truncate-end">{t.title}</Text>
+            </Button>
+            {tur && <Text dimColor>{tur}</Text>}
+            {stageLine(ui, t)}
+            {stageName(ui, t)}
+            {roleRows(ui, `t-${t.id}`, t.roles)}
+            {counts(ui, t)}
           </Box>
         )
       })}
+    </Box>
+  )
+}
+
+// The detail: back/ask on one row, a summary box, ROLLER, TURLAR (newest first, a box each), KANIT.
+export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void) {
+  const { Box, Button, Text } = ui
+  const head = (s: string) => <Text weight="bold">{s}</Text>
+  const where = [t.branch, t.candidate && `aday ${t.candidate.slice(0, 7)}`].filter(Boolean).join(' · ')
+  return (
+    <Box flexDirection="column" gap={1}>
+      <Box flexDirection="row" justifyContent="space-between" gap={2}>
+        <Button key="detail-back" label="‹ Görevler" onPress={back} {...hk('b')} />
+        <Button key="detail-ask" label="Lead'e sor" onPress={ask} {...hk('s')} />
+      </Box>
+      <Box key="detail-summary" {...ROUND}>
+        <Text weight="bold">{t.title}</Text>
+        {where && <Text dimColor>{where}</Text>}
+        <Text>{stageLine(ui, t)}{stageName(ui, t)}</Text>
+        {counts(ui, t)}
+      </Box>
+      {t.roles.length > 0 && (
+        <Box flexDirection="column">
+          {head('ROLLER')}
+          {roleRows(ui, 'detail', t.roles)}
+        </Box>
+      )}
+      <Box flexDirection="column">
+        {head('TURLAR')}
+        {t.rounds ? (
+          t.rounds.map((r, i) => (
+            <Box key={`round-${i}`} {...ROUND}>
+              <Text weight="bold" color={r.verdict === 'GO' ? 'success' : r.verdict.startsWith('NO') ? 'error' : undefined}>
+                {['Tur ' + r.n, r.verdict, r.candidate?.slice(0, 7)].filter(Boolean).join(' · ')}
+              </Text>
+              {r.findings.map((f, j) => (
+                <Box key={`round-${i}-f-${j}`} flexDirection="column">
+                  <Text color={f.severity === 'BLOCKING' ? 'error' : undefined} dimColor={f.severity !== 'BLOCKING'}>{[f.severity, f.origin].filter(Boolean).join(' · ')}</Text>
+                  <Text>{f.what}</Text>
+                  {f.where && <Text dimColor>{f.where}</Text>}
+                </Box>
+              ))}
+              {r.note && <Text color="warning">{`Not: ${r.note}`}</Text>}
+            </Box>
+          )).reverse()
+        ) : (
+          <Text dimColor>Henüz review turu yok.</Text>
+        )}
+      </Box>
+      {t.evidence && (
+        <Box flexDirection="column">
+          {head('KANIT')}
+          {t.evidence.map((e, i) => (
+            <Box key={`ev-${i}`} flexDirection="column">
+              <Text>{e.label}</Text>
+              <Text dimColor wrap="truncate-middle">{e.path}</Text>
+            </Box>
+          ))}
+        </Box>
+      )}
     </Box>
   )
 }
