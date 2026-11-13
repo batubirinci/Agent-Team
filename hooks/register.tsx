@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Decision, Mode, RoleStatus, StatusView, Task, TaskState } from '../types'
-import { STAGE_LABELS, baseName, clockOf, countStates, decisionTask, expandHome, isInside, parseFolders, parseStatus, trimSlash } from './status'
+import { ANNOUNCE, OPEN_ROW, STAGE_LABELS, announcedFile, baseName, clockOf, countStates, decisionTask, expandHome, isInside, parseFolders, parseStatus, trimSlash } from './status'
 import { BAD, CLAY, MUTED, OK, dotSvg, meterSvg, stagesSvg } from './svg'
 import { TBOX, hk, termDecisions, termFooter, termHeader, termDetail, termHint, termTasks, termUsage } from './terminal'
 
@@ -81,13 +81,22 @@ const leadText = (file: string) =>
     "Bu oturum bir Agent Team oturumu (agent-team plugin'i). Sen Lead'sin:",
     "sahibin her mesajını agent-team skill'inin akışıyla ele al; /agent-team yazılması gerekmez.",
     "Skill bu oturumda henüz yüklenmediyse önce Skill aracıyla agent-team skill'ini yükle.",
-    `Pane'in okuduğu durum dosyası: ${file} (biçimi skill'in references/status.md dosyasında).`,
+    `${ANNOUNCE} ${file} (biçimi skill'in references/status.md dosyasında).`,
   ].join(' ')
 
 // A press in the pane reaches the Lead as the owner's own message.
 async function say($: EngineInterface, text: string) {
   await $.prompt.submit({ text, asUser: true })
 }
+
+const openRow = (file: string) => `${OPEN_ROW}${leadText(file)}`
+
+// The row that tells the Lead (and, later, a resumed session) the status path.
+// The system prompt of a running thread does not change mid-session: tell the model in a row.
+const announce = ($: EngineInterface, file: string) =>
+  $.session.append({
+    message: { type: 'user', content: [{ type: 'text', text: openRow(file) }] },
+  })
 
 // The one place the status view changes: an open detail whose task is not in the new view is closed
 // (file deleted, task removed), so the same id coming back does not reopen it by itself.
@@ -119,20 +128,14 @@ async function setMode($: EngineInterface, isOn: boolean) {
   if (was.isOn === isOn) return
   await update($, mode, () => ({ isOn, source: isOn ? 'switch' : 'off' }))
   const { file } = await read($, status)
-  // The system prompt of a running thread does not change mid-session: tell the model in a row.
-  await $.session.append({
-    message: {
-      type: 'user',
-      content: [
-        {
-          type: 'text',
-          text: isOn
-            ? `[Agent Team modu açıldı] ${leadText(file)}`
-            : '[Agent Team modu kapandı] Bu oturum artık normal bir Claude oturumu; agent-team akışını bırak.',
-        },
-      ],
-    },
-  })
+  if (isOn) await announce($, file)
+  else
+    await $.session.append({
+      message: {
+        type: 'user',
+        content: [{ type: 'text', text: '[Agent Team modu kapandı] Bu oturum artık normal bir Claude oturumu; agent-team akışını bırak.' }],
+      },
+    })
   if (isOn) await $.ui.open(PANE_OPEN)
   else await $.ui.close({ id: PANE })
 }
@@ -145,9 +148,19 @@ export const register: Register = (on, options) => {
     const home = (await $.env.get('HOME')) ?? ''
     const root = trimSlash(expandHome(String(options.evidenceRoot || '~/agent-team-evidence'), home))
     // One file per session: sessions in one folder (the SSH server's home) must not share a status.
-    // No usable id (the call fails or answers empty): the old <project>.json.
-    const sid = String(await $.session.id().catch(() => '')).slice(0, 8)
-    const file = `${root}/status/${baseName(e.cwd)}${sid ? `--${sid}` : ''}.json`
+    // A session keeps its first file whatever its id becomes: the one the atom holds (a reload), else the
+    // last one this plugin announced in the history (a resume under a new id), if it is on disk; else a new
+    // one. No usable id (the call fails or answers empty): the old <project>.json.
+    const dir = `${root}/status`
+    const held = (await read($, status)).file
+    const rows = await $.session.messages().catch(() => [])
+    const said = announcedFile(rows.filter(m => m.role === 'user').map(m => m.text), dir, openRow)
+    let file = ''
+    for (const old of [held, said]) if (!file && old && (await $.fs.exists(old))) file = old
+    if (!file) {
+      const sid = String(await $.session.id().catch(() => '')).slice(0, 8)
+      file = `${dir}/${baseName(e.cwd)}${sid ? `--${sid}` : ''}.json`
+    }
     await refresh($, file)
     $.clock.every(POLL_MS, () => refresh($, file))
 
@@ -155,7 +168,11 @@ export const register: Register = (on, options) => {
     if (!current.isOn && isInside(e.cwd, parseFolders(options.teamFolders, home))) {
       await update($, mode, () => ({ isOn: true, source: 'folder' }))
     }
-    if ((await read($, mode)).isOn) void $.ui.open(PANE_OPEN)
+    if ((await read($, mode)).isOn) {
+      void $.ui.open(PANE_OPEN)
+      // Team mode by folder writes no switch row: tell the Lead the path once per path, so a resume finds it.
+      if (said !== file) await announce($, file).catch(() => undefined)
+    }
 
     return next(e)
   })

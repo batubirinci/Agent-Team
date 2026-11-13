@@ -542,6 +542,211 @@ test('the status file is per session: <project>--<first 8 of the session id>.jso
   expect(checked.at(-1)).toBe(`${ROOT}/shop.json`)
 })
 
+// Status continuity (owner live screenshot 2026-11-13: the pane on dc57ef03, the Lead still writing 66b9491d; criteria 1-6
+// of the status-continuity task, written by the Lead). Expected paths are spelled out by hand, never read back from the code.
+const CONT_ROOT = '/Users/x/agent-team-evidence/status'
+const OLD = `${CONT_ROOT}/shop--66b9491d.json`
+const NEW = `${CONT_ROOT}/shop--dc57ef03.json`
+const ID_OLD = '66b9491d-0000-4000-8000-000000000000'
+const ID_NEW = 'dc57ef03-0000-4000-8000-000000000000'
+// The row the plugin writes, spelled out by hand (the wording of its open message, written down, not read from the code).
+const HEAD = "[Agent Team modu açıldı] Bu oturum bir Agent Team oturumu (agent-team plugin'i). Sen Lead'sin: sahibin her mesajını agent-team skill'inin akışıyla ele al; /agent-team yazılması gerekmez. Skill bu oturumda henüz yüklenmediyse önce Skill aracıyla agent-team skill'ini yükle. "
+const announce = (file: string) => `${HEAD}Pane'in okuduğu durum dosyası: ${file} (biçimi skill'in references/status.md dosyasında).`
+type Row = { role: 'user' | 'assistant'; text: string; toolUses: never[] }
+const row = (role: Row['role'], text: string): Row => ({ role, text, toolUses: [] })
+
+// One session.start with a fake disk (`present` paths) and a fake history; reports what the pane read and what the Lead was told.
+const continuity = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1]) => {
+  const present = new Set<string>()
+  const state = { id: ID_OLD, history: [] as Row[], messagesFail: false }
+  const read: string[] = []
+  const appended: string[] = []
+  const sent: (readonly string[] | undefined)[] = []
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.close', () => ({ value: undefined }))
+  on('env.get', () => ({ value: '/Users/x' }))
+  on('session.id', () => ({ value: state.id }))
+  on('session.messages', () => {
+    if (state.messagesFail) throw new Error('no history')
+    return { value: state.history }
+  })
+  on('fs.exists', (_, e) => ({ value: present.has(e.path) }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: 1, isLink: false } }))
+  on('fs.read', (_, e) => {
+    read.push(e.path)
+    return { value: STATUS }
+  })
+  on('clock.every', () => ({ value: undefined }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.append', (_, e, next) => {
+    const block = e.message.content[0]
+    appended.push(block && 'text' in block ? String(block.text) : '')
+    state.history.push(row('user', appended.at(-1)!)) // a row the plugin appends is in the next read
+    return next(e)
+  })
+  on('prompt.submit', (_, e) => {
+    sent.push(e.context)
+    return { text: e.text }
+  })
+  const start = () => $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'desktop', isInteractive: true })
+  // Team mode on, one prompt: the two places the Lead is told the path.
+  let isOn = false
+  const leadSees = async () => {
+    if (!isOn) {
+      const foot = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
+      await foot.press({ key: 'team-mode' })
+      await foot.unmount()
+      isOn = true
+    }
+    await $.prompt.submit({ wait: false, origin: { kind: 'composer' }, text: 'merhaba' })
+    return { appended: appended.at(-1) ?? '', context: (sent.at(-1) ?? []).join('\n') }
+  }
+  const paneTitle = async () => {
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    const found = await ui.find({ key: 'detail-t1' })
+    await ui.unmount()
+    return found
+  }
+  return { present, state, read, appended, start, leadSees, paneTitle }
+}
+
+test('a reload keeps the status file the session already has, even when the session id changed (criteria 1, 5)', async ($, on) => {
+  const c = await continuity($, on)
+  await c.start()
+  expect(c.read).toEqual([]) // nothing on disk yet: the new path, nothing read
+  c.present.add(OLD) // the Lead wrote it
+  c.state.id = ID_NEW // /reload-plugins after the session got another id
+  await c.start()
+  expect(c.read.at(-1)).toBe(OLD)
+  expect(c.read).not.toContain(NEW)
+  expect(await c.paneTitle()).toBeDefined()
+  const seen = await c.leadSees()
+  expect(seen.appended).toContain(`${OLD} `)
+  expect(seen.context).toContain(`${OLD} `)
+  expect(seen.context).not.toContain(NEW)
+})
+
+test('a remembered path whose file is gone, and a brand-new session, get today\'s new path (criteria 3, 4)', async ($, on) => {
+  const c = await continuity($, on)
+  await c.start()
+  c.state.id = ID_NEW
+  await c.start() // OLD was never written: not kept
+  expect((await c.leadSees()).context).toContain(`${NEW} `)
+  c.present.add(NEW)
+  await c.start()
+  expect(c.read.at(-1)).toBe(NEW)
+})
+
+test('a new process takes the path this plugin announced earlier in the history, if it exists (criteria 2, 5)', async ($, on) => {
+  const c = await continuity($, on)
+  c.state.id = ID_NEW
+  c.state.history = [row('user', 'merhaba'), row('user', announce(`${CONT_ROOT}/shop--11111111.json`)), row('assistant', 'tamam'), row('user', announce(OLD))]
+  c.present.add(OLD)
+  await c.start()
+  expect(c.read.at(-1)).toBe(OLD) // the last announcement
+  expect(await c.paneTitle()).toBeDefined()
+  expect((await c.leadSees()).context).toContain(`${OLD} `)
+})
+
+test('the path the atom holds wins over a different announced path that also exists (QA r1 LOW 2)', async ($, on) => {
+  const c = await continuity($, on)
+  await c.start() // holds OLD
+  c.present.add(OLD)
+  c.present.add(`${CONT_ROOT}/shop--11111111.json`)
+  c.state.id = ID_NEW
+  c.state.history = [row('user', announce(`${CONT_ROOT}/shop--11111111.json`))]
+  await c.start()
+  expect(c.read.at(-1)).toBe(OLD)
+  expect(c.read).not.toContain(`${CONT_ROOT}/shop--11111111.json`)
+})
+
+test('an announced path that is not on disk, or no readable history, gives the new path (criteria 3, 4)', async ($, on) => {
+  const c = await continuity($, on)
+  c.state.id = ID_NEW
+  c.state.history = [row('user', announce(OLD))]
+  await c.start() // OLD absent
+  expect((await c.leadSees()).context).toContain(`${NEW} `)
+  c.present.add(OLD)
+  c.state.messagesFail = true
+  await c.start() // history unreadable: no OLD
+  expect(c.read).toEqual([])
+  expect((await c.leadSees()).context).toContain(`${NEW} `)
+})
+
+test('a path from history counts only if it is this plugin\'s own sentence under <evidence root>/status/ ending in .json (criterion 6)', async ($, on) => {
+  // Source: the Lead's trust-boundary rule; each bad case is a path a model or a file could put in a message.
+  const GOOD = `${CONT_ROOT}/shop--11111111.json` // a fine path in a row the plugin did not write
+  const bad: [string, string][] = [
+    '/etc/passwd.json',
+    '/Users/x/agent-team-evidence/other/shop--11111111.json',
+    `${CONT_ROOT}/../outside/shop--11111111.json`,
+    `${CONT_ROOT}/sub/shop--11111111.json`,
+    `${CONT_ROOT}/shop--11111111.txt`,
+    '/Users/x/agent-team-evidence/statusX/shop--11111111.json',
+  ].map(f => [announce(f), f])
+  // Owner-pasted logs and typed look-alikes (QA r1 P4): the row mid-message, the prefix with another sentence, a fake sentence ahead of the real one.
+  bad.push(
+    [`şu log: ${announce(GOOD)}`, GOOD],
+    [`şu log:\n${announce(GOOD)}`, GOOD],
+    [`[Agent Team modu açıldı] Başka bir şey. Pane'in okuduğu durum dosyası: ${GOOD} (biçimi skill'in references/status.md dosyasında).`, GOOD],
+    [`[Agent Team modu açıldı] Pane'in okuduğu durum dosyası: ${GOOD} (biçimi x) ${announce(GOOD).slice(25)}`, GOOD],
+  )
+  const c = await continuity($, on)
+  c.state.id = ID_NEW
+  for (const [text, path] of bad) {
+    c.state.history = [row('user', text)]
+    // Every path exists: only the shape rule can reject it.
+    c.present.add(path)
+    await c.start()
+    expect(c.read, text).toEqual([])
+    expect((await c.leadSees()).context, text).toContain(`${NEW} `)
+  }
+  // The assistant's own words, or a sentence that is not the plugin's, never count; a bad later one does not hide a good earlier one.
+  c.state.history = [row('user', announce(OLD)), row('assistant', announce(`${CONT_ROOT}/shop--22222222.json`)), row('user', `bak: ${CONT_ROOT}/shop--33333333.json`), row('user', announce('/etc/x.json'))]
+  for (const f of ['shop--22222222', 'shop--33333333']) c.present.add(`${CONT_ROOT}/${f}.json`)
+  c.present.add(OLD)
+  await c.start()
+  expect(c.read.at(-1)).toBe(OLD)
+})
+
+// Source: the Lead's decision 2026-11-13 (teamFolders "/" turns team mode on at session.start, so no switch row is ever written):
+// the open row carries the path once per path; a reload does not repeat it; mode off writes nothing.
+const FOLDERS = { options: { teamFolders: '/' } }
+
+test('team mode by folder: one row with the chosen path, no second row on a reload, a new row only when the path changes (a, b)', FOLDERS, async ($, on) => {
+  const c = await continuity($, on)
+  await c.start()
+  expect(c.appended).toHaveLength(1)
+  expect(c.appended[0]).toContain(`dosyası: ${OLD} (biçimi`)
+  c.present.add(OLD) // the Lead wrote it
+  c.state.id = ID_NEW
+  await c.start() // /reload-plugins under a new id: same path, the row is already in the history
+  expect(c.appended).toHaveLength(1)
+  expect(c.read.at(-1)).toBe(OLD)
+  c.present.delete(OLD) // the file is gone: a new path is a new announcement
+  await c.start()
+  expect(c.appended).toHaveLength(2)
+  expect(c.appended[1]).toContain(`dosyası: ${NEW} (biçimi`)
+})
+
+test('a resumed process whose history has the folder-mode row takes that old path and writes no row (c)', FOLDERS, async ($, on) => {
+  const c = await continuity($, on)
+  c.state.id = ID_NEW
+  c.state.history = [row('user', 'merhaba'), row('user', announce(OLD))]
+  c.present.add(OLD)
+  await c.start()
+  expect(c.read.at(-1)).toBe(OLD)
+  expect(c.appended).toHaveLength(0)
+})
+
+test('team mode off: a start appends no row (d)', async ($, on) => {
+  const c = await continuity($, on)
+  await c.start()
+  await c.start()
+  expect(c.appended).toHaveLength(0)
+})
+
 test('deleting the status file closes the open detail, and the same task id coming back shows the list', async ($, on) => {
   // Source: criterion 4a of the status-per-session task (QA follow-up task-detail r2): one check clears the open detail.
   let exists = true

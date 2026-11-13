@@ -8,6 +8,12 @@ sessions in one folder never share a file. Only when no plugin path is given, fa
 comes from the Lead's memory (default `~/agent-team-evidence`). Create the folder if missing.
 Old `<project>.json` files are no longer read by the pane (no migration); delete them or leave them.
 
+A session keeps its first status file for its whole life: the plugin reuses the path it already
+gave (a reload, a `/clear`, or a resume under a new session id) as long as that file exists, and
+computes a new `<project>--<id8>.json` only for a new session or when the old file is gone. So the
+path in the latest plugin message is the one to write; if it differs from the one you used before,
+write your current status there and leave the old file alone.
+
 Write the whole file each time (Write tool, never append), valid JSON, UTF-8. The pane re-reads it
 every few seconds; a field it does not know is ignored, a missing optional field is not drawn.
 
