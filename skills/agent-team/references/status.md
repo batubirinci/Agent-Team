@@ -14,6 +14,11 @@ computes a new `<project>--<id8>.json` only for a new session or when the old fi
 path in the latest plugin message is the one to write; if it differs from the one you used before,
 write your current status there and leave the old file alone.
 
+Panes also read (never write) the other `*.json` files in the same status folder, for the strip
+"Diğer oturumlar" that shows other sessions' pending `decisions` read-only: only regular files
+(not links) modified in the last 24 hours and at most 256 KiB, the 20 newest at most, parsed like
+your own file. So keep `decisions` current in your own file; the owner answers there, not in the strip.
+
 Write the whole file each time (Write tool, never append), valid JSON, UTF-8. The pane re-reads it
 every few seconds; a field it does not know is ignored, a missing optional field is not drawn.
 

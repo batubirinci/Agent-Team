@@ -47,6 +47,8 @@ ayrıntıları (sırayla), `p` pause/devam, ayrıntıda `b` geri ve `s` Lead'e s
 
 - **Senin sıran:** bekleyen kararlar. Bir seçeneğe basmak Lead'e sahibin kendi mesajı olarak
   `Karar (<id>): <seçenek>` gönderir.
+- **Diğer oturumlar:** aynı makinedeki başka team oturumlarında bekleyen kararlar yalnızca okunur bir
+  şeritte görünür (`Göster`/`Gizle`, terminalde `v`); cevap o oturumda verilir.
 - **Görevler:** her görev için 5 aşamalı çizgi (Spec, Build, Review, Revise, Rapor) ve rollerin
   durumu.
 - **Ayrıntı:** görev kartındaki **Ayrıntı ›** turları, bulguları, Lead notunu ve kanıt yollarını açar.

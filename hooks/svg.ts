@@ -7,6 +7,8 @@ export const OK = '#4E9A47'
 export const BAD = '#D9534F'
 // The current stage part of a blocked task (the approved design's red).
 export const STUCK = '#E06C6C'
+// The dot of the strip for other sessions' decisions (the approved design's amber).
+export const AMBER = '#E5C07B'
 
 const H = 4
 const n = (x: number) => Math.round(x * 100) / 100

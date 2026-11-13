@@ -1,6 +1,6 @@
 import type { EngineInterface } from 'claude-code'
 
-import type { Decision, Role, RoleStatus, Task, TaskState } from '../types'
+import type { Decision, Other, Role, RoleStatus, Task, TaskState } from '../types'
 import { STAGE_LABELS, decisionTask } from './status'
 
 // The terminal drawing of the pane and the footer (approved design "Terminal arayüzü · şimdi ve öneri"):
@@ -233,9 +233,63 @@ export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void) {
   )
 }
 
-export function termHint({ Text }: UI) {
+export function termHint({ Text }: UI, hasOthers = false) {
   const k = (s: string) => <Text color="claude">{s}</Text>
-  return <Text dimColor>{k('a-o')} ayrıntı  {k('1-9')} karar  {k('p')} pause  {k('esc')} çık</Text>
+  return <Text dimColor>{k('a-o')} ayrıntı  {k('1-9')} karar  {hasOthers && <Text>{k('v')} diğer  </Text>}{k('p')} pause  {k('esc')} çık</Text>
+}
+
+// Other team sessions' decisions, read-only: no number keys, options as dim text; "v" opens and closes (approved design "Diğer oturumların kararları").
+export function termOthers({ Box, Button, Text }: UI, others: readonly Other[], open: boolean, toggle: () => void) {
+  const total = others.reduce((n, o) => n + o.count, 0)
+  const head = (title: JSX.Element, label: string) => (
+    <Box flexDirection="row" justifyContent="space-between" gap={2}>
+      {title}
+      <Button key="others-toggle" label={label} onPress={toggle} {...hk('v')} />
+    </Box>
+  )
+  if (!open)
+    return (
+      <Box flexDirection="column">
+        {head(
+          <Text>
+            <Text color="warning">◇ </Text>
+            <Text color="warning" weight="bold">{`Diğer oturumlarda ${total} karar`}</Text>
+          </Text>,
+          'göster',
+        )}
+        <Text dimColor>{`  ${others.map(o => `${o.project} ${o.count}${o.stuckCount ? ` (${o.stuckCount} takıldı)` : ''}`).join(' · ')}`}</Text>
+      </Box>
+    )
+  return (
+    <Box flexDirection="column">
+      {head(
+        <Text>
+          <Text color="warning" weight="bold">{`◇ ${'Diğer oturumlar'.toLocaleUpperCase('tr')}`}</Text>
+          <Text dimColor>{` · ${total} karar`}</Text>
+        </Text>,
+        'gizle',
+      )}
+      {others.map(o => (
+        <Box key={`other-${o.file}`} {...TBOX} borderColor={o.stuckCount ? 'error' : TBOX.borderColor}>
+          <Box flexDirection="row" justifyContent="space-between" gap={2}>
+            <Text weight="bold">{o.name}</Text>
+            <Text dimColor>{o.when}</Text>
+          </Box>
+          <Box flexDirection="column" gap={1}>
+            {o.decisions.map((d, i) => (
+              <Box key={`odec-${o.file}-${i}`} flexDirection="column">
+                <Text color={d.stuck ? 'error' : 'claude'} weight="bold">{`${d.stuck ? '✗' : '◆'} ${d.kind ?? 'Karar'}`}</Text>
+                <Text>{d.text}</Text>
+                {d.options.length > 0 && <Text dimColor>{`  ${d.options.join(' / ')}`}</Text>}
+              </Box>
+            ))}
+          </Box>
+          {o.count > o.decisions.length && <Text dimColor>{`+${o.count - o.decisions.length} karar daha`}</Text>}
+        </Box>
+      ))}
+      <Text dimColor>Cevabı o oturumda ver; buradan gönderilemez.</Text>
+    </Box>
+  )
 }
 
 export function termFooter({ Box, Button, Text }: UI, isOn: boolean, modes: readonly string[], toggle: () => void, openPane: () => void) {

@@ -1,4 +1,4 @@
-import type { Decision, Evidence, Finding, Role, Round, RoleStatus, Status, Task, TaskState } from '../types'
+import type { Decision, DirEntry, Evidence, Finding, Other, Role, Round, RoleStatus, Status, Task, TaskState } from '../types'
 
 export const STAGES = ['spec', 'build', 'review', 'revise', 'report'] as const
 export const STAGE_LABELS = ['Spec', 'Build', 'Review', 'Revise', 'Rapor'] as const
@@ -13,6 +13,9 @@ const short = (x: unknown, n: number): string | undefined => str(x)?.trim().slic
 const num = (x: unknown): number | undefined =>
   typeof x === 'number' && Number.isFinite(x) && x >= 0 ? Math.round(x) : undefined
 const list = (x: unknown): Obj[] => (Array.isArray(x) ? x.filter(isObj) : [])
+
+// A decision kind that says the work is stuck ("Takıldı ...", any case, also "takildi"): one rule for the parser and the strip.
+export const isStuck = (kind?: string) => !!kind?.trim().toLocaleLowerCase('tr').replace(/ı/g, 'i').startsWith('takildi')
 
 // The file is written by the Lead (a model): read it as untrusted data, keep what is well formed.
 export function parseStatus(text: string): Status {
@@ -63,7 +66,7 @@ export function parseStatus(text: string): Status {
     const asked = written ? decisions.filter(d => d.task === written) : []
     const blocked = roles.find(r => r.status === 'blocked')
     const state: TaskState =
-      blocked || asked.some(d => d.kind?.trim().toLocaleLowerCase('tr').replace(/ı/g, 'i').startsWith('takildi')) ? 'blocked' : roles.some(r => r.status === 'running') ? 'running' : 'waiting'
+      blocked || asked.some(d => isStuck(d.kind)) ? 'blocked' : roles.some(r => r.status === 'running') ? 'running' : 'waiting'
     const reason =
       state === 'blocked' ? (asked.length ? `senden ${asked.length} karar bekliyor` : blocked?.state || undefined) : wait
     return [{
@@ -151,4 +154,51 @@ export function announcedFile(texts: readonly string[], statusDir: string, rowFo
     return file && t === rowFor(file) ? [file] : []
   })
   return files.reverse().find(p => p.endsWith('.json') && p.startsWith(`${statusDir}/`) && !p.slice(statusDir.length + 1).includes('/'))
+}
+
+// Other team sessions' files in the status folder (the pane's read-only strip): a regular .json file that is not this
+// session's own, written in the last 24 h (exactly 24 h old is out), at most 256 KiB; the newest 20 of them.
+const OTHER_DAY_MS = 86_400_000
+const OTHER_MAX_BYTES = 256 * 1024
+const OTHER_MAX_FILES = 20
+
+export const otherFiles = (entries: readonly DirEntry[], dir: string, own: string, now: number) =>
+  entries
+    .filter(e => e.kind === 'file' && !e.isLink && e.name.endsWith('.json') && `${dir}/${e.name}` !== own && now - e.mtimeMs < OTHER_DAY_MS && e.size <= OTHER_MAX_BYTES)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs || a.name.localeCompare(b.name))
+    .slice(0, OTHER_MAX_FILES)
+
+const pad2 = (n: number) => String(n).padStart(2, '0')
+
+// The file is untrusted and the result goes in a state atom (4 MiB limit) and on the pane: cut what is drawn.
+const OTHER_KIND = 120
+const OTHER_TEXT = 400
+const OTHER_OPTION = 60
+const OTHER_DECISIONS = 10
+const cut = (x: string, n: number) => (x.length > n ? `${x.slice(0, n - 1)}…` : x)
+
+// One other session from its parsed file, or undefined when it asks nothing. <project>--<id8>.json is "<project> · <id8>",
+// <project>.json is "<project>"; the time is the file's updatedAt, else its mtime (local). `count` and `stuckCount` are of ALL
+// the file's decisions, `decisions` keeps the first 10, cut.
+export function otherSession(e: DirEntry, s: Status): Other | undefined {
+  if (!s.decisions.length) return undefined
+  const base = e.name.replace(/\.json$/, '')
+  const m = base.match(/^(.+)--([^-]{8})$/)
+  const project = m?.[1] ?? base
+  const d = new Date(e.mtimeMs)
+  const all = s.decisions.map(x => ({ x, ...decisionTask(x, s.tasks) }))
+  return {
+    file: e.name,
+    project,
+    name: m ? `${project} · ${m[2]}` : project,
+    when: clockOf(s.updatedAt) ?? `${pad2(d.getHours())}:${pad2(d.getMinutes())}`,
+    count: all.length,
+    stuckCount: all.filter(a => a.blocked || isStuck(a.x.kind)).length,
+    decisions: all.slice(0, OTHER_DECISIONS).map(({ x, kind, blocked }) => ({
+      kind: kind && cut(kind, OTHER_KIND),
+      text: cut(x.text, OTHER_TEXT),
+      options: x.options.map(o => cut(o, OTHER_OPTION)),
+      stuck: blocked || isStuck(x.kind),
+    })),
+  }
 }
