@@ -126,7 +126,7 @@ async function pick($: EngineInterface, d: Decision, o: string, term: boolean) {
   await update($, sent, s => {
     const had = s.some(([id]) => id === d.id)
     fresh = term || !had
-    return had ? s : [...s, [d.id, o]]
+    return had ? s : [...s, [d.id, o] as [string, string]]
   })
   if (fresh) await say($, kararLine(d.id, o))
 }
