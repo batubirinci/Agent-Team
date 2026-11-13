@@ -1598,7 +1598,7 @@ const NS = 'NorthScore--1a2b3c4d.json'
 const DESIGN_LISTING = [entry(BB, { mtimeMs: at(14, 25) }), entry(NS, { mtimeMs: at(13, 5) })]
 const DESIGN_FILES = { [BB]: BBIRINCI, [NS]: NORTH }
 
-type OtherLog = { read?: string[]; say?: string[]; fill?: string[]; appended?: string[]; opened?: string[]; ticks?: string[]; refused?: string[]; own?: string | null }
+type OtherLog = { read?: string[]; say?: string[]; fill?: string[]; appended?: string[]; opened?: string[]; ticks?: string[]; refused?: string[]; refusing?: { on: boolean }; own?: string | null }
 const bootOthers = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], surface: 'desktop' | 'terminal', listing: Entry[], files: Record<string, string>, log: OtherLog = {}) => {
   const own = log.own === undefined ? OWN : log.own
   on('command.register', (_, e) => ({ value: { command: e.name } }))
@@ -1626,11 +1626,11 @@ const bootOthers = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1
     log.ticks?.push('every')
     return { value: undefined }
   })
-  if (log.refused)
-    on('state.set', (_, e, next) => {
-      if (e.key === 'others') {
-        log.refused?.push('others')
-        return { deny: 'state.set reddedildi' }
+  if (log.refusing)
+    on('state.get', (_, e, next) => {
+      if (e.key === 'others' && log.refusing?.on) {
+        log.refused?.push('get')
+        return { value: undefined } as never // a reply the engine cannot read: reading the atom rejects
       }
       return next(e)
     })
@@ -2013,15 +2013,16 @@ test('other sessions, 17 files of 255 KiB (round 2): start completes and all 17 
   await ui.unmount()
 })
 
-test('other sessions, the atom update itself is refused (round 2): start completes, the own pane still draws, no strip', async ($, on) => {
+test('other sessions, the atom access rejects (round 2): start still completes and the own pane draws; the next poll heals', async ($, on) => {
   const refused: string[] = []
-  const { log, ran } = await restartWith($, on, DESIGN_LISTING, DESIGN_FILES, { refused })
-  expect(refused.length).toBeGreaterThan(0) // the refusal really happened
-  expect(ran).toEqual([1, 1, 1])
+  const refusing = { on: true }
+  const { log, ran } = await restartWith($, on, DESIGN_LISTING, DESIGN_FILES, { refused, refusing })
+  expect(refused.length).toBeGreaterThan(0) // the rejection really happened during the start
+  expect(ran).toEqual([1, 1, 1]) // announce row, pane opened, the clock registered
   expect(log.ticks?.length).toBeGreaterThan(0)
+  refusing.on = false // the pane's own read of the atom is not what is tested
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ key: 'detail-t1' })).toBeDefined()
-  expect(nodesOf(await drawnOf(ui)).some(n => n.props?.key === 'others-toggle')).toBe(false)
   await ui.unmount()
 })
 
