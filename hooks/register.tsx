@@ -9,6 +9,7 @@ import { TBOX, hk, termDecisions, termFooter, termHeader, termDetail, termHint, 
 const PANE = 'agent-team'
 const PANE_OPEN = { id: PANE, title: 'Agent Team', columns: 48 } as const
 const POLL_MS = 3000
+const SOON_MS = 500
 const KEEP_MS = 30 * 86_400_000
 
 // Change a tag when that value's fields change: it declines what an earlier version stored.
@@ -264,6 +265,12 @@ export const register: Register = (on, options) => {
     await poll()
     $.clock.every(POLL_MS, poll)
 
+    return next(e)
+  })
+
+  // /clear ends the old session and the new id shows a moment later: look soon, not only at the next poll, so a quit right after still leaves a record.
+  on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear') $.clock.after(SOON_MS, () => follow($))
     return next(e)
   })
 

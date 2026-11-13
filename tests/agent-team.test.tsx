@@ -783,6 +783,20 @@ test('round 3: with a store that fails, /team after /clear still saves and annou
   expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }))
 })
 
+test('round 3: /clear then a quit before the first poll still leaves a record under the new id (session.end carries it a moment later)', async ($, on) => {
+  // Source: QA round 1 finding 3. The probe (log:12-13) shows session.end with the old id, the new id a moment after.
+  const c = await continuity($, on)
+  on('session.end', (_, e) => ({ sessionId: e.sessionId }))
+  c.present.add(OLD)
+  await c.start()
+  await c.team()
+  await $.session.end({ reason: 'clear', sessionId: ID_OLD, resume: { id: ID_OLD } })
+  c.wipe(ID_NEW) // the id changes and the atoms reset after session.end
+  await c.clock.advance(600) // less than the 3 s poll
+  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }, CLEAR_NOW + 500)) // the timer fires at 500 ms
+  expect(c.modeNow()).toEqual(SWITCH)
+})
+
 test('criterion 1: a session switched off before /clear stays off; a session that was never a team session leaves no record', async ($, on) => {
   const c = await continuity($, on)
   await c.start()
