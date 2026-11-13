@@ -570,7 +570,7 @@ const FOLDERS = { options: { teamFolders: '/' } }
 // One session.start with a fake disk (`present` paths), a fake store and clock; reports what the pane read and what the Lead was told.
 const continuity = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], entries: Record<string, unknown> = {}) => {
   const present = new Set<string>()
-  const state = { id: ID_OLD, messagesCalls: 0, storeFails: false }
+  const state = { id: ID_OLD, messagesCalls: 0, storeFails: false, fsFails: false }
   const read: string[] = []
   const appended: string[] = []
   const sent: (readonly string[] | undefined)[] = []
@@ -609,7 +609,10 @@ const continuity = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1
     state.messagesCalls++
     return { value: [] }
   })
-  on('fs.exists', (_, e) => ({ value: present.has(e.path) }))
+  on('fs.exists', (_, e) => {
+    if (state.fsFails) throw new Error('disk down')
+    return { value: present.has(e.path) }
+  })
   on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: 1, isLink: false } }))
   on('fs.read', (_, e) => {
     read.push(e.path)
@@ -778,6 +781,16 @@ test('round 3: with a store that fails, /team after /clear still saves and annou
   await c.start()
   c.wipe(ID_NEW)
   c.state.storeFails = true
+  await c.teamCommand()
+  expect(c.appended[0]).toContain(`dosyası: ${OLD} (biçimi`)
+  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }))
+})
+
+test('round 3: with a disk that fails, /team after /clear still saves and announces the session\'s own file, not an empty one', async ($, on) => {
+  const c = await continuity($, on)
+  await c.start()
+  c.wipe(ID_NEW)
+  c.state.fsFails = true // the path cannot be refreshed: the file this module follows stands in
   await c.teamCommand()
   expect(c.appended[0]).toContain(`dosyası: ${OLD} (biçimi`)
   expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }))
