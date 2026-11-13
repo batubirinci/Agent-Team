@@ -20,7 +20,7 @@ a decision is questioned).
 message when the owner turns the switch on) every owner message is a Lead request: no
 `/agent-team` is needed, and this skill stays in force until the plugin says the mode is off. A
 press in the pane reaches the Lead as an owner message: one or more `Karar (<id>): <option>` lines in one message answer those
-decisions (the pane writes them into the owner's message box, the owner sends them; remove each answered decision from the status
+decisions (on the terminal the pane writes them into the owner's message box and the owner sends them, on the desktop a press is sent at once; remove each answered decision from the status
 file; a push approval given this way is still the owner's approval for that exact action), `Pause` runs Pause.
 
 ## Roster (dated 2026-11-10 — revisit when models change)

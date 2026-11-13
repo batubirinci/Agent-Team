@@ -2,9 +2,9 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Decision, DirEntry, Mode, Other, RoleStatus, SessionRecord, StatusView, Task, TaskState } from '../types'
-import { ANNOUNCE, KARAR, OPEN_ROW, STAGE_LABELS, baseName, clockOf, countStates, decisionTask, expandHome, isInside, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, pickedAt, trimSlash, withKarar } from './status'
+import { ANNOUNCE, KARAR, OPEN_ROW, STAGE_LABELS, baseName, clockOf, countStates, decisionTask, expandHome, isInside, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, trimSlash, withKarar } from './status'
 import { AMBER, BAD, CLAY, MUTED, OK, dotSvg, meterSvg, stagesSvg } from './svg'
-import { TBOX, WENT, hk, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termTasks, termUsage } from './terminal'
+import { TBOX, hk, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termTasks, termUsage } from './terminal'
 
 const PANE = 'agent-team'
 const PANE_OPEN = { id: PANE, title: 'Agent Team', columns: 48 } as const
@@ -26,10 +26,11 @@ const detail = atom({ plugin: 'agent-team', key: 'detail' } as const, null as st
 // Other team sessions' pending decisions (read-only strip) and whether it is open. Session state, starts collapsed.
 const others = atom({ plugin: 'agent-team', key: 'others' } as const, [] as Other[], { shape: 'others-2' })
 const othersOpen = atom({ plugin: 'agent-team', key: 'othersOpen' } as const, false, { shape: 'others-open-1' })
-// The decision lines now in the owner's prompt box (kararLines of the draft): a button writes one, the card shows it picked.
+// The decision lines now in the owner's prompt box (kararLines of the draft): on the terminal a button writes one and the box shows it picked.
 const karar = atom({ plugin: 'agent-team', key: 'karar' } as const, [] as string[], { shape: 'karar-1' })
-// Ids of decisions whose press went out by submit because the box could not be filled; dropped when the decision leaves the file.
-const sent = atom({ plugin: 'agent-team', key: 'sent' } as const, [] as string[], { shape: 'sent-1' })
+// [decision id, option] of presses that went out by submit (always on the desktop; on the terminal when the box could not be
+// filled); dropped when the decision leaves the file.
+const sent = atom({ plugin: 'agent-team', key: 'sent' } as const, [] as [string, string][], { shape: 'sent-2' })
 
 // Raw colors that read on a light and a dark pane alike (a theme key has no card fill).
 const CARD = {
@@ -95,8 +96,9 @@ const leadText = (file: string) =>
   ].join(' ')
 
 // A press in the pane reaches the Lead as the owner's own message.
+// Resolves true when the prompt entered (not refused by a hook, not dropped by the engine).
 async function say($: EngineInterface, text: string) {
-  await $.prompt.submit({ text, asUser: true })
+  return !(await $.prompt.submit({ text, asUser: true })).drop
 }
 
 const syncKarar = async ($: EngineInterface, draft: string) => {
@@ -104,13 +106,17 @@ const syncKarar = async ($: EngineInterface, draft: string) => {
   if (JSON.stringify(await read($, karar)) !== JSON.stringify(next)) await update($, karar, () => next)
 }
 
-// A decision button writes its line into the owner's prompt box; the owner sends with Enter, so the answer reaches the Lead like a
-// typed message (mid-turn), and one Enter carries several decisions. A new line is appended (the owner's text is not re-written),
-// an existing line of that decision is replaced in the whole draft. If the box cannot take it (a dialog, no box) or the call
-// fails, the press is submitted as before and the card says so: a press is never lost.
-async function pick($: EngineInterface, d: Decision, o: string) {
+// On the terminal a decision button writes its line into the owner's prompt box; the owner sends with Enter, so the answer reaches
+// the Lead like a typed message (mid-turn), and one Enter carries several decisions. A new line is appended (the owner's text is
+// not re-written), an existing line of that decision is replaced in the whole draft. If the box cannot take it (a dialog, no box)
+// or the call fails, the press is submitted and the card says so: a press is never lost.
+// On the desktop the composer is the app's own (a fill only writes a draft the owner never sees), so the press is always
+// submitted; a decision that already went is not sent again (two answers to one decision must not reach the Lead).
+// A decision counts as sent only when the submit entered: it is reserved before the call (so presses at once send one line)
+// and given back when the submit is rejected or dropped, so the card stays unmarked and the next press sends.
+async function pick($: EngineInterface, d: Decision, o: string, term: boolean) {
   let isFilled = false
-  try {
+  if (term) try {
     const box = await $.prompt.read()
     await syncKarar($, box.text).catch(() => undefined)
     const text = withKarar(box.text, d.id, o)
@@ -119,8 +125,20 @@ async function pick($: EngineInterface, d: Decision, o: string) {
       (await $.prompt.fill(text.startsWith(box.text) ? { text: text.slice(box.text.length), mode: 'append' } : { text, mode: 'replace' })).isFilled
   } catch {}
   if (isFilled) return
-  await say($, kararLine(d.id, o))
-  await update($, sent, ids => (ids.includes(d.id) ? ids : [...ids, d.id]))
+  let fresh = true
+  let added = false
+  await update($, sent, s => {
+    const had = s.some(([id]) => id === d.id)
+    fresh = term || !had
+    added = !had
+    return had ? s : [...s, [d.id, o] as [string, string]]
+  })
+  if (!fresh) return
+  let entered = false
+  try {
+    entered = await say($, kararLine(d.id, o))
+  } catch {}
+  if (!entered && added) await update($, sent, s => s.filter(([id]) => id !== d.id))
 }
 
 const openRow = (file: string) => `${OPEN_ROW}${leadText(file)}`
@@ -137,7 +155,7 @@ const announce = ($: EngineInterface, file: string) =>
 async function setView($: EngineInterface, view: StatusView) {
   await update($, status, () => view)
   const ids = view.data?.decisions.map(d => d.id) ?? []
-  await update($, sent, s => s.filter(id => ids.includes(id)))
+  await update($, sent, s => s.filter(([id]) => ids.includes(id)))
   const open = await read($, detail)
   if (open && !view.data?.tasks.some(t => t.id === open)) await update($, detail, () => null)
 }
@@ -381,7 +399,8 @@ export const register: Register = (on, options) => {
     const otherTotal = other.reduce((n, o) => n + o.count, 0)
     const { file, data, error } = await read($, status)
     const lines = await read($, karar)
-    const wentIds = await read($, sent)
+    const went = await read($, sent)
+    const wentIds = went.map(([id]) => id)
     const openId = await read($, detail)
     const open = openId ? data?.tasks.find(t => t.id === openId) : undefined
 
@@ -389,9 +408,11 @@ export const register: Register = (on, options) => {
 
     const decisionCard = (d: Decision) => {
       const { kind, blocked } = decisionTask(d, data?.tasks ?? [])
-      const at = pickedAt(lines, d)
+      // The desktop card shows only what was sent: the draft is the engine's, the owner never sees it there.
+      const sentTo = went.find(([id]) => id === d.id)?.[1]
+      const at = sentTo === undefined ? -1 : d.options.indexOf(sentTo)
       return (
-      <Box key={`d-${d.id}`} {...CARD} borderColor={at >= 0 ? 'success' : blocked ? BLOCKED_EDGE : CARD.borderColor}>
+      <Box key={`d-${d.id}`} {...CARD} borderColor={sentTo !== undefined ? 'success' : blocked ? BLOCKED_EDGE : CARD.borderColor}>
         <Box flexDirection="column">
           {kind && <Text size="caption" weight="medium" color={blocked ? BLOCKED_INK : 'claude'}>{kind}</Text>}
           <Text>{d.text}</Text>
@@ -404,13 +425,12 @@ export const register: Register = (on, options) => {
                 key={`d-${d.id}-${i}`}
                 label={i === at ? `✓ ${o}` : o}
                 variant={i === Math.max(at, 0) ? 'primary' : 'secondary'}
-                onPress={() => void pick($, d, o)}
+                onPress={() => void pick($, d, o, false)}
               />
             ))}
           </Box>
         )}
-        {at >= 0 && <Text size="caption" color="success">{`✓ Seçildi: ${d.options[at]} · mesaj kutunda, Enter ile gider`}</Text>}
-        {at < 0 && wentIds.includes(d.id) && <Text size="caption" dimColor>{WENT}</Text>}
+        {sentTo !== undefined && <Text size="caption" color="success">{`Gönderildi: ${sentTo} · Lead işini bitirince okuyacak`}</Text>}
       </Box>
       )
     }
@@ -705,7 +725,7 @@ export const register: Register = (on, options) => {
             </Text>
           ))}
 
-        {term && data && data.decisions.length > 0 && termDecisions(ui, data.decisions, data.tasks, (d, o) => void pick($, d, o), lines, wentIds)}
+        {term && data && data.decisions.length > 0 && termDecisions(ui, data.decisions, data.tasks, (d, o) => void pick($, d, o, true), lines, wentIds)}
 
         {term && data && data.tasks.length > 0 && termTasks(ui, data.tasks, n, showOn, id => void update($, detail, () => id))}
 
