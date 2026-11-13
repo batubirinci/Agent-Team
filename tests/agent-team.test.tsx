@@ -580,6 +580,7 @@ const continuity = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1
   on('session.append', (_, e, next) => {
     const block = e.message.content[0]
     appended.push(block && 'text' in block ? String(block.text) : '')
+    state.history.push(row('user', appended.at(-1)!)) // a row the plugin appends is in the next read
     return next(e)
   })
   on('prompt.submit', (_, e) => {
@@ -605,7 +606,7 @@ const continuity = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1
     await ui.unmount()
     return found
   }
-  return { present, state, read, start, leadSees, paneTitle }
+  return { present, state, read, appended, start, leadSees, paneTitle }
 }
 
 test('a reload keeps the status file the session already has, even when the session id changed (criteria 1, 5)', async ($, on) => {
@@ -685,6 +686,43 @@ test('a path from history counts only if it is this plugin\'s own sentence under
   c.present.add(OLD)
   await c.start()
   expect(c.read.at(-1)).toBe(OLD)
+})
+
+// Source: the Lead's decision 2026-11-13 (teamFolders "/" turns team mode on at session.start, so no switch row is ever written):
+// the open row carries the path once per path; a reload does not repeat it; mode off writes nothing.
+const FOLDERS = { options: { teamFolders: '/' } }
+
+test('team mode by folder: one row with the chosen path, no second row on a reload, a new row only when the path changes (a, b)', FOLDERS, async ($, on) => {
+  const c = await continuity($, on)
+  await c.start()
+  expect(c.appended).toHaveLength(1)
+  expect(c.appended[0]).toContain(`dosyası: ${OLD} (biçimi`)
+  c.present.add(OLD) // the Lead wrote it
+  c.state.id = ID_NEW
+  await c.start() // /reload-plugins under a new id: same path, the row is already in the history
+  expect(c.appended).toHaveLength(1)
+  expect(c.read.at(-1)).toBe(OLD)
+  c.present.delete(OLD) // the file is gone: a new path is a new announcement
+  await c.start()
+  expect(c.appended).toHaveLength(2)
+  expect(c.appended[1]).toContain(`dosyası: ${NEW} (biçimi`)
+})
+
+test('a resumed process whose history has the folder-mode row takes that old path and writes no row (c)', FOLDERS, async ($, on) => {
+  const c = await continuity($, on)
+  c.state.id = ID_NEW
+  c.state.history = [row('user', 'merhaba'), row('user', announce(OLD))]
+  c.present.add(OLD)
+  await c.start()
+  expect(c.read.at(-1)).toBe(OLD)
+  expect(c.appended).toHaveLength(0)
+})
+
+test('team mode off: a start appends no row (d)', async ($, on) => {
+  const c = await continuity($, on)
+  await c.start()
+  await c.start()
+  expect(c.appended).toHaveLength(0)
 })
 
 test('deleting the status file closes the open detail, and the same task id coming back shows the list', async ($, on) => {

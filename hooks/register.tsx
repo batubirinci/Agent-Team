@@ -89,6 +89,13 @@ async function say($: EngineInterface, text: string) {
   await $.prompt.submit({ text, asUser: true })
 }
 
+// The row that tells the Lead (and, later, a resumed session) the status path.
+// The system prompt of a running thread does not change mid-session: tell the model in a row.
+const announce = ($: EngineInterface, file: string) =>
+  $.session.append({
+    message: { type: 'user', content: [{ type: 'text', text: `[Agent Team modu açıldı] ${leadText(file)}` }] },
+  })
+
 // The one place the status view changes: an open detail whose task is not in the new view is closed
 // (file deleted, task removed), so the same id coming back does not reopen it by itself.
 async function setView($: EngineInterface, view: StatusView) {
@@ -119,20 +126,14 @@ async function setMode($: EngineInterface, isOn: boolean) {
   if (was.isOn === isOn) return
   await update($, mode, () => ({ isOn, source: isOn ? 'switch' : 'off' }))
   const { file } = await read($, status)
-  // The system prompt of a running thread does not change mid-session: tell the model in a row.
-  await $.session.append({
-    message: {
-      type: 'user',
-      content: [
-        {
-          type: 'text',
-          text: isOn
-            ? `[Agent Team modu açıldı] ${leadText(file)}`
-            : '[Agent Team modu kapandı] Bu oturum artık normal bir Claude oturumu; agent-team akışını bırak.',
-        },
-      ],
-    },
-  })
+  if (isOn) await announce($, file)
+  else
+    await $.session.append({
+      message: {
+        type: 'user',
+        content: [{ type: 'text', text: '[Agent Team modu kapandı] Bu oturum artık normal bir Claude oturumu; agent-team akışını bırak.' }],
+      },
+    })
   if (isOn) await $.ui.open(PANE_OPEN)
   else await $.ui.close({ id: PANE })
 }
@@ -165,7 +166,11 @@ export const register: Register = (on, options) => {
     if (!current.isOn && isInside(e.cwd, parseFolders(options.teamFolders, home))) {
       await update($, mode, () => ({ isOn: true, source: 'folder' }))
     }
-    if ((await read($, mode)).isOn) void $.ui.open(PANE_OPEN)
+    if ((await read($, mode)).isOn) {
+      void $.ui.open(PANE_OPEN)
+      // Team mode by folder writes no switch row: tell the Lead the path once per path, so a resume finds it.
+      if (said !== file) await announce($, file).catch(() => undefined)
+    }
 
     return next(e)
   })
