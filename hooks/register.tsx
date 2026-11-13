@@ -190,22 +190,26 @@ async function follow($: EngineInterface) {
     const id = String(await $.session.id().catch(() => ''))
     if (!id || id === was) return
     followed.last = id
+    // The path comes back first, record or none: a session that never was a team session has no record, and a /team
+    // before the next poll must not read the reset (empty) path.
+    await refresh($, file)
     const old = was ? parseRecord(await $.store.get(`session:${was}`), dir) : undefined
     if (!old) return
     await save($, id, old)
     if (old.mode.isOn) await update($, mode, () => old.mode)
-    await refresh($, file)
   } catch {
     followed.last = was
   }
 }
 
 async function setMode($: EngineInterface, isOn: boolean) {
+  await follow($) // the footer chip and the pane buttons come here too
   const was = await read($, mode)
   if (was.isOn === isOn) return
   const now: Mode = { isOn, source: isOn ? 'switch' : 'off' }
   await update($, mode, () => now)
-  const { file } = await read($, status)
+  // Never an empty path (the atom is reset by /clear until the next poll): the file this session reads.
+  const file = (await read($, status)).file || followed.file
   await save($, String(await $.session.id().catch(() => '')), { file, mode: now, ...(isOn && { announced: file }) })
   if (isOn) await announce($, file)
   else

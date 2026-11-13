@@ -741,6 +741,48 @@ test('round 2: a store that fails cannot stop the prompt; the carry is tried aga
   expect(c.modeNow()).toEqual(SWITCH)
 })
 
+test('round 3: a session that never was a team session: /clear, then /team before any poll saves and announces the session\'s own file; a second /clear and a new process keep the mode', async ($, on) => {
+  // Source: QA round 1 finding 1 (reproduced live 3/3): the reset status.file was '' and /team saved and announced it.
+  const ID_3 = '33333333-0000-4000-8000-000000000000'
+  const c = await continuity($, on)
+  c.present.add(OLD)
+  await c.start() // not a team session: no record
+  c.wipe(ID_NEW)
+  await c.teamCommand() // no poll has run
+  expect(c.appended).toHaveLength(1)
+  expect(c.appended[0]).toContain(`dosyası: ${OLD} (biçimi`)
+  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }))
+  await c.clear(ID_3) // a second /clear
+  expect(c.modeNow()).toEqual(SWITCH)
+  expect(c.fileNow()).toBe(OLD)
+  c.wipe(ID_3) // quit and --continue: a new process, empty atoms, the id it ended with
+  await c.start()
+  expect(c.modeNow()).toEqual(SWITCH)
+  expect(c.fileNow()).toBe(OLD)
+  expect(c.appended).toHaveLength(1)
+})
+
+test('round 3: the footer chip right after /clear, before any poll, announces the real path, never an empty one', async ($, on) => {
+  // Source: QA round 1 finding 2: the chip and the pane buttons call setMode, which read the reset atoms.
+  const c = await continuity($, on)
+  await c.start()
+  c.wipe(ID_NEW)
+  await c.team()
+  expect(c.appended).toHaveLength(1)
+  expect(c.appended[0]).toContain(`dosyası: ${OLD} (biçimi`)
+  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }))
+})
+
+test('round 3: with a store that fails, /team after /clear still saves and announces the session\'s own file, not an empty one', async ($, on) => {
+  const c = await continuity($, on)
+  await c.start()
+  c.wipe(ID_NEW)
+  c.state.storeFails = true
+  await c.teamCommand()
+  expect(c.appended[0]).toContain(`dosyası: ${OLD} (biçimi`)
+  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }))
+})
+
 test('criterion 1: a session switched off before /clear stays off; a session that was never a team session leaves no record', async ($, on) => {
   const c = await continuity($, on)
   await c.start()
