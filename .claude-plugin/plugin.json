@@ -1,6 +1,6 @@
 {
   "name": "agent-team",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Lead/Analyst/Developer/QA takımı: agent-team skill'i, 6 rol ajanı, push koruması ve canlı durum pane'i",
   "types": "./types/index.d.ts",
   "userConfig": {
