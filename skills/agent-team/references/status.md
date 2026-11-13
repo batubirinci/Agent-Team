@@ -8,9 +8,12 @@ sessions in one folder never share a file. Only when no plugin path is given, fa
 comes from the Lead's memory (default `~/agent-team-evidence`). Create the folder if missing.
 Old `<project>.json` files are no longer read by the pane (no migration); delete them or leave them.
 
-A session keeps its first status file for its whole life: the plugin reuses the path it already
-gave (a reload, a `/clear`, or a resume under a new session id) as long as that file exists, and
-computes a new `<project>--<id8>.json` only for a new session or when the old file is gone. So the
+A session keeps its first status file for its whole life. The plugin picks the path in this order:
+the one it already holds (a reload), else the one in this session's record in its store (written when
+team mode starts or changes; a `/clear` carries the record over to the new session id, a resume with
+`--continue` or `--resume` finds it by the session id), as long as that file exists; else a new
+`<project>--<id8>.json`, only for a new session or when the old file is gone. `/clear` only empties the
+conversation: the session stays a team session on the same file, and so does a resumed one. So the
 path in the latest plugin message is the one to write; if it differs from the one you used before,
 write your current status there and leave the old file alone.
 
@@ -18,6 +21,10 @@ Panes also read (never write) the other `*.json` files in the same status folder
 "Diğer oturumlar" that shows other sessions' pending `decisions` read-only: only regular files
 (not links) modified in the last 24 hours and at most 256 KiB, the 20 newest at most, parsed like
 your own file. So keep `decisions` current in your own file; the owner answers there, not in the strip.
+
+The file may already hold tasks and decisions from earlier in this session (before a `/clear` or a
+resume): read it before writing, keep what you did not finish, and update only what changed. Do not
+start from an empty file.
 
 Write the whole file each time (Write tool, never append), valid JSON, UTF-8. The pane re-reads it
 every few seconds; a field it does not know is ignored, a missing optional field is not drawn.

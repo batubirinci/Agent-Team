@@ -1,4 +1,4 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
 import { decisionTask, isInside, otherFiles, otherSession, parseFolders, parseStatus, summary } from '../hooks/status'
@@ -501,7 +501,8 @@ test('the status file is per session: <project>--<first 8 of the session id>.jso
     checked.push(e.path)
     return { value: false }
   })
-  on('clock.every', () => ({ value: undefined }))
+  mock.clock(on)
+  mock.store(on)
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.append', (_, e, next) => {
     const block = e.message.content[0]
@@ -542,47 +543,85 @@ test('the status file is per session: <project>--<first 8 of the session id>.jso
   expect(checked.at(-1)).toBe(`${ROOT}/shop.json`)
 })
 
-// Status continuity (owner live screenshot 2026-11-13: the pane on dc57ef03, the Lead still writing 66b9491d; criteria 1-6
-// of the status-continuity task, written by the Lead). Expected paths are spelled out by hand, never read back from the code.
+// Clear continuity (owner decision 2026-11-13: after /clear the session stays a team session on the same file, and a resume brings
+// the same mode and file back; the Analyst's measurements on CLI 2.1.323: /clear changes the id, fires no session.start, resets
+// every atom; session.messages() never lists a plugin's appended rows. Criteria 1-9 of the clear-continuity task, written by the
+// Lead). Expected paths, modes and records are spelled out by hand from those, never read back from the code.
 const CONT_ROOT = '/Users/x/agent-team-evidence/status'
 const OLD = `${CONT_ROOT}/shop--66b9491d.json`
 const NEW = `${CONT_ROOT}/shop--dc57ef03.json`
 const ID_OLD = '66b9491d-0000-4000-8000-000000000000'
 const ID_NEW = 'dc57ef03-0000-4000-8000-000000000000'
-// The row the plugin writes, spelled out by hand (the wording of its open message, written down, not read from the code).
-const HEAD = "[Agent Team modu açıldı] Bu oturum bir Agent Team oturumu (agent-team plugin'i). Sen Lead'sin: sahibin her mesajını agent-team skill'inin akışıyla ele al; /agent-team yazılması gerekmez. Skill bu oturumda henüz yüklenmediyse önce Skill aracıyla agent-team skill'ini yükle. "
-const announce = (file: string) => `${HEAD}Pane'in okuduğu durum dosyası: ${file} (biçimi skill'in references/status.md dosyasında).`
-type Row = { role: 'user' | 'assistant'; text: string; toolUses: never[] }
-const row = (role: Row['role'], text: string): Row => ({ role, text, toolUses: [] })
+const KEY_OLD = `session:${ID_OLD}`
+const KEY_NEW = `session:${ID_NEW}`
+const CLEAR_NOW = Date.parse('2026-11-13T12:00:00.000Z')
+const CLEAR_DAY = 86_400_000
+const SWITCH = { isOn: true, source: 'switch' } as const
+const FOLDER = { isOn: true, source: 'folder' } as const
+const OFF = { isOn: false, source: 'off' } as const
+// A store record as the task defines it: { file, mode, at (ISO time), announced? }.
+const rec = (file: string, mode: object, extra: object = {}, ms = CLEAR_NOW) => ({ file, mode, at: new Date(ms).toISOString(), ...extra })
+// The sentence leadText gains (criterion 9), spelled out by hand.
+const LEAD_RULE = 'Dosyada bu oturumdan kalma görevler ve kararlar olabilir: yazmadan önce oku, bitirmediklerini koru, yalnız değişeni güncelle.'
+const POLL = 3000
+// teamFolders "/" turns team mode on at session.start: no switch row is ever written.
+const FOLDERS = { options: { teamFolders: '/' } }
 
-// One session.start with a fake disk (`present` paths) and a fake history; reports what the pane read and what the Lead was told.
-const continuity = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1]) => {
+// One session.start with a fake disk (`present` paths), a fake store and clock; reports what the pane read and what the Lead was told.
+const continuity = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], entries: Record<string, unknown> = {}) => {
   const present = new Set<string>()
-  const state = { id: ID_OLD, history: [] as Row[], messagesFail: false }
+  const state = { id: ID_OLD, messagesCalls: 0, storeFails: false, fsFails: false }
   const read: string[] = []
   const appended: string[] = []
   const sent: (readonly string[] | undefined)[] = []
+  const clock = mock.clock(on, { now: CLEAR_NOW })
+  // The test owns the plugin's store and its atoms (the engine's `$` has neither noun): a Map each, so a test reads them and /clear wipes the atoms.
+  const store = new Map<string, unknown>(Object.entries(entries))
+  on('store.get', (_, e) => {
+    if (state.storeFails) throw new Error('store down')
+    return { value: store.get(e.key) }
+  })
+  on('store.set', (_, e) => {
+    store.set(e.key, JSON.parse(JSON.stringify(e.value)))
+    return { value: undefined }
+  })
+  on('store.delete', (_, e) => {
+    store.delete(e.key)
+    return { value: undefined }
+  })
+  on('store.keys', () => ({ value: [...store.keys()] }))
+  const atoms = new Map<string, { value: unknown; version: number }>()
+  const slot = (e: { plugin: string; key: string }) => `${e.plugin}/${e.key}`
+  on('state.get', (_, e) => ({ value: { value: atoms.get(slot(e))?.value, version: atoms.get(slot(e))?.version ?? 0 } }))
+  on('state.set', (_, e) => {
+    const version = atoms.get(slot(e))?.version ?? 0
+    if (e.ifVersion !== undefined && e.ifVersion !== version) return { value: { isSet: false, version } }
+    atoms.set(slot(e), { value: e.value, version: version + 1 })
+    return { value: { isSet: true, version: version + 1 } }
+  })
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.close', () => ({ value: undefined }))
   on('env.get', () => ({ value: '/Users/x' }))
   on('session.id', () => ({ value: state.id }))
+  // The row form never lists a plugin's appended rows (measured on 2.1.323): the fake lists nothing, and counts the asks.
   on('session.messages', () => {
-    if (state.messagesFail) throw new Error('no history')
-    return { value: state.history }
+    state.messagesCalls++
+    return { value: [] }
   })
-  on('fs.exists', (_, e) => ({ value: present.has(e.path) }))
+  on('fs.exists', (_, e) => {
+    if (state.fsFails) throw new Error('disk down')
+    return { value: present.has(e.path) }
+  })
   on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: 1, isLink: false } }))
   on('fs.read', (_, e) => {
     read.push(e.path)
     return { value: STATUS }
   })
-  on('clock.every', () => ({ value: undefined }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.append', (_, e, next) => {
     const block = e.message.content[0]
     appended.push(block && 'text' in block ? String(block.text) : '')
-    state.history.push(row('user', appended.at(-1)!)) // a row the plugin appends is in the next read
     return next(e)
   })
   on('prompt.submit', (_, e) => {
@@ -590,17 +629,15 @@ const continuity = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1
     return { text: e.text }
   })
   const start = () => $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'desktop', isInteractive: true })
-  // Team mode on, one prompt: the two places the Lead is told the path.
-  let isOn = false
+  // The footer chip is the owner's /team switch.
+  const team = async () => {
+    const foot = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
+    await foot.press({ key: 'team-mode' })
+    await foot.unmount()
+  }
   const leadSees = async () => {
-    if (!isOn) {
-      const foot = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
-      await foot.press({ key: 'team-mode' })
-      await foot.unmount()
-      isOn = true
-    }
     await $.prompt.submit({ wait: false, origin: { kind: 'composer' }, text: 'merhaba' })
-    return { appended: appended.at(-1) ?? '', context: (sent.at(-1) ?? []).join('\n') }
+    return { context: (sent.at(-1) ?? []).join('\n') }
   }
   const paneTitle = async () => {
     const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
@@ -608,143 +645,355 @@ const continuity = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1
     await ui.unmount()
     return found
   }
-  return { present, state, read, appended, start, leadSees, paneTitle }
+  const modeNow = () => (atoms.get('agent-team/mode')?.value as { value: unknown } | undefined)?.value ?? OFF // never written: the atom's default
+  const fileNow = () => (atoms.get('agent-team/status')?.value as { value: { file: string } } | undefined)?.value.file
+  // What /clear does, as measured (log:12-13, 33-34): a new id, no session.start, every atom back to nothing (its default here);
+  // then one poll of the live module.
+  const wipe = (id: string) => {
+    state.id = id
+    atoms.clear()
+  }
+  const clear = async (id: string) => {
+    wipe(id)
+    await clock.advance(POLL)
+  }
+  const teamCommand = () => $.command.run({ command: 'team', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  const recordOf = (id: string) => store.get(`session:${id}`)
+  return { store, wipe, teamCommand, present, state, read, appended, start, team, leadSees, paneTitle, modeNow, fileNow, clear, recordOf, clock }
 }
 
-test('a reload keeps the status file the session already has, even when the session id changed (criteria 1, 5)', async ($, on) => {
+test('criterion 1: after /clear a switch-mode session is on again within one poll, on the same file; the store holds the record under the new id', async ($, on) => {
+  const c = await continuity($, on)
+  c.present.add(OLD)
+  await c.start()
+  await c.team()
+  expect(await c.recordOf(ID_OLD)).toEqual(rec(OLD, SWITCH, { announced: OLD }))
+  await c.clear(ID_NEW) // one poll, nothing else
+  expect(c.modeNow()).toEqual(SWITCH)
+  expect(c.fileNow()).toBe(OLD)
+  expect(c.read.at(-1)).toBe(OLD)
+  expect(await c.paneTitle()).toBeDefined()
+  expect(await c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }, CLEAR_NOW + POLL))
+  const seen = await c.leadSees()
+  expect(seen.context).toContain(`${OLD} `)
+  expect(seen.context).not.toContain(NEW)
+  // It goes on: a second /clear carries it again.
+  await c.clear('99999999-0000-4000-8000-000000000000')
+  expect(c.modeNow()).toEqual(SWITCH)
+  expect((c.store.get('session:99999999-0000-4000-8000-000000000000') as { file: string }).file).toBe(OLD)
+})
+
+test('criterion 1: after /clear a folder-mode session is on again on the same file', FOLDERS, async ($, on) => {
   const c = await continuity($, on)
   await c.start()
-  expect(c.read).toEqual([]) // nothing on disk yet: the new path, nothing read
-  c.present.add(OLD) // the Lead wrote it
-  c.state.id = ID_NEW // /reload-plugins after the session got another id
+  expect(c.modeNow()).toEqual(FOLDER)
+  await c.clear(ID_NEW)
+  expect(c.modeNow()).toEqual(FOLDER)
+  expect(c.fileNow()).toBe(OLD)
+  expect(await c.recordOf(ID_NEW)).toEqual(rec(OLD, FOLDER, { announced: OLD }, CLEAR_NOW + POLL))
+  expect(c.appended).toHaveLength(1) // /clear writes no second row: every prompt carries the path
+  expect((await c.leadSees()).context).toContain(`${OLD} `)
+})
+
+test('round 2: after /clear, before any poll, the first prompt already carries leadText with the old file (switch and folder)', async ($, on) => {
+  // Source: the Lead's round-2 item 2 (the window of up to one poll after /clear must not show the reset atoms to a prompt).
+  const c = await continuity($, on)
+  c.present.add(OLD)
+  await c.start()
+  await c.team()
+  c.wipe(ID_NEW) // /clear: new id, atoms reset; the clock does not move, so no poll has run
+  const seen = await c.leadSees()
+  expect(seen.context).toContain(`${OLD} `)
+  expect(seen.context).toContain(LEAD_RULE)
+  expect(c.modeNow()).toEqual(SWITCH)
+  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }))
+})
+
+test('round 2: the same in a team folder: the first prompt after /clear, before any poll, carries leadText', FOLDERS, async ($, on) => {
+  const c = await continuity($, on)
+  await c.start()
+  c.wipe(ID_NEW)
+  const seen = await c.leadSees()
+  expect(seen.context).toContain(`${OLD} `)
+  expect(c.modeNow()).toEqual(FOLDER)
+})
+
+test('round 2: /team right after /clear, before any poll, toggles the restored mode (on to off), not the reset one', async ($, on) => {
+  const c = await continuity($, on)
+  c.present.add(OLD)
+  await c.start()
+  await c.team()
+  c.wipe(ID_NEW)
+  expect((await c.teamCommand()).text).toBe('Agent Team kapandı.') // it was on: a reset atom would have answered "açık"
+  expect(c.modeNow()).toEqual(OFF)
+  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, OFF, {})) // the file is the old one, not ''
+  expect((await c.leadSees()).context).toBe('') // off: nothing added
+})
+
+test('round 2: a store that fails cannot stop the prompt; the carry is tried again at the next prompt', async ($, on) => {
+  const c = await continuity($, on)
+  c.present.add(OLD)
+  await c.start()
+  await c.team()
+  c.wipe(ID_NEW)
+  c.state.storeFails = true
+  expect((await c.leadSees()).context).toBe('') // the prompt goes through; the atoms are still reset
+  expect(c.modeNow()).toEqual(OFF)
+  c.state.storeFails = false
+  expect((await c.leadSees()).context).toContain(`${OLD} `) // the failed carry was not counted as done
+  expect(c.modeNow()).toEqual(SWITCH)
+})
+
+test('round 3: a session that never was a team session: /clear, then /team before any poll saves and announces the session\'s own file; a second /clear and a new process keep the mode', async ($, on) => {
+  // Source: QA round 1 finding 1 (reproduced live 3/3): the reset status.file was '' and /team saved and announced it.
+  const ID_3 = '33333333-0000-4000-8000-000000000000'
+  const c = await continuity($, on)
+  c.present.add(OLD)
+  await c.start() // not a team session: no record
+  c.wipe(ID_NEW)
+  await c.teamCommand() // no poll has run
+  expect(c.appended).toHaveLength(1)
+  expect(c.appended[0]).toContain(`dosyası: ${OLD} (biçimi`)
+  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }))
+  await c.clear(ID_3) // a second /clear
+  expect(c.modeNow()).toEqual(SWITCH)
+  expect(c.fileNow()).toBe(OLD)
+  c.wipe(ID_3) // quit and --continue: a new process, empty atoms, the id it ended with
+  await c.start()
+  expect(c.modeNow()).toEqual(SWITCH)
+  expect(c.fileNow()).toBe(OLD)
+  expect(c.appended).toHaveLength(1)
+})
+
+test('round 3: the footer chip right after /clear, before any poll, announces the real path, never an empty one', async ($, on) => {
+  // Source: QA round 1 finding 2: the chip and the pane buttons call setMode, which read the reset atoms.
+  const c = await continuity($, on)
+  await c.start()
+  c.wipe(ID_NEW)
+  await c.team()
+  expect(c.appended).toHaveLength(1)
+  expect(c.appended[0]).toContain(`dosyası: ${OLD} (biçimi`)
+  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }))
+})
+
+test('round 3: with a store that fails, /team after /clear still saves and announces the session\'s own file, not an empty one', async ($, on) => {
+  const c = await continuity($, on)
+  await c.start()
+  c.wipe(ID_NEW)
+  c.state.storeFails = true
+  await c.teamCommand()
+  expect(c.appended[0]).toContain(`dosyası: ${OLD} (biçimi`)
+  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }))
+})
+
+test('round 3: with a disk that fails, /team after /clear still saves and announces the session\'s own file, not an empty one', async ($, on) => {
+  const c = await continuity($, on)
+  await c.start()
+  c.wipe(ID_NEW)
+  c.state.fsFails = true // the path cannot be refreshed: the file this module follows stands in
+  await c.teamCommand()
+  expect(c.appended[0]).toContain(`dosyası: ${OLD} (biçimi`)
+  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }))
+})
+
+test('round 3: /clear then a quit before the first poll still leaves a record under the new id (session.end carries it a moment later)', async ($, on) => {
+  // Source: QA round 1 finding 3. The probe (log:12-13) shows session.end with the old id, the new id a moment after.
+  const c = await continuity($, on)
+  on('session.end', (_, e) => ({ sessionId: e.sessionId }))
+  c.present.add(OLD)
+  await c.start()
+  await c.team()
+  await $.session.end({ reason: 'clear', sessionId: ID_OLD, resume: { id: ID_OLD } })
+  c.wipe(ID_NEW) // the id changes and the atoms reset after session.end
+  await c.clock.advance(600) // less than the 3 s poll
+  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }, CLEAR_NOW + 500)) // the timer fires at 500 ms
+  expect(c.modeNow()).toEqual(SWITCH)
+})
+
+test('criterion 1: a session switched off before /clear stays off; a session that was never a team session leaves no record', async ($, on) => {
+  const c = await continuity($, on)
+  await c.start()
+  await c.clear(ID_NEW) // never a team session
+  expect(c.modeNow()).toEqual(OFF)
+  expect([...c.store.keys()]).toEqual([])
+  await c.team()
+  await c.team() // on, then off again
+  expect(await c.recordOf(ID_NEW)).toEqual(rec(OLD, OFF, {}, CLEAR_NOW + POLL))
+  await c.clear('99999999-0000-4000-8000-000000000000')
+  expect(c.modeNow()).toEqual(OFF)
+})
+
+test('criterion 2: a new process whose session id has a record with an existing file takes that file and that mode (switch included), and tells the Lead nothing new', async ($, on) => {
+  const c = await continuity($, on, { [KEY_NEW]: rec(OLD, SWITCH, { announced: OLD }) })
+  c.state.id = ID_NEW
+  c.present.add(OLD)
   await c.start()
   expect(c.read.at(-1)).toBe(OLD)
   expect(c.read).not.toContain(NEW)
+  expect(c.modeNow()).toEqual(SWITCH)
   expect(await c.paneTitle()).toBeDefined()
+  expect(c.appended).toHaveLength(0)
   const seen = await c.leadSees()
-  expect(seen.appended).toContain(`${OLD} `)
   expect(seen.context).toContain(`${OLD} `)
   expect(seen.context).not.toContain(NEW)
+  expect(c.state.messagesCalls).toBe(0) // criterion 6
 })
 
-test('a remembered path whose file is gone, and a brand-new session, get today\'s new path (criteria 3, 4)', async ($, on) => {
-  const c = await continuity($, on)
+test('criterion 3: a record whose file is gone gives today\'s new path; the mode is the record\'s', async ($, on) => {
+  const c = await continuity($, on, { [KEY_NEW]: rec(OLD, SWITCH, { announced: OLD }) })
+  c.state.id = ID_NEW // OLD is not on disk
   await c.start()
-  c.state.id = ID_NEW
-  await c.start() // OLD was never written: not kept
+  expect(c.read).toEqual([])
+  expect(c.modeNow()).toEqual(SWITCH)
+  expect(c.fileNow()).toBe(NEW)
   expect((await c.leadSees()).context).toContain(`${NEW} `)
+  expect(await c.recordOf(ID_NEW)).toMatchObject({ file: NEW, mode: SWITCH })
   c.present.add(NEW)
   await c.start()
   expect(c.read.at(-1)).toBe(NEW)
 })
 
-test('a new process takes the path this plugin announced earlier in the history, if it exists (criteria 2, 5)', async ($, on) => {
-  const c = await continuity($, on)
+test('criterion 3: a record whose file is gone, in a team folder: the new path, folder mode', FOLDERS, async ($, on) => {
+  const c = await continuity($, on, { [KEY_NEW]: rec(OLD, OFF) })
   c.state.id = ID_NEW
-  c.state.history = [row('user', 'merhaba'), row('user', announce(`${CONT_ROOT}/shop--11111111.json`)), row('assistant', 'tamam'), row('user', announce(OLD))]
-  c.present.add(OLD)
   await c.start()
-  expect(c.read.at(-1)).toBe(OLD) // the last announcement
-  expect(await c.paneTitle()).toBeDefined()
-  expect((await c.leadSees()).context).toContain(`${OLD} `)
+  expect(c.fileNow()).toBe(NEW)
+  expect(c.modeNow()).toEqual(FOLDER)
 })
 
-test('the path the atom holds wins over a different announced path that also exists (QA r1 LOW 2)', async ($, on) => {
+test('criterion 4: a brand-new session gets today\'s new path and mode off, and leaves no record', async ($, on) => {
   const c = await continuity($, on)
-  await c.start() // holds OLD
-  c.present.add(OLD)
-  c.present.add(`${CONT_ROOT}/shop--11111111.json`)
   c.state.id = ID_NEW
-  c.state.history = [row('user', announce(`${CONT_ROOT}/shop--11111111.json`))]
   await c.start()
-  expect(c.read.at(-1)).toBe(OLD)
-  expect(c.read).not.toContain(`${CONT_ROOT}/shop--11111111.json`)
-})
-
-test('an announced path that is not on disk, or no readable history, gives the new path (criteria 3, 4)', async ($, on) => {
-  const c = await continuity($, on)
-  c.state.id = ID_NEW
-  c.state.history = [row('user', announce(OLD))]
-  await c.start() // OLD absent
-  expect((await c.leadSees()).context).toContain(`${NEW} `)
-  c.present.add(OLD)
-  c.state.messagesFail = true
-  await c.start() // history unreadable: no OLD
   expect(c.read).toEqual([])
-  expect((await c.leadSees()).context).toContain(`${NEW} `)
+  expect(c.fileNow()).toBe(NEW)
+  expect(c.modeNow()).toEqual(OFF)
+  expect([...c.store.keys()]).toEqual([])
+  expect(c.appended).toHaveLength(0)
+  expect(c.state.messagesCalls).toBe(0) // criterion 6
 })
 
-test('a path from history counts only if it is this plugin\'s own sentence under <evidence root>/status/ ending in .json (criterion 6)', async ($, on) => {
-  // Source: the Lead's trust-boundary rule; each bad case is a path a model or a file could put in a message.
-  const GOOD = `${CONT_ROOT}/shop--11111111.json` // a fine path in a row the plugin did not write
-  const bad: [string, string][] = [
-    '/etc/passwd.json',
-    '/Users/x/agent-team-evidence/other/shop--11111111.json',
-    `${CONT_ROOT}/../outside/shop--11111111.json`,
-    `${CONT_ROOT}/sub/shop--11111111.json`,
-    `${CONT_ROOT}/shop--11111111.txt`,
-    '/Users/x/agent-team-evidence/statusX/shop--11111111.json',
-  ].map(f => [announce(f), f])
-  // Owner-pasted logs and typed look-alikes (QA r1 P4): the row mid-message, the prefix with another sentence, a fake sentence ahead of the real one.
-  bad.push(
-    [`şu log: ${announce(GOOD)}`, GOOD],
-    [`şu log:\n${announce(GOOD)}`, GOOD],
-    [`[Agent Team modu açıldı] Başka bir şey. Pane'in okuduğu durum dosyası: ${GOOD} (biçimi skill'in references/status.md dosyasında).`, GOOD],
-    [`[Agent Team modu açıldı] Pane'in okuduğu durum dosyası: ${GOOD} (biçimi x) ${announce(GOOD).slice(25)}`, GOOD],
-  )
-  const c = await continuity($, on)
-  c.state.id = ID_NEW
-  for (const [text, path] of bad) {
-    c.state.history = [row('user', text)]
-    // Every path exists: only the shape rule can reject it.
-    c.present.add(path)
-    await c.start()
-    expect(c.read, text).toEqual([])
-    expect((await c.leadSees()).context, text).toContain(`${NEW} `)
-  }
-  // The assistant's own words, or a sentence that is not the plugin's, never count; a bad later one does not hide a good earlier one.
-  c.state.history = [row('user', announce(OLD)), row('assistant', announce(`${CONT_ROOT}/shop--22222222.json`)), row('user', `bak: ${CONT_ROOT}/shop--33333333.json`), row('user', announce('/etc/x.json'))]
-  for (const f of ['shop--22222222', 'shop--33333333']) c.present.add(`${CONT_ROOT}/${f}.json`)
-  c.present.add(OLD)
+test('criterion 5: a reload keeps the path the atom holds, even when the session id changed and a record names another existing file', async ($, on) => {
+  const OTHER = `${CONT_ROOT}/shop--11111111.json`
+  const c = await continuity($, on, { [KEY_NEW]: rec(OTHER, SWITCH, { announced: OTHER }) })
+  await c.start()
+  expect(c.read).toEqual([]) // nothing on disk yet: the new path, nothing read
+  c.present.add(OLD) // the Lead wrote it
+  c.present.add(OTHER)
+  c.state.id = ID_NEW // /reload-plugins after the session got another id
   await c.start()
   expect(c.read.at(-1)).toBe(OLD)
+  expect(c.read).not.toContain(OTHER)
+  expect(c.read).not.toContain(NEW)
+  expect(await c.paneTitle()).toBeDefined()
+  const seen = await c.leadSees() // the record's mode (switch) is on
+  expect(seen.context).toContain(`${OLD} `)
+  expect(seen.context).not.toContain(OTHER)
 })
 
-// Source: the Lead's decision 2026-11-13 (teamFolders "/" turns team mode on at session.start, so no switch row is ever written):
-// the open row carries the path once per path; a reload does not repeat it; mode off writes nothing.
-const FOLDERS = { options: { teamFolders: '/' } }
+test('criterion 6: no start and no poll asks the history for the status path', async ($, on) => {
+  const c = await continuity($, on, { [KEY_NEW]: rec(OLD, SWITCH, { announced: OLD }) })
+  c.present.add(OLD)
+  await c.start()
+  await c.team()
+  await c.clear(ID_NEW)
+  await c.start()
+  expect(c.state.messagesCalls).toBe(0)
+})
 
-test('team mode by folder: one row with the chosen path, no second row on a reload, a new row only when the path changes (a, b)', FOLDERS, async ($, on) => {
+test('criterion 7: team mode by folder tells the Lead the path once per path (stored), not on a reload nor after /clear, and again only for a new path', FOLDERS, async ($, on) => {
   const c = await continuity($, on)
   await c.start()
   expect(c.appended).toHaveLength(1)
   expect(c.appended[0]).toContain(`dosyası: ${OLD} (biçimi`)
+  expect(await c.recordOf(ID_OLD)).toMatchObject({ announced: OLD })
   c.present.add(OLD) // the Lead wrote it
-  c.state.id = ID_NEW
-  await c.start() // /reload-plugins under a new id: same path, the row is already in the history
+  await c.start() // /reload-plugins: same id, same path
   expect(c.appended).toHaveLength(1)
   expect(c.read.at(-1)).toBe(OLD)
+  await c.clear(ID_NEW)
+  await c.start() // reload after /clear: the carried record says it was told
+  expect(c.appended).toHaveLength(1)
   c.present.delete(OLD) // the file is gone: a new path is a new announcement
   await c.start()
   expect(c.appended).toHaveLength(2)
   expect(c.appended[1]).toContain(`dosyası: ${NEW} (biçimi`)
+  expect(await c.recordOf(ID_NEW)).toMatchObject({ announced: NEW })
 })
 
-test('a resumed process whose history has the folder-mode row takes that old path and writes no row (c)', FOLDERS, async ($, on) => {
-  const c = await continuity($, on)
+test('criterion 7: a resumed folder-mode process with the same path writes no row', FOLDERS, async ($, on) => {
+  const c = await continuity($, on, { [KEY_NEW]: rec(OLD, FOLDER, { announced: OLD }) })
   c.state.id = ID_NEW
-  c.state.history = [row('user', 'merhaba'), row('user', announce(OLD))]
   c.present.add(OLD)
   await c.start()
   expect(c.read.at(-1)).toBe(OLD)
   expect(c.appended).toHaveLength(0)
 })
 
-test('team mode off: a start appends no row (d)', async ($, on) => {
+test('criterion 7: mode off writes no row, start after start', async ($, on) => {
   const c = await continuity($, on)
   await c.start()
   await c.start()
   expect(c.appended).toHaveLength(0)
+})
+
+test('criterion 8: at session.start only records older than 30 days go; the session\'s own record is kept and refreshed', async ($, on) => {
+  const c = await continuity($, on, {
+    'session:stale': rec(OLD, SWITCH, {}, CLEAR_NOW - 31 * CLEAR_DAY),
+    'session:fresh': rec(OLD, SWITCH, {}, CLEAR_NOW - 29 * CLEAR_DAY),
+    'session:junk': 'not a record',
+    other: rec(OLD, SWITCH, {}, CLEAR_NOW - 99 * CLEAR_DAY),
+    [KEY_OLD]: rec(OLD, SWITCH, { announced: OLD }, CLEAR_NOW - 40 * CLEAR_DAY),
+  })
+  c.present.add(OLD)
+  await c.start()
+  expect([...c.store.keys()].sort()).toEqual(['other', 'session:fresh', 'session:junk', KEY_OLD].sort())
+  expect(await c.recordOf(ID_OLD)).toEqual(rec(OLD, SWITCH, { announced: OLD }))
+  expect(c.modeNow()).toEqual(SWITCH) // the 40-day-old record of this very session still brings its mode back
+})
+
+test('criterion 8: a corrupt record is ignored (not an object, file not a string, path outside <evidence root>/status/ or not .json)', async ($, on) => {
+  const GOOD = `${CONT_ROOT}/shop--11111111.json`
+  const good = rec(GOOD, SWITCH, { announced: GOOD })
+  const bad: [string, unknown][] = [
+    ['a string', 'x'],
+    ['an array', [good]],
+    ['null', null],
+    ['file is a number', { ...good, file: 42 }],
+    ['no file', { mode: SWITCH, at: good.at }],
+    ['outside the root', { ...good, file: '/etc/passwd.json' }],
+    ['another folder', { ...good, file: '/Users/x/agent-team-evidence/other/shop--11111111.json' }],
+    ['dot dot', { ...good, file: `${CONT_ROOT}/../outside/shop--11111111.json` }],
+    ['a subfolder', { ...good, file: `${CONT_ROOT}/sub/shop--11111111.json` }],
+    ['not .json', { ...good, file: `${CONT_ROOT}/shop--11111111.txt` }],
+    ['a sibling folder with the same prefix', { ...good, file: '/Users/x/agent-team-evidence/statusX/shop--11111111.json' }],
+    ['mode is not a mode', { ...good, mode: 'on' }],
+  ]
+  const c = await continuity($, on)
+  c.state.id = ID_NEW
+  for (const [name, value] of bad) {
+    // Every path exists: only the record's shape can reject it.
+    c.present.add(typeof (value as { file?: unknown })?.file === 'string' ? (value as { file: string }).file : GOOD)
+    c.store.set(KEY_NEW, value)
+    await c.start()
+    expect(c.read, name).toEqual([])
+    expect(c.fileNow(), name).toBe(NEW)
+    expect(c.modeNow(), name).toEqual(OFF)
+  }
+  // The same shape with a good file is taken.
+  c.store.set(KEY_NEW, good)
+  c.present.add(GOOD)
+  await c.start()
+  expect(c.read.at(-1)).toBe(GOOD)
+  expect(c.modeNow()).toEqual(SWITCH)
+})
+
+test('criterion 9: every prompt in team mode tells the Lead that the file may already hold tasks and decisions: read it first, keep what is unfinished', async ($, on) => {
+  const c = await continuity($, on)
+  await c.start()
+  await c.team()
+  expect((await c.leadSees()).context).toContain(LEAD_RULE)
+  expect(c.appended.at(-1)).toContain(LEAD_RULE) // the open row carries leadText too
 })
 
 test('deleting the status file closes the open detail, and the same task id coming back shows the list', async ($, on) => {
@@ -758,7 +1007,8 @@ test('deleting the status file closes the open detail, and the same task id comi
   on('fs.exists', () => ({ value: exists }))
   on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: mtime, isLink: false } }))
   on('fs.read', () => ({ value: detailStatus({}) }))
-  on('clock.every', () => ({ value: undefined }))
+  mock.clock(on)
+  mock.store(on)
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   const start = () => $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'desktop', isInteractive: true })
   await start()
