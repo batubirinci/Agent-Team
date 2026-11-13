@@ -246,9 +246,9 @@ export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void) {
   )
 }
 
-export function termHint({ Text }: UI, hasOthers = false, picked = false) {
+export function termHint({ Text }: UI, hasOthers = false) {
   const k = (s: string) => <Text color="claude">{s}</Text>
-  return <Text dimColor>{k('a-o')} ayrıntı  {k('1-9')} {picked ? 'karar seç' : 'karar'}  {hasOthers && <Text>{k('v')} diğer  </Text>}{k('p')} pause  {k('esc')} çık</Text>
+  return <Text dimColor>{k('a-o')} ayrıntı  {k('1-9')} karar seç  {hasOthers && <Text>{k('v')} diğer  </Text>}{k('p')} pause  {k('esc')} çık</Text>
 }
 
 // Other team sessions' decisions, read-only: no number keys, options as dim text; "v" opens and closes (approved design "Diğer oturumların kararları").

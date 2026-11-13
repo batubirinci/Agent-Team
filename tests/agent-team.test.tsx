@@ -1193,7 +1193,7 @@ test('terminal pane: header, bars, decisions, tasks, roles, candidate and hint l
 
   // Hint line: dim, keys in claude.
   const hint = textNode(root, /^a-o ayrıntı/)
-  expect(hint && textOf(hint)).toBe('a-o ayrıntı  1-9 karar  p pause  esc çık')
+  expect(hint && textOf(hint)).toBe('a-o ayrıntı  1-9 karar seç  p pause  esc çık')
   expect(hint?.props?.dimColor).toBe(true)
   expect(textNode(hint as Node, /^a-o$/)?.props?.color).toBe('claude')
   await ui.unmount()
@@ -2093,7 +2093,7 @@ test('terminal: the collapsed line, the expanded boxes, v toggles, no number key
   expect(toggle.props).toMatchObject({ key: 'others-toggle', label: 'göster', plain: true, hotkey: 'v' })
   expect(textNode(root, /^ {2}bbirinci 3/)?.props).toMatchObject({ dimColor: true })
   expect(textOf(textNode(root, /^ {2}bbirinci 3/) as Node)).toBe('  bbirinci 3 (1 takıldı) · NorthScore 1')
-  expect(textOf(textNode(root, /^a-o ayrıntı/) as Node)).toBe('a-o ayrıntı  1-9 karar  v diğer  p pause  esc çık')
+  expect(textOf(textNode(root, /^a-o ayrıntı/) as Node)).toBe('a-o ayrıntı  1-9 karar seç  v diğer  p pause  esc çık')
   expect(otherBoxes(root)).toEqual([])
   // v is its own key: no other button shares it, none of the task keys a c d e f g h i j k m n o, none reserved b l p s t.
   const keys = hotkeys(root)
@@ -2171,7 +2171,7 @@ test('terminal: zero total draws nothing and the hint has no "v diğer"; own key
   const root = await drawnOf(ui)
   expect(textNode(root, /Diğer oturum/)).toBeUndefined()
   expect(nodesOf(root).some(n => n.props?.key === 'others-toggle')).toBe(false)
-  expect(textOf(textNode(root, /^a-o ayrıntı/) as Node)).toBe('a-o ayrıntı  1-9 karar  p pause  esc çık')
+  expect(textOf(textNode(root, /^a-o ayrıntı/) as Node)).toBe('a-o ayrıntı  1-9 karar seç  p pause  esc çık')
   expect(hotkeys(root)).toEqual({ pause: 'p', 'pane-team-on': 'o', 'detail-t1': 'a' })
   await ui.unmount()
 })
@@ -2327,9 +2327,9 @@ test('criterion 2: a line break in an id or option becomes a space; regex charac
 
 // A fake prompt box under a mounted session: the box is the single truth, `fill` edits it, and the engine's `prompt.change`
 // (origin plugin, after a plugin's fill) is raised by `echo`, as the d.ts says it is; `type` is the owner typing (`prompt.edit`).
-const kBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], text = TERM, o: { isFilled?: boolean; boxText?: string; throws?: boolean } = {}) => {
+const kBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], text = TERM, o: { isFilled?: boolean; boxText?: string; throws?: boolean; atomFails?: boolean } = {}) => {
   const box = { text: o.boxText ?? '', cursor: 0 }
-  const log = { sent: [] as string[], fills: [] as { text: string; mode?: string }[] }
+  const log = { sent: [] as string[], fills: [] as { text: string; mode?: string }[], sets: [] as string[], gets: [] as string[] }
   let file = text
   let mtime = 1
   on('command.register', (_, e) => ({ value: { command: e.name } }))
@@ -2342,6 +2342,15 @@ const kBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], te
   on('clock.every', () => ({ value: undefined }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.append', (_, e, next) => next(e))
+  on('state.get', (_, e, next) => {
+    log.gets.push(e.key)
+    return next(e)
+  })
+  on('state.set', (_, e, next) => {
+    log.sets.push(e.key)
+    if (o.atomFails && e.key === 'karar') throw new Error('atom refused')
+    return next(e)
+  })
   on('prompt.read', () => ({ value: { text: box.text, cursor: box.cursor } }))
   on('prompt.submit', (_, e) => {
     log.sent.push(e.text)
@@ -2514,14 +2523,14 @@ test('criterion 5: a fill that rejects falls back to the same submit', async ($,
   await ui.unmount()
 })
 
-test('criteria 1, 3 and 4 (terminal): hotkeys 1-9 write the lines; the picked option is success bold, the box has the note, the hint says "karar seç"', async ($, on) => {
+test('criteria 1, 3 and 4 (terminal): hotkeys 1-9 write the lines; the picked option is success bold, the box has the note, the hint always says "karar seç"', async ($, on) => {
   // Source: design "Karar" frame 4 (term lines) and brief criterion 3; no raw color.
   const k = await kBoot($, on)
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   const start = await drawnOf(ui)
   expect(hotkeys(start)).toMatchObject({ 'd-d1-0': '1', 'd-d1-1': '2', 'd-d2-0': '3' })
   expect(textNode(start, /^✓ seçildi/)).toBeUndefined()
-  expect(textOf(textNode(start, /^a-o ayrıntı/) as Node)).toBe('a-o ayrıntı  1-9 karar  p pause  esc çık') // nothing picked: as before
+  expect(textOf(textNode(start, /^a-o ayrıntı/) as Node)).toBe('a-o ayrıntı  1-9 karar seç  p pause  esc çık') // design frame 4: always "karar seç"
 
   await pressKey(ui, k.echo, 'd-d1-1')
   expect(k.box.text).toBe('Karar (d1): Sonra')
@@ -2549,7 +2558,7 @@ test('criteria 1, 3 and 4 (terminal): hotkeys 1-9 write the lines; the picked op
   await k.type(0, k.box.text.length, '')
   const gone = await drawnOf(ui)
   expect(textNode(gone, /^✓ seçildi/)).toBeUndefined()
-  expect(textOf(textNode(gone, /^a-o ayrıntı/) as Node)).toBe('a-o ayrıntı  1-9 karar  p pause  esc çık')
+  expect(textOf(textNode(gone, /^a-o ayrıntı/) as Node)).toBe('a-o ayrıntı  1-9 karar seç  p pause  esc çık')
   await ui.unmount()
 })
 
@@ -2571,5 +2580,34 @@ test('criterion 6: Pause, Devam and "Lead\'e sor" keep today\'s behaviour', asyn
   await ui.press({ key: 'pause' })
   expect(k.log.sent).toEqual(['Pause'])
   expect(k.log.fills).toEqual([])
+  await ui.unmount()
+})
+
+test('prompt.edit: typing that leaves the "Karar (" lines as they were writes no atom; a changed line writes once', async ($, on) => {
+  // Source: Lead's round r1b (least work per keystroke, never throws); the atom writes are counted on state.set, key "karar".
+  const k = await kBoot($, on)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await pressKey(ui, k.echo, 'd-d1-1')
+  const writes = () => k.log.sets.filter(key => key === 'karar').length
+  const before = writes()
+  const reads = k.log.gets.filter(key => key === 'karar').length
+  expect(before).toBeGreaterThan(0)
+  await k.type(k.box.text.length, k.box.text.length, '\nmerhaba') // a new line under the decision line
+  await k.type(k.box.text.length, k.box.text.length, ' dünya')
+  expect(k.box.text).toBe('Karar (d1): Sonra\nmerhaba dünya')
+  expect(writes()).toBe(before)
+  expect(k.log.gets.filter(key => key === 'karar').length).toBe(reads) // not even a read of the atom
+  // Touching the decision line does write, once.
+  await k.type(0, 0, 'x')
+  expect(writes()).toBe(before + 1)
+  await ui.unmount()
+})
+
+test('prompt.edit: when the atom write fails, typing still goes through (never throws)', async ($, on) => {
+  const bad = await kBoot($, on, TERM, { boxText: 'Karar (d1): Sonra', atomFails: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await bad.type(bad.box.text.length, bad.box.text.length, 'x') // the decision line changes, so a write is tried and refused
+  expect(bad.box.text).toBe('Karar (d1): Sonrax')
+  expect(bad.log.sets).toContain('karar')
   await ui.unmount()
 })

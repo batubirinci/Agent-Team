@@ -318,7 +318,13 @@ export const register: Register = (on, options) => {
   // every other change of the draft (prompt.change): a plugin's fill, a recalled entry, the send that clears it. Never in the way of typing.
   on('prompt.edit', async ($, e, next) => {
     const box = await next(e)
-    if (e.text.includes(KARAR) || box.text.includes(KARAR)) await syncKarar($, box.text).catch(() => undefined)
+    // Typing that leaves the "Karar (" lines as they were is a string check and no atom access; this never throws.
+    try {
+      if (e.text.includes(KARAR) || box.text.includes(KARAR)) {
+        const was = kararLines(e.text).join('\n')
+        if (was !== kararLines(box.text).join('\n')) await syncKarar($, box.text)
+      }
+    } catch {}
     return box
   })
   on('prompt.change', async ($, e, next) => {
@@ -703,7 +709,7 @@ export const register: Register = (on, options) => {
 
         {term && data && data.tasks.length > 0 && termTasks(ui, data.tasks, n, showOn, id => void update($, detail, () => id))}
 
-        {term && data && termHint(ui, otherTotal > 0, data.decisions.some(d => pickedAt(lines, d) >= 0))}
+        {term && data && termHint(ui, otherTotal > 0)}
 
         {!term && data && data.decisions.length > 0 && (
           <Box flexDirection="column" gap="sm">
