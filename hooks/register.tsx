@@ -2,9 +2,9 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Decision, DirEntry, Mode, Other, RoleStatus, SessionRecord, StatusView, Task, TaskState } from '../types'
-import { ANNOUNCE, OPEN_ROW, STAGE_LABELS, baseName, clockOf, countStates, decisionTask, expandHome, isInside, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, trimSlash } from './status'
+import { ANNOUNCE, KARAR, OPEN_ROW, STAGE_LABELS, baseName, clockOf, countStates, decisionTask, expandHome, isInside, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, pickedAt, trimSlash, withKarar } from './status'
 import { AMBER, BAD, CLAY, MUTED, OK, dotSvg, meterSvg, stagesSvg } from './svg'
-import { TBOX, hk, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termTasks, termUsage } from './terminal'
+import { TBOX, WENT, hk, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termTasks, termUsage } from './terminal'
 
 const PANE = 'agent-team'
 const PANE_OPEN = { id: PANE, title: 'Agent Team', columns: 48 } as const
@@ -26,6 +26,10 @@ const detail = atom({ plugin: 'agent-team', key: 'detail' } as const, null as st
 // Other team sessions' pending decisions (read-only strip) and whether it is open. Session state, starts collapsed.
 const others = atom({ plugin: 'agent-team', key: 'others' } as const, [] as Other[], { shape: 'others-2' })
 const othersOpen = atom({ plugin: 'agent-team', key: 'othersOpen' } as const, false, { shape: 'others-open-1' })
+// The decision lines now in the owner's prompt box (kararLines of the draft): a button writes one, the card shows it picked.
+const karar = atom({ plugin: 'agent-team', key: 'karar' } as const, [] as string[], { shape: 'karar-1' })
+// Ids of decisions whose press went out by submit because the box could not be filled; dropped when the decision leaves the file.
+const sent = atom({ plugin: 'agent-team', key: 'sent' } as const, [] as string[], { shape: 'sent-1' })
 
 // Raw colors that read on a light and a dark pane alike (a theme key has no card fill).
 const CARD = {
@@ -95,6 +99,30 @@ async function say($: EngineInterface, text: string) {
   await $.prompt.submit({ text, asUser: true })
 }
 
+const syncKarar = async ($: EngineInterface, draft: string) => {
+  const next = kararLines(draft)
+  if (JSON.stringify(await read($, karar)) !== JSON.stringify(next)) await update($, karar, () => next)
+}
+
+// A decision button writes its line into the owner's prompt box; the owner sends with Enter, so the answer reaches the Lead like a
+// typed message (mid-turn), and one Enter carries several decisions. A new line is appended (the owner's text is not re-written),
+// an existing line of that decision is replaced in the whole draft. If the box cannot take it (a dialog, no box) or the call
+// fails, the press is submitted as before and the card says so: a press is never lost.
+async function pick($: EngineInterface, d: Decision, o: string) {
+  let isFilled = false
+  try {
+    const box = await $.prompt.read()
+    await syncKarar($, box.text).catch(() => undefined)
+    const text = withKarar(box.text, d.id, o)
+    isFilled =
+      text === box.text ||
+      (await $.prompt.fill(text.startsWith(box.text) ? { text: text.slice(box.text.length), mode: 'append' } : { text, mode: 'replace' })).isFilled
+  } catch {}
+  if (isFilled) return
+  await say($, kararLine(d.id, o))
+  await update($, sent, ids => (ids.includes(d.id) ? ids : [...ids, d.id]))
+}
+
 const openRow = (file: string) => `${OPEN_ROW}${leadText(file)}`
 
 // The row that tells the Lead (and, later, a resumed session) the status path.
@@ -108,6 +136,8 @@ const announce = ($: EngineInterface, file: string) =>
 // (file deleted, task removed), so the same id coming back does not reopen it by itself.
 async function setView($: EngineInterface, view: StatusView) {
   await update($, status, () => view)
+  const ids = view.data?.decisions.map(d => d.id) ?? []
+  await update($, sent, s => s.filter(id => ids.includes(id)))
   const open = await read($, detail)
   if (open && !view.data?.tasks.some(t => t.id === open)) await update($, detail, () => null)
 }
@@ -284,6 +314,24 @@ export const register: Register = (on, options) => {
     return next({ ...e, context: [...(e.context ?? []), leadText(file)] })
   })
 
+  // The decision lines in the owner's box, for the pane: the owner's own edits (prompt.edit; prompt.change does not carry them) and
+  // every other change of the draft (prompt.change): a plugin's fill, a recalled entry, the send that clears it. Never in the way of typing.
+  on('prompt.edit', async ($, e, next) => {
+    const box = await next(e)
+    // Typing that leaves the "Karar (" lines as they were is a string check and no atom access; this never throws.
+    try {
+      if (e.text.includes(KARAR) || box.text.includes(KARAR)) {
+        const was = kararLines(e.text).join('\n')
+        if (was !== kararLines(box.text).join('\n')) await syncKarar($, box.text)
+      }
+    } catch {}
+    return box
+  })
+  on('prompt.change', async ($, e, next) => {
+    await syncKarar($, e.text).catch(() => undefined)
+    return next(e)
+  })
+
   on('command.run', { command: 'team' }, async $ => {
     await follow($)
     const isOn = !(await read($, mode)).isOn
@@ -332,6 +380,8 @@ export const register: Register = (on, options) => {
     const otherOpen = await read($, othersOpen)
     const otherTotal = other.reduce((n, o) => n + o.count, 0)
     const { file, data, error } = await read($, status)
+    const lines = await read($, karar)
+    const wentIds = await read($, sent)
     const openId = await read($, detail)
     const open = openId ? data?.tasks.find(t => t.id === openId) : undefined
 
@@ -339,8 +389,9 @@ export const register: Register = (on, options) => {
 
     const decisionCard = (d: Decision) => {
       const { kind, blocked } = decisionTask(d, data?.tasks ?? [])
+      const at = pickedAt(lines, d)
       return (
-      <Box key={`d-${d.id}`} {...CARD} borderColor={blocked ? BLOCKED_EDGE : CARD.borderColor}>
+      <Box key={`d-${d.id}`} {...CARD} borderColor={at >= 0 ? 'success' : blocked ? BLOCKED_EDGE : CARD.borderColor}>
         <Box flexDirection="column">
           {kind && <Text size="caption" weight="medium" color={blocked ? BLOCKED_INK : 'claude'}>{kind}</Text>}
           <Text>{d.text}</Text>
@@ -351,13 +402,15 @@ export const register: Register = (on, options) => {
             {d.options.map((o, i) => (
               <Button
                 key={`d-${d.id}-${i}`}
-                label={o}
-                variant={i === 0 ? 'primary' : 'secondary'}
-                onPress={() => void say($, `Karar (${d.id}): ${o}`)}
+                label={i === at ? `✓ ${o}` : o}
+                variant={i === Math.max(at, 0) ? 'primary' : 'secondary'}
+                onPress={() => void pick($, d, o)}
               />
             ))}
           </Box>
         )}
+        {at >= 0 && <Text size="caption" color="success">{`✓ Seçildi: ${d.options[at]} · mesaj kutunda, Enter ile gider`}</Text>}
+        {at < 0 && wentIds.includes(d.id) && <Text size="caption" dimColor>{WENT}</Text>}
       </Box>
       )
     }
@@ -652,7 +705,7 @@ export const register: Register = (on, options) => {
             </Text>
           ))}
 
-        {term && data && data.decisions.length > 0 && termDecisions(ui, data.decisions, data.tasks, t => void say($, t))}
+        {term && data && data.decisions.length > 0 && termDecisions(ui, data.decisions, data.tasks, (d, o) => void pick($, d, o), lines, wentIds)}
 
         {term && data && data.tasks.length > 0 && termTasks(ui, data.tasks, n, showOn, id => void update($, detail, () => id))}
 

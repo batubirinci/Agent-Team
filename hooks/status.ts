@@ -139,6 +139,26 @@ export function decisionTask(d: Decision, tasks: readonly Task[]) {
   return { kind: [d.kind, t?.title].filter(Boolean).join(' · ') || undefined, blocked: t?.state === 'blocked' }
 }
 
+// A decision answer is one line of the owner's draft, "Karar (<id>): <option>". The id and the option are model-written:
+// a line break in them would start another line, so it becomes a space.
+export const KARAR = 'Karar ('
+const flat = (s: string) => s.replace(/\r\n|[\r\n]/g, ' ')
+const head = (id: string) => `${KARAR}${flat(id)}): `
+export const kararLine = (id: string, option: string) => head(id) + flat(option)
+
+// The draft with the decision's line set: a line of that decision is replaced in place, else a new line is added at the end.
+// Plain startsWith, never a regex: the id is data. Everything else stays as the owner typed it.
+export function withKarar(draft: string, id: string, option: string) {
+  const line = kararLine(id, option)
+  const rows = draft.split('\n')
+  if (rows.some(r => r.startsWith(head(id)))) return rows.map(r => (r.startsWith(head(id)) ? line : r)).join('\n')
+  return draft && !draft.endsWith('\n') ? `${draft}\n${line}` : draft + line
+}
+
+// The decision lines of a draft (all the pane needs to know of it), and which option of `d` one of them picks (-1: none).
+export const kararLines = (draft: string) => draft.split('\n').filter(r => r.startsWith(KARAR))
+export const pickedAt = (lines: readonly string[], d: Decision) => d.options.findIndex(o => lines.includes(kararLine(d.id, o)))
+
 // The sentence that tells the Lead the status path (register.tsx leadText) and the prefix of the row that carries it.
 export const ANNOUNCE = "Pane'in okuduğu durum dosyası:"
 export const OPEN_ROW = '[Agent Team modu açıldı] '
