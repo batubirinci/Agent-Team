@@ -2370,7 +2370,7 @@ test('criterion 2: a line break in an id or option becomes a space; regex charac
 // (origin plugin, after a plugin's fill) is raised by `echo`, as the d.ts says it is; `type` is the owner typing (`prompt.edit`).
 const kBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], text = TERM, o: { isFilled?: boolean; boxText?: string; throws?: boolean; atomFails?: boolean } = {}) => {
   const box = { text: o.boxText ?? '', cursor: 0 }
-  const log = { sent: [] as string[], fills: [] as { text: string; mode?: string }[], sets: [] as string[], gets: [] as string[] }
+  const log = { reads: 0, sent: [] as string[], fills: [] as { text: string; mode?: string }[], sets: [] as string[], gets: [] as string[] }
   let file = text
   let mtime = 1
   on('command.register', (_, e) => ({ value: { command: e.name } }))
@@ -2392,7 +2392,10 @@ const kBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], te
     if (o.atomFails && e.key === 'karar') throw new Error('atom refused')
     return next(e)
   })
-  on('prompt.read', () => ({ value: { text: box.text, cursor: box.cursor } }))
+  on('prompt.read', () => {
+    log.reads++
+    return { value: { text: box.text, cursor: box.cursor } }
+  })
   on('prompt.submit', (_, e) => {
     log.sent.push(e.text)
     return { text: e.text }
@@ -2440,9 +2443,9 @@ const pressKey = async (ui: { press: (a: { key: string }) => Promise<unknown> },
   await echo()
 }
 
-test('criteria 1 and 4: a desktop press writes the line into the box, never submits; two decisions give two lines and one Enter', async ($, on) => {
+test('criteria 1 and 4 (terminal): a press writes the line into the box, never submits; two decisions give two lines and one Enter', async ($, on) => {
   const k = await kBoot($, on)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await pressKey(ui, k.echo, 'd-d1-1')
   expect(k.box.text).toBe('Karar (d1): Sonra')
   await pressKey(ui, k.echo, 'd-d2-0')
@@ -2452,65 +2455,36 @@ test('criteria 1 and 4: a desktop press writes the line into the box, never subm
   await ui.unmount()
 })
 
-test('criterion 1: a press appends below what the owner typed', async ($, on) => {
+test('criterion 1 (terminal): a press appends below what the owner typed', async ($, on) => {
   const below = await kBoot($, on, TERM, { boxText: 'önce şunu yap' })
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await pressKey(ui, below.echo, 'd-d1-0')
   expect(below.box.text).toBe('önce şunu yap\nKarar (d1): Durumları gör')
   await ui.unmount()
 })
 
-test('criterion 1: a press replaces the same decision line in place and keeps the rest', async ($, on) => {
+test('criterion 1 (terminal): a press replaces the same decision line in place and keeps the rest', async ($, on) => {
   const same = await kBoot($, on, TERM, { boxText: 'önce\nKarar (d1): Durumları gör\nsonra' })
-  const ui2 = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const ui2 = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await pressKey(ui2, same.echo, 'd-d1-1')
   expect(same.box.text).toBe('önce\nKarar (d1): Sonra\nsonra')
   expect(same.log.sent).toEqual([])
   await ui2.unmount()
 })
 
-test('criterion 2: a decision from the file with a line break and regex characters writes one clean line', async ($, on) => {
+test('criterion 2 (terminal): a decision from the file with a line break and regex characters writes one clean line', async ($, on) => {
   const odd = JSON.stringify({ v: 1, decisions: [{ id: 'a.b(1)', text: 'K', options: ['bir\niki', 'x'] }, { id: 'axb(1)', text: 'L', options: ['y'] }] })
   const k = await kBoot($, on, odd, { boxText: 'Karar (axb(1)): eski' })
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await pressKey(ui, k.echo, 'd-a.b(1)-0')
   expect(k.box.text).toBe('Karar (axb(1)): eski\nKarar (a.b(1)): bir iki')
   await ui.unmount()
 })
 
-test('criterion 3 (desktop): a picked decision draws the success border, "✓ <option>", the others non-primary and the note; another press switches the line', async ($, on) => {
-  // Source: design "Karar" frame 2 (renderVals: chosen(), picked, faded) and brief criterion 3; theme key success, not the mock's hex.
+test('criterion 3 (terminal): deleting or editing the line, or sending the message, returns the card to its normal look', async ($, on) => {
   const k = await kBoot($, on)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  const card = () => ui.find({ key: 'd-d1' })
-  expect((await card())?.props.borderColor).toBe('rgba(128,128,128,0.28)')
-  expect(await ui.find({ type: 'Text', text: /Seçildi/ })).toBeUndefined()
-  expect((await ui.find({ key: 'd-d1-0' }))?.props).toMatchObject({ label: 'Durumları gör', variant: 'primary' })
-
-  await pressKey(ui, k.echo, 'd-d1-1')
-  expect((await card())?.props.borderColor).toBe('success')
-  expect((await ui.find({ key: 'd-d1-1' }))?.props).toMatchObject({ label: '✓ Sonra', variant: 'primary' })
-  expect((await ui.find({ key: 'd-d1-0' }))?.props).toMatchObject({ label: 'Durumları gör', variant: 'secondary' })
-  const note = await ui.find({ type: 'Text', text: '✓ Seçildi: Sonra · mesaj kutunda, Enter ile gider' })
-  expect(note?.props.color).toBe('success')
-  // The other decision is untouched.
-  expect((await ui.find({ key: 'd-d2' }))?.props.borderColor).toBe('rgba(128,128,128,0.28)')
-  expect((await ui.find({ key: 'd-d2-0' }))?.props).toMatchObject({ label: 'Evet', variant: 'primary' })
-
-  // Another option of the picked decision: the line is switched, never two lines for one decision.
-  await pressKey(ui, k.echo, 'd-d1-0')
-  expect(k.box.text).toBe('Karar (d1): Durumları gör')
-  expect((await ui.find({ key: 'd-d1-0' }))?.props.label).toBe('✓ Durumları gör')
-  expect((await ui.find({ key: 'd-d1-1' }))?.props).toMatchObject({ label: 'Sonra', variant: 'secondary' })
-  expect(await ui.find({ type: 'Text', text: /Seçildi: Sonra/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: '✓ Seçildi: Durumları gör · mesaj kutunda, Enter ile gider' })).toBeDefined()
-  await ui.unmount()
-})
-
-test('criterion 3 (desktop): deleting or editing the line, or sending the message, returns the card to its normal look', async ($, on) => {
-  const k = await kBoot($, on)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  const picked = async () => (await ui.find({ key: 'd-d1' }))?.props.borderColor === 'success'
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const picked = async () => !!textNode(await drawnOf(ui), /^✓ seçildi/)
   await pressKey(ui, k.echo, 'd-d1-1')
   expect(await picked()).toBe(true)
 
@@ -2518,7 +2492,6 @@ test('criterion 3 (desktop): deleting or editing the line, or sending the messag
   await k.type(k.box.text.length, k.box.text.length, 'x')
   expect(k.box.text).toBe('Karar (d1): Sonrax')
   expect(await picked()).toBe(false)
-  expect((await ui.find({ key: 'd-d1-1' }))?.props).toMatchObject({ label: 'Sonra', variant: 'secondary' })
   // Typing it back brings the pick back.
   await k.type(k.box.text.length - 1, k.box.text.length, '')
   expect(await picked()).toBe(true)
@@ -2532,36 +2505,91 @@ test('criterion 3 (desktop): deleting or editing the line, or sending the messag
   expect(await picked()).toBe(true)
   await k.send()
   expect(await picked()).toBe(false)
-  expect(await ui.find({ type: 'Text', text: /Seçildi/ })).toBeUndefined()
   await ui.unmount()
 })
 
-test('criterion 5 (desktop): the box cannot be filled, the press goes out as today and the card says so until the decision leaves the file', async ($, on) => {
-  // Source: brief criterion 5; the note text is the brief's.
-  const SENT = 'Gönderildi · Lead işini bitirince okuyacak'
-  const k = await kBoot($, on, TERM, { isFilled: false })
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: SENT })).toBeUndefined()
-  await pressKey(ui, k.echo, 'd-d1-1')
-  expect(k.log.sent).toEqual(['Karar (d1): Sonra'])
-  expect(k.box.text).toBe('')
-  expect(await ui.findAll({ type: 'Text', text: SENT })).toHaveLength(1)
-  expect((await ui.find({ key: 'd-d1' }))?.props.borderColor).toBe('rgba(128,128,128,0.28)') // not "picked": it is sent, not in the box
-  // The Lead removes the decision: the note goes, and does not come back with the same id.
-  await k.rewrite(JSON.stringify({ v: 1, decisions: [{ id: 'd2', text: 'Birleşsin mi?', options: ['Evet'] }] }))
-  expect(await ui.find({ type: 'Text', text: SENT })).toBeUndefined()
-  await k.rewrite(TERM)
-  expect(await ui.find({ type: 'Text', text: SENT })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('criterion 5: a fill that rejects falls back to the same submit', async ($, on) => {
+test('criterion 5 (terminal): a fill that rejects falls back to the same submit', async ($, on) => {
   const k = await kBoot($, on, TERM, { throws: true })
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'd-d2-0' })
   expect(k.log.sent).toEqual(['Karar (d2): Evet'])
-  expect(await ui.find({ type: 'Text', text: 'Gönderildi · Lead işini bitirince okuyacak' })).toBeDefined()
+  expect(textNode(await drawnOf(ui), /^Gönderildi · Lead işini bitirince okuyacak$/)).toBeDefined()
   await ui.unmount()
+})
+
+// Desktop and any other graphical surface: the composer is the app's own, a fill would only write an engine draft the owner never
+// sees (live check 2026-11-13, tasks/decision-buttons/live-desktop.md). Source for 1 to 4: the Lead's criteria for desktop-karar.
+test('criterion 1 (desktop): a press submits the one clean Karar line as the owner and never reads or fills the box', async ($, on) => {
+  const k = await kBoot($, on, TERM, { boxText: 'yarım yazı' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'd-d1-1' })
+  expect(k.log.sent).toEqual(['Karar (d1): Sonra'])
+  expect(k.log.reads).toBe(0)
+  expect(k.log.fills).toEqual([])
+  expect(k.box.text).toBe('yarım yazı')
+  await ui.unmount()
+  k.log.sent.length = 0
+  // Ids and options with line breaks stay one line.
+  const odd = JSON.stringify({ v: 1, decisions: [{ id: 'x\ny', text: 'K', options: ['bir\r\niki'] }] })
+  await k.rewrite(odd)
+  const ui2 = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui2.press({ key: 'd-x\ny-0' })
+  expect(k.log.sent).toEqual(['Karar (x y): bir iki'])
+  await ui2.unmount()
+})
+
+test('criterion 2 (desktop): after a press the card shows "✓ <option>", the others secondary, the success border and the sent note', async ($, on) => {
+  const k = await kBoot($, on)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ key: 'd-d1' }))?.props.borderColor).toBe('rgba(128,128,128,0.28)')
+  expect(await ui.find({ type: 'Text', text: /Gönderildi/ })).toBeUndefined()
+  await ui.press({ key: 'd-d1-1' })
+  expect(k.log.sent).toEqual(['Karar (d1): Sonra'])
+  expect((await ui.find({ key: 'd-d1' }))?.props.borderColor).toBe('success')
+  expect((await ui.find({ key: 'd-d1-1' }))?.props).toMatchObject({ label: '✓ Sonra', variant: 'primary' })
+  expect((await ui.find({ key: 'd-d1-0' }))?.props).toMatchObject({ label: 'Durumları gör', variant: 'secondary' })
+  const note = await ui.find({ type: 'Text', text: 'Gönderildi: Sonra · Lead işini bitirince okuyacak' })
+  expect(note?.props).toMatchObject({ color: 'success', size: 'caption' })
+  // The other decision is untouched.
+  expect((await ui.find({ key: 'd-d2' }))?.props.borderColor).toBe('rgba(128,128,128,0.28)')
+  expect((await ui.find({ key: 'd-d2-0' }))?.props).toMatchObject({ label: 'Evet', variant: 'primary' })
+  // It stays until the decision leaves the file, and does not come back with the same id.
+  await k.rewrite(JSON.stringify({ v: 1, decisions: [{ id: 'd2', text: 'Birleşsin mi?', options: ['Evet'] }] }))
+  expect(await ui.find({ type: 'Text', text: /Gönderildi/ })).toBeUndefined()
+  await k.rewrite(TERM)
+  expect((await ui.find({ key: 'd-d1' }))?.props.borderColor).toBe('rgba(128,128,128,0.28)')
+  expect(await ui.find({ type: 'Text', text: /Gönderildi/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('criterion 3 (desktop): a further press on a decision that already went sends nothing, same or another option', async ($, on) => {
+  const k = await kBoot($, on)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'd-d1-1' })
+  await ui.press({ key: 'd-d1-1' })
+  await ui.press({ key: 'd-d1-0' })
+  expect(k.log.sent).toEqual(['Karar (d1): Sonra'])
+  expect((await ui.find({ key: 'd-d1-1' }))?.props.label).toBe('✓ Sonra')
+  expect((await ui.find({ key: 'd-d1-0' }))?.props.label).toBe('Durumları gör')
+  await ui.press({ key: 'd-d2-0' }) // another decision still goes
+  expect(k.log.sent).toEqual(['Karar (d1): Sonra', 'Karar (d2): Evet'])
+  await ui.unmount()
+})
+
+test('criterion 4 (desktop): Karar lines in the engine draft never draw the "Seçildi" look; the terminal draws it from the same draft', async ($, on) => {
+  const k = await kBoot($, on, TERM, { boxText: 'Karar (d1): Sonra' })
+  // The owner (or a 0.6.0 press) leaves the line in the draft; an edit that restores it makes the pane read it.
+  await k.type(0, 0, 'x')
+  await k.type(0, 1, '')
+  expect(k.log.sets).toContain('karar')
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Seçildi/ })).toBeUndefined()
+  expect((await ui.find({ key: 'd-d1' }))?.props.borderColor).toBe('rgba(128,128,128,0.28)')
+  expect((await ui.find({ key: 'd-d1-1' }))?.props).toMatchObject({ label: 'Sonra', variant: 'secondary' })
+  await ui.unmount()
+  const term = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(textNode(await drawnOf(term), /^✓ seçildi: Sonra/)).toBeDefined() // control: the draft really holds the line
+  await term.unmount()
 })
 
 test('criteria 1, 3 and 4 (terminal): hotkeys 1-9 write the lines; the picked option is success bold, the box has the note, the hint always says "karar seç"', async ($, on) => {
@@ -2627,7 +2655,7 @@ test('criterion 6: Pause, Devam and "Lead\'e sor" keep today\'s behaviour', asyn
 test('prompt.edit: typing that leaves the "Karar (" lines as they were writes no atom; a changed line writes once', async ($, on) => {
   // Source: Lead's round r1b (least work per keystroke, never throws); the atom writes are counted on state.set, key "karar".
   const k = await kBoot($, on)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await pressKey(ui, k.echo, 'd-d1-1')
   const writes = () => k.log.sets.filter(key => key === 'karar').length
   const before = writes()
@@ -2646,7 +2674,7 @@ test('prompt.edit: typing that leaves the "Karar (" lines as they were writes no
 
 test('prompt.edit: when the atom write fails, typing still goes through (never throws)', async ($, on) => {
   const bad = await kBoot($, on, TERM, { boxText: 'Karar (d1): Sonra', atomFails: true })
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await bad.type(bad.box.text.length, bad.box.text.length, 'x') // the decision line changes, so a write is tried and refused
   expect(bad.box.text).toBe('Karar (d1): Sonrax')
   expect(bad.log.sets).toContain('karar')
