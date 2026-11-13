@@ -1864,8 +1864,8 @@ const decisionsOnly = (n: number, extra: Record<string, unknown> = {}) =>
   JSON.stringify({ v: 1, ...extra, decisions: Array.from({ length: n }, (_, i) => ({ id: `d${i}`, text: `Soru ${i}`, options: ['Evet', 'Hayır'] })) })
 const OWN = JSON.stringify({ v: 1, lead: 'Opus 5.5', tasks: [{ id: 't1', title: 'Kendi görevim', stage: 'build' }] })
 
-// The design's own two sessions: bbirinci (3 decisions, the first takıldı) and NorthScore (1), the second with no updatedAt (time from mtime).
-const BBIRINCI = JSON.stringify({
+// The design's own two sessions: ops (3 decisions, the first takıldı) and Webshop (1), the second with no updatedAt (time from mtime).
+const OPS = JSON.stringify({
   v: 1,
   updatedAt: '2026-11-13T14:20:00+03:00',
   decisions: [
@@ -1884,10 +1884,10 @@ const NORTH = JSON.stringify({
   decisions: [{ id: 'd1', kind: 'Soru', task: 't1', text: 'Grafik haftalık mı aylık mı gösterilsin?', options: ['Haftalık', 'Aylık'] }],
   tasks: [{ id: 't1', title: 'Rapor sayfası', stage: 'build' }],
 })
-const BB = 'bbirinci--350e44d7.json'
-const NS = 'NorthScore--1a2b3c4d.json'
+const BB = 'ops--5e6f7a8b.json'
+const NS = 'Webshop--1a2b3c4d.json'
 const DESIGN_LISTING = [entry(BB, { mtimeMs: at(14, 25) }), entry(NS, { mtimeMs: at(13, 5) })]
-const DESIGN_FILES = { [BB]: BBIRINCI, [NS]: NORTH }
+const DESIGN_FILES = { [BB]: OPS, [NS]: NORTH }
 
 type OtherLog = { read?: string[]; say?: string[]; fill?: string[]; appended?: string[]; opened?: string[]; ticks?: string[]; refused?: string[]; refusing?: { on: boolean }; own?: string | null }
 const bootOthers = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], surface: 'desktop' | 'terminal', listing: Entry[], files: Record<string, string>, log: OtherLog = {}) => {
@@ -1988,7 +1988,7 @@ test('desktop: the strip under the header, collapsed first, then each session in
 
   // Criterion 3 (design frame 1): amber 8 px dot, bold title, per-session counts, Göster; above "Senin sıran" / the tasks.
   expect(textIn(root, 'Diğer oturumlarda 4 karar bekliyor')).toBe(true)
-  expect(textIn(root, 'bbirinci · 3 karar (1 takıldı) · NorthScore · 1 karar')).toBe(true)
+  expect(textIn(root, 'ops · 3 karar (1 takıldı) · Webshop · 1 karar')).toBe(true)
   expect(textNode(root, /^Diğer oturumlarda 4 karar bekliyor$/)?.props).toMatchObject({ weight: 'semibold' })
   expect(nodesOf(root).find(n => n.props?.key === 'others-toggle')?.props?.label).toBe('Göster')
   const dot = nodesOf(root).find(n => n.type === 'Svg' && n.props?.alt === 'diğer oturumlarda karar bekliyor')
@@ -2011,9 +2011,9 @@ test('desktop: the strip under the header, collapsed first, then each session in
   const [bb, ns] = otherBoxes(open) as [Node, Node]
   expect(bb.props).toMatchObject({ backgroundColor: 'rgba(128,128,128,0.10)', borderColor: 'rgba(224,108,108,0.45)' })
   expect(ns.props).toMatchObject({ backgroundColor: 'rgba(128,128,128,0.10)', borderColor: 'rgba(128,128,128,0.28)' })
-  expect(textIn(bb, 'bbirinci · 350e44d7')).toBe(true)
+  expect(textIn(bb, 'ops · 5e6f7a8b')).toBe(true)
   expect(textIn(bb, 'son yazım 14:20')).toBe(true) // from updatedAt, not the 14:25 mtime
-  expect(textIn(ns, 'NorthScore · 1a2b3c4d')).toBe(true)
+  expect(textIn(ns, 'Webshop · 1a2b3c4d')).toBe(true)
   expect(textIn(ns, 'son yazım 13:05')).toBe(true) // no updatedAt: from the mtime
   expect(textNode(bb, /^Takıldı · C1 ai-deploy kapı çekirdeği$/)?.props).toMatchObject({ color: '#F2A3A3' })
   expect(textIn(bb, "Developer başlatılamadı: ajan başlatma hook'u reddetti. Ne yapayım?")).toBe(true)
@@ -2132,8 +2132,8 @@ test('terminal: the collapsed line, the expanded boxes, v toggles, no number key
   expect(textNode(head, /^Diğer oturumlarda 4 karar$/)?.props).toMatchObject({ color: 'warning', weight: 'bold' })
   const toggle = nodesOf(head).find(n => n.type === 'Button') as Node
   expect(toggle.props).toMatchObject({ key: 'others-toggle', label: 'göster', plain: true, hotkey: 'v' })
-  expect(textNode(root, /^ {2}bbirinci 3/)?.props).toMatchObject({ dimColor: true })
-  expect(textOf(textNode(root, /^ {2}bbirinci 3/) as Node)).toBe('  bbirinci 3 (1 takıldı) · NorthScore 1')
+  expect(textNode(root, /^ {2}ops 3/)?.props).toMatchObject({ dimColor: true })
+  expect(textOf(textNode(root, /^ {2}ops 3/) as Node)).toBe('  ops 3 (1 takıldı) · Webshop 1')
   expect(textOf(textNode(root, /^a-o ayrıntı/) as Node)).toBe('a-o ayrıntı  1-9 karar seç  v diğer  p pause  esc çık')
   expect(otherBoxes(root)).toEqual([])
   // v is its own key: no other button shares it, none of the task keys a c d e f g h i j k m n o, none reserved b l p s t.
@@ -2156,10 +2156,10 @@ test('terminal: the collapsed line, the expanded boxes, v toggles, no number key
   expect(ns.props).toMatchObject({ borderStyle: 'single', borderColor: 'subtle' })
   const first = bb.children?.[0] as Node
   expect(first.props).toMatchObject({ flexDirection: 'row', justifyContent: 'space-between' })
-  expect(textOf(first)).toBe('bbirinci · 350e44d714:20')
-  expect(textNode(first, /^bbirinci · 350e44d7$/)?.props).toMatchObject({ weight: 'bold' })
+  expect(textOf(first)).toBe('ops · 5e6f7a8b14:20')
+  expect(textNode(first, /^ops · 5e6f7a8b$/)?.props).toMatchObject({ weight: 'bold' })
   expect(textNode(first, /^14:20$/)?.props).toMatchObject({ dimColor: true })
-  expect(textOf(ns.children?.[0] as Node)).toBe('NorthScore · 1a2b3c4d13:05')
+  expect(textOf(ns.children?.[0] as Node)).toBe('Webshop · 1a2b3c4d13:05')
   // ✗ takıldı in error, ◆ the others in claude; text; the dim options line; one blank row between decisions (gap 1).
   expect(textNode(bb, /^✗ Takıldı · C1 ai-deploy kapı çekirdeği$/)?.props).toMatchObject({ color: 'error', weight: 'bold' })
   expect(textNode(bb, /^◆ Ürün kararı · Faz M modül kataloğu$/)?.props).toMatchObject({ color: 'claude', weight: 'bold' })
@@ -2253,7 +2253,7 @@ test('other sessions, zero decisions are dropped from what is drawn (criterion 1
   const empty = JSON.stringify({ v: 1, decisions: [{ id: 'x', text: '' }] }) // the parser drops the only decision
   await bootOthers($, on, 'desktop', [...DESIGN_LISTING, entry('quiet--11111111.json'), entry('empty--22222222.json')], { ...DESIGN_FILES, 'quiet--11111111.json': quiet, 'empty--22222222.json': empty })
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(textIn(await drawnOf(ui), 'bbirinci · 3 karar (1 takıldı) · NorthScore · 1 karar')).toBe(true)
+  expect(textIn(await drawnOf(ui), 'ops · 3 karar (1 takıldı) · Webshop · 1 karar')).toBe(true)
   await ui.press({ key: 'others-toggle' })
   expect(otherBoxes(await drawnOf(ui)).map(b => b.props?.key)).toEqual([`other-${BB}`, `other-${NS}`])
   await ui.unmount()
