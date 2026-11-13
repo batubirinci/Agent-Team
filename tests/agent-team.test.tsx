@@ -2396,7 +2396,11 @@ const kBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], te
     log.reads++
     return { value: { text: box.text, cursor: box.cursor } }
   })
+  // `submit` is flipped by a test: a rejected submit, or one a hook refused (`{ drop }`), enters nothing and is not in log.sent.
+  const gate = { submit: 'ok' as 'ok' | 'throws' | 'drop' }
   on('prompt.submit', (_, e) => {
+    if (gate.submit === 'throws') throw new Error('no session')
+    if (gate.submit === 'drop') return { drop: 'refused' }
     log.sent.push(e.text)
     return { text: e.text }
   })
@@ -2436,7 +2440,7 @@ const kBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], te
     mtime += 1
     return start()
   }
-  return { box, log, echo, type, send, rewrite }
+  return { box, log, gate, echo, type, send, rewrite }
 }
 const pressKey = async (ui: { press: (a: { key: string }) => Promise<unknown> }, echo: () => Promise<unknown>, key: string) => {
   await ui.press({ key })
@@ -2590,6 +2594,54 @@ test('criterion 4 (desktop): Karar lines in the engine draft never draw the "Se�
   const term = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(textNode(await drawnOf(term), /^✓ seçildi: Sonra/)).toBeDefined() // control: the draft really holds the line
   await term.unmount()
+})
+
+// Round 2 (QA r1 finding 1). Source: the Lead's revision package: a decision counts as sent only when the submit went in
+// (no rejection, no `drop`); on failure the card stays unmarked and the next press sends.
+for (const failure of ['throws', 'drop'] as const) {
+  test(`criterion 2 (desktop, submit ${failure}): the card stays unmarked, and the next press sends`, async ($, on) => {
+    const k = await kBoot($, on)
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    k.gate.submit = failure
+    await ui.press({ key: 'd-d1-1' })
+    expect(k.log.sent).toEqual([])
+    expect((await ui.find({ key: 'd-d1' }))?.props.borderColor).toBe('rgba(128,128,128,0.28)')
+    expect((await ui.find({ key: 'd-d1-1' }))?.props).toMatchObject({ label: 'Sonra', variant: 'secondary' })
+    expect(await ui.find({ type: 'Text', text: /Gönderildi/ })).toBeUndefined()
+    k.gate.submit = 'ok'
+    await ui.press({ key: 'd-d1-1' })
+    expect(k.log.sent).toEqual(['Karar (d1): Sonra'])
+    expect((await ui.find({ key: 'd-d1-1' }))?.props.label).toBe('✓ Sonra')
+    await ui.unmount()
+  })
+}
+
+test('criterion 3 (desktop): three presses at once send exactly one line', async ($, on) => {
+  const k = await kBoot($, on)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await Promise.all([ui.press({ key: 'd-d1-1' }), ui.press({ key: 'd-d1-1' }), ui.press({ key: 'd-d1-0' })])
+  expect(k.log.sent).toHaveLength(1)
+  await ui.unmount()
+})
+
+test('criterion 5 (terminal): a fallback whose submit fails draws no "Gönderildi"; a repeated fallback press submits again', async ($, on) => {
+  const k = await kBoot($, on, TERM, { isFilled: false })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const went = async () => !!textNode(await drawnOf(ui), /^Gönderildi/)
+  k.gate.submit = 'throws'
+  await ui.press({ key: 'd-d1-1' })
+  expect(await went()).toBe(false)
+  k.gate.submit = 'drop'
+  await ui.press({ key: 'd-d1-1' })
+  expect(await went()).toBe(false)
+  k.gate.submit = 'ok'
+  await ui.press({ key: 'd-d1-1' })
+  expect(k.log.sent).toEqual(['Karar (d1): Sonra'])
+  expect(await went()).toBe(true)
+  // The terminal keeps today's behaviour: a second fallback press (same or another option) submits again.
+  await ui.press({ key: 'd-d1-0' })
+  expect(k.log.sent).toEqual(['Karar (d1): Sonra', 'Karar (d1): Durumları gör'])
+  await ui.unmount()
 })
 
 test('criteria 1, 3 and 4 (terminal): hotkeys 1-9 write the lines; the picked option is success bold, the box has the note, the hint always says "karar seç"', async ($, on) => {

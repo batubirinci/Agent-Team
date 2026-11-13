@@ -96,8 +96,9 @@ const leadText = (file: string) =>
   ].join(' ')
 
 // A press in the pane reaches the Lead as the owner's own message.
+// Resolves true when the prompt entered (not refused by a hook, not dropped by the engine).
 async function say($: EngineInterface, text: string) {
-  await $.prompt.submit({ text, asUser: true })
+  return !(await $.prompt.submit({ text, asUser: true })).drop
 }
 
 const syncKarar = async ($: EngineInterface, draft: string) => {
@@ -111,6 +112,8 @@ const syncKarar = async ($: EngineInterface, draft: string) => {
 // or the call fails, the press is submitted and the card says so: a press is never lost.
 // On the desktop the composer is the app's own (a fill only writes a draft the owner never sees), so the press is always
 // submitted; a decision that already went is not sent again (two answers to one decision must not reach the Lead).
+// A decision counts as sent only when the submit entered: it is reserved before the call (so presses at once send one line)
+// and given back when the submit is rejected or dropped, so the card stays unmarked and the next press sends.
 async function pick($: EngineInterface, d: Decision, o: string, term: boolean) {
   let isFilled = false
   if (term) try {
@@ -123,12 +126,19 @@ async function pick($: EngineInterface, d: Decision, o: string, term: boolean) {
   } catch {}
   if (isFilled) return
   let fresh = true
+  let added = false
   await update($, sent, s => {
     const had = s.some(([id]) => id === d.id)
     fresh = term || !had
+    added = !had
     return had ? s : [...s, [d.id, o] as [string, string]]
   })
-  if (fresh) await say($, kararLine(d.id, o))
+  if (!fresh) return
+  let entered = false
+  try {
+    entered = await say($, kararLine(d.id, o))
+  } catch {}
+  if (!entered && added) await update($, sent, s => s.filter(([id]) => id !== d.id))
 }
 
 const openRow = (file: string) => `${OPEN_ROW}${leadText(file)}`
