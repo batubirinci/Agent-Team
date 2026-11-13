@@ -39,6 +39,10 @@ gerekmez (slash komutları hariç). Üç yolu var:
 
 Mod açılınca pane da açılır. `/team-pane` de pane'i açar.
 
+**Terminalde kısayollar.** Pane odaktayken: `1`-`9` karar seçenekleri, `a c d e f g h i j k m n o` görev
+ayrıntıları (sırayla), `p` pause/devam, ayrıntıda `b` geri ve `s` Lead'e sor, alt satırda `t` pane'i açar;
+`esc` odağı sohbete döndürür. Alt satır `◉ agent team` (açık) ya da `○ agent team` (kapalı) der.
+
 **Pane ne gösterir.** Lead'in yazdığı durum dosyasını canlı gösterir:
 
 - **Senin sıran:** bekleyen kararlar. Bir seçeneğe basmak Lead'e sahibin kendi mesajı olarak
