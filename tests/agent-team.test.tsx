@@ -2517,7 +2517,7 @@ test('criterion 5 (terminal): a fill that rejects falls back to the same submit'
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'd-d2-0' })
   expect(k.log.sent).toEqual(['Karar (d2): Evet'])
-  expect(textNode(await drawnOf(ui), /^Gönderildi · Lead işini bitirince okuyacak$/)).toBeDefined()
+  expect(textNode(await drawnOf(ui), /^Gönderildi: Evet$/)).toBeDefined()
   await ui.unmount()
 })
 
@@ -2552,7 +2552,7 @@ test('criterion 2 (desktop): after a press the card shows "✓ <option>", the ot
   expect((await ui.find({ key: 'd-d1' }))?.props.borderColor).toBe('success')
   expect((await ui.find({ key: 'd-d1-1' }))?.props).toMatchObject({ label: '✓ Sonra', variant: 'primary' })
   expect((await ui.find({ key: 'd-d1-0' }))?.props).toMatchObject({ label: 'Durumları gör', variant: 'secondary' })
-  const note = await ui.find({ type: 'Text', text: 'Gönderildi: Sonra · Lead işini bitirince okuyacak' })
+  const note = await ui.find({ type: 'Text', text: 'Gönderildi: Sonra' })
   expect(note?.props).toMatchObject({ color: 'success', size: 'caption' })
   // The other decision is untouched.
   expect((await ui.find({ key: 'd-d2' }))?.props.borderColor).toBe('rgba(128,128,128,0.28)')
@@ -2690,7 +2690,7 @@ test('criterion 5 (terminal): the box cannot be filled, the press goes out and t
   expect(k.log.sent).toEqual(['Karar (d2): Evet'])
   const root = await drawnOf(ui)
   const d2 = nodesOf(root).find(n => n.props?.key === 'd-d2') as Node
-  expect(textNode(d2, /^Gönderildi · Lead işini bitirince okuyacak$/)).toBeDefined()
+  expect(textNode(d2, /^Gönderildi: Evet$/)).toBeDefined()
   expect(textNode(nodesOf(root).find(n => n.props?.key === 'd-d1') as Node, /Gönderildi/)).toBeUndefined()
   await ui.unmount()
 })
@@ -2730,5 +2730,368 @@ test('prompt.edit: when the atom write fails, typing still goes through (never t
   await bad.type(bad.box.text.length, bad.box.text.length, 'x') // the decision line changes, so a write is tried and refused
   expect(bad.box.text).toBe('Karar (d1): Sonrax')
   expect(bad.log.sets).toContain('karar')
+  await ui.unmount()
+})
+
+// pause-fast: a press reaches the Lead at its next tool step (tool.call context) while a turn runs, as a submit when idle or at turn end.
+// Expected values: the Analyst's measured runs P1-P3 (analyst-report.md), the owner's decisions of 2026-11-13 (push approval never
+// by context), and the Lead's criteria 1-7; all spelled out by hand, never read back from the implementation.
+const PSTATUS = JSON.stringify({
+  v: 1,
+  decisions: [
+    { id: 'd1', kind: 'Ürün kararı', text: 'Hangisi sayılsın?', options: ['Durumları gör', 'Sonra'] },
+    { id: 'd2', text: 'Birleşsin mi?', options: ['Evet'] },
+    { id: 'd3', kind: 'Push onayı', text: 'Push edilsin mi?', options: ['Onayla', 'Reddet'] },
+  ],
+  tasks: [{ id: 't1', title: 'Görev', stage: 'build' }],
+})
+const HEAD = "[Agent Team pane] Sahip pane'de bastı:"
+const QUEUED = 'Sırada · Lead sıradaki adımda okuyacak'
+const QUEUED_PUSH = 'Sırada · Lead işini bitirince okuyacak'
+type CtxResult = { context?: readonly string[]; result?: unknown; deny?: string; isError?: boolean }
+
+const pBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o: { surface?: 'desktop' | 'terminal'; isFilled?: boolean; teamOn?: boolean; status?: string } = {}) => {
+  const log = { sent: [] as string[], asUser: [] as (boolean | undefined)[], fills: [] as string[] }
+  const gate = { submit: 'ok' as 'ok' | 'throws' | 'drop' }
+  const core = { result: { result: 'ok', text: 'ok' } as unknown }
+  const box = { text: '', cursor: 0 }
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.close', () => ({ value: undefined }))
+  on('env.get', () => ({ value: '/Users/x' }))
+  on('fs.exists', () => ({ value: true }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: 1, isLink: false } }))
+  on('fs.read', () => ({ value: o.status ?? PSTATUS }))
+  on('clock.every', () => ({ value: undefined }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.append', (_, e, next) => next(e))
+  on('prompt.read', () => ({ value: { text: box.text, cursor: box.cursor } }))
+  on('prompt.submit', (_, e) => {
+    if (gate.submit === 'throws') throw new Error('no session')
+    if (gate.submit === 'drop') return { drop: 'refused' }
+    log.sent.push(e.text)
+    log.asUser.push((e.origin as { asUser?: boolean } | undefined)?.asUser)
+    return { text: e.text }
+  })
+  on('prompt.fill', (_, e) => {
+    log.fills.push(e.text)
+    if (o.isFilled === false) return { isFilled: false }
+    box.text += e.text
+    return { isFilled: true }
+  })
+  on('prompt.change', (_, e) => ({ text: e.text }))
+  on('tool.call', () => core.result as never)
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  await $.session.start({ cwd: '/Users/x/Projeler/shop', surface: o.surface ?? 'desktop', isInteractive: true })
+  if (o.teamOn !== false) {
+    const foot = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
+    await foot.press({ key: 'team-mode' })
+    await foot.unmount()
+  }
+  // The turn-end submit is not awaited by the hook: let the fakes' microtasks run (no timers, no clock).
+  const settle = async () => {
+    for (let i = 0; i < 200; i++) await Promise.resolve()
+  }
+  const start = (turnId: string, agentId?: string) => $.turn.start({ text: 'x', turnId, ...(agentId ? { agentId } : {}) })
+  const end = async (turnId: string, agentId?: string) => {
+    await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, reason: 'answer', turnId, ...(agentId ? { agentId } : {}) })
+    await settle()
+  }
+  const tool = async (agentId?: string) => (await $.tool.call({ tool: 'Bash', command: 'ls', ...(agentId ? { agentId } : {}) } as never)) as CtxResult
+  const mount = async (surface: 'desktop' | 'terminal' = o.surface ?? 'desktop') => $.ui.mount({ ...PANE, surface })
+  return { log, gate, core, box, settle, start, end, tool, mount }
+}
+
+test('criterion 1 (analyst 1, P3): no turn running, Pause submits at once as the owner; tool.call results stay untouched', async ($, on) => {
+  const k = await pBoot($, on)
+  const ui = await k.mount()
+  await ui.press({ key: 'pause' })
+  expect(k.log.sent).toEqual(['Pause'])
+  expect(k.log.asUser).toEqual([true])
+  expect(await k.tool()).toEqual({ result: 'ok', text: 'ok' })
+  await ui.unmount()
+})
+
+test('criterion 2, 3 (analyst 2, P1): a press during a turn waits for the next tool call, arrives once as one named context entry, then nothing', async ($, on) => {
+  const k = await pBoot($, on)
+  const ui = await k.mount()
+  await k.start('t1')
+  await ui.press({ key: 'pause' })
+  expect(k.log.sent).toEqual([])
+  const first = await k.tool()
+  expect(first.result).toBe('ok')
+  expect(first.context).toEqual([`${HEAD}\nPause`])
+  expect(await k.tool()).toEqual({ result: 'ok', text: 'ok' })
+  await k.end('t1')
+  expect(k.log.sent).toEqual([]) // delivered: the turn end submits nothing
+  await ui.unmount()
+})
+
+test('criterion 3 (analyst 3): two decisions and Pause pressed in one turn arrive in one entry in press order', async ($, on) => {
+  const k = await pBoot($, on)
+  const ui = await k.mount()
+  await k.start('t1')
+  await ui.press({ key: 'd-d2-0' })
+  await ui.press({ key: 'pause' })
+  await ui.press({ key: 'd-d1-1' })
+  expect((await k.tool()).context).toEqual([`${HEAD}\nKarar (d2): Evet\nPause\nKarar (d1): Sonra`])
+  await ui.unmount()
+})
+
+test('criterion 1 (analyst 4): before delivery the last press per decision wins; after delivery a further press sends nothing', async ($, on) => {
+  const k = await pBoot($, on)
+  const ui = await k.mount()
+  await k.start('t1')
+  await ui.press({ key: 'd-d1-0' })
+  await ui.press({ key: 'd-d1-1' })
+  expect((await k.tool()).context).toEqual([`${HEAD}\nKarar (d1): Sonra`])
+  await ui.press({ key: 'd-d1-0' })
+  expect((await k.tool()).context).toBeUndefined()
+  await k.end('t1')
+  expect(k.log.sent).toEqual([])
+  await ui.unmount()
+})
+
+test('criterion 1 (analyst 5): press, then the turn ends with no tool call: one submit with every pending line joined by a line break, queue empty after', async ($, on) => {
+  const k = await pBoot($, on)
+  const ui = await k.mount()
+  await k.start('t1')
+  await ui.press({ key: 'd-d2-0' })
+  await ui.press({ key: 'pause' })
+  await k.end('t1')
+  expect(k.log.sent).toEqual(['Karar (d2): Evet\nPause'])
+  expect(k.log.asUser).toEqual([true])
+  expect((await k.tool()).context).toBeUndefined()
+  await k.end('t1')
+  expect(k.log.sent).toHaveLength(1)
+  await ui.unmount()
+})
+
+test('criterion 1 (analyst 6): a tool call of a role agent is left alone and the press stays pending for the Lead', async ($, on) => {
+  const k = await pBoot($, on)
+  const ui = await k.mount()
+  await k.start('t1')
+  await ui.press({ key: 'pause' })
+  expect(await k.tool('agent-1')).toEqual({ result: 'ok', text: 'ok' })
+  expect((await k.tool()).context).toEqual([`${HEAD}\nPause`])
+  await ui.unmount()
+})
+
+test('criterion 1 (analyst 7 settled): an isError result carries the press, a deny keeps it pending and the result untouched', async ($, on) => {
+  const k = await pBoot($, on)
+  const ui = await k.mount()
+  await k.start('t1')
+  await ui.press({ key: 'pause' })
+  k.core.result = { deny: 'no' }
+  expect(await k.tool()).toEqual({ deny: 'no' })
+  k.core.result = { result: 'boom', text: 'boom', isError: true }
+  const failed = await k.tool()
+  expect(failed.isError).toBe(true)
+  expect(failed.context).toEqual([`${HEAD}\nPause`])
+  await ui.unmount()
+})
+
+test('criterion 1 (analyst 8): turn ids are a set; the old turn ending first does not submit, the last one does', async ($, on) => {
+  const k = await pBoot($, on)
+  const ui = await k.mount()
+  await k.start('t1')
+  await k.start('t2')
+  await ui.press({ key: 'pause' })
+  await k.end('t1')
+  expect(k.log.sent).toEqual([])
+  await k.end('t2')
+  expect(k.log.sent).toEqual(['Pause'])
+  await ui.unmount()
+})
+
+test('criterion 1 (analyst 9): turns of an agent do not change the running set', async ($, on) => {
+  const k = await pBoot($, on)
+  const ui = await k.mount()
+  await k.start('a1', 'agent-1') // an agent's turn alone is not a Lead turn: the press goes at once
+  await ui.press({ key: 'pause' })
+  expect(k.log.sent).toEqual(['Pause'])
+  await k.start('t1')
+  await ui.press({ key: 'd-d2-0' })
+  await k.end('a1', 'agent-1') // an agent ending does not release it
+  expect(k.log.sent).toEqual(['Pause'])
+  await k.end('t1')
+  expect(k.log.sent).toEqual(['Pause', 'Karar (d2): Evet'])
+  await ui.unmount()
+})
+
+test('criterion 1 (analyst 10): a context already on the result is kept before ours; with nothing pending the result is core\'s as is', async ($, on) => {
+  const k = await pBoot($, on)
+  const ui = await k.mount()
+  await k.start('t1')
+  k.core.result = { result: 'ok', text: 'ok', context: ['eski'] }
+  expect(await k.tool()).toEqual({ result: 'ok', text: 'ok', context: ['eski'] })
+  await ui.press({ key: 'pause' })
+  expect((await k.tool()).context).toEqual(['eski', `${HEAD}\nPause`])
+  await ui.unmount()
+})
+
+test('criterion 6 (analyst 11): team mode off, hooks pass through and a press submits as today, even with a turn running', async ($, on) => {
+  const k = await pBoot($, on, { teamOn: false })
+  const ui = await k.mount()
+  await k.start('t1')
+  await ui.press({ key: 'pause' })
+  expect(k.log.sent).toEqual(['Pause'])
+  expect(await k.tool()).toEqual({ result: 'ok', text: 'ok' })
+  await ui.unmount()
+})
+
+// Criterion 2 (owner decision 1): the kind of a push approval, trimmed and lowercased with Turkish rules, starts with "push onayı" / "push onayi".
+for (const kind of ['Push onayı', '  PUSH ONAYI — main', 'push onayi', 'Push Onayı: team/x']) {
+  const status = JSON.stringify({ v: 1, decisions: [{ id: 'p1', kind, text: 'Push?', options: ['Onayla'] }, { id: 'd2', text: 'B?', options: ['Evet'] }] })
+  test(`criterion 2: kind "${kind}" is a push approval: idle, it is submitted at once as the owner`, async ($, on) => {
+    const k = await pBoot($, on, { status })
+    const ui = await k.mount()
+    await ui.press({ key: 'd-p1-0' })
+    expect(k.log.sent).toEqual(['Karar (p1): Onayla'])
+    expect(k.log.asUser).toEqual([true])
+    await ui.unmount()
+  })
+  test(`criterion 2: kind "${kind}": with a turn running it never goes by context, one submit at the turn end carries it with the other pending lines`, async ($, on) => {
+    const k = await pBoot($, on, { status })
+    const ui = await k.mount()
+    await k.start('t1')
+    await ui.press({ key: 'd-p1-0' })
+    expect(await k.tool()).toEqual({ result: 'ok', text: 'ok' })
+    await ui.press({ key: 'd-d2-0' })
+    expect((await k.tool()).context).toEqual([`${HEAD}\nKarar (d2): Evet`])
+    await ui.press({ key: 'pause' }) // pending when the turn ends: one submit carries both, press order
+    await k.end('t1')
+    expect(k.log.sent).toEqual(['Karar (p1): Onayla\nPause'])
+    expect(k.log.asUser).toEqual([true])
+    await ui.unmount()
+  })
+}
+
+test('criterion 2: a kind that only mentions push (or is empty) goes by context', async ($, on) => {
+  const status = JSON.stringify({ v: 1, decisions: [{ id: 'a', kind: 'Ürün kararı: push sonrası', text: 'x', options: ['Evet'] }, { id: 'b', text: 'y', options: ['Evet'] }] })
+  const k = await pBoot($, on, { status })
+  const ui = await k.mount()
+  await k.start('t1')
+  await ui.press({ key: 'd-a-0' })
+  await ui.press({ key: 'd-b-0' })
+  expect((await k.tool()).context).toEqual([`${HEAD}\nKarar (a): Evet\nKarar (b): Evet`])
+  await ui.unmount()
+})
+
+for (const failure of ['throws', 'drop'] as const) {
+  test(`criterion 4 (submit ${failure}): at the turn end the lines stay pending, the card claims nothing, the next tool step or press delivers them`, async ($, on) => {
+    const k = await pBoot($, on)
+    const ui = await k.mount()
+    await k.start('t1')
+    await ui.press({ key: 'd-d1-1' })
+    await ui.press({ key: 'pause' })
+    k.gate.submit = failure
+    await k.end('t1')
+    expect(k.log.sent).toEqual([])
+    expect(await ui.find({ type: 'Text', text: /Gönderildi/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: QUEUED })).toBeDefined()
+    k.gate.submit = 'ok'
+    await k.start('t2')
+    expect((await k.tool()).context).toEqual([`${HEAD}\nKarar (d1): Sonra\nPause`]) // press order kept
+    await ui.unmount()
+  })
+
+  test(`criterion 4 (submit ${failure}): an idle press that fails keeps its line; the next press submits both in press order`, async ($, on) => {
+    const k = await pBoot($, on)
+    const ui = await k.mount()
+    k.gate.submit = failure
+    await ui.press({ key: 'd-d2-0' })
+    expect(k.log.sent).toEqual([])
+    expect((await ui.find({ key: 'd-d2' }))?.props.borderColor).toBe('rgba(128,128,128,0.28)')
+    k.gate.submit = 'ok'
+    await ui.press({ key: 'pause' })
+    expect(k.log.sent).toEqual(['Karar (d2): Evet\nPause'])
+    expect((await ui.find({ key: 'd-d2' }))?.props.borderColor).toBe('success')
+    await ui.unmount()
+  })
+}
+
+test('criterion 5 (desktop): a queued decision says it waits for the next step, a push approval for the turn end, a delivered one has today\'s sent look', async ($, on) => {
+  const k = await pBoot($, on)
+  const ui = await k.mount()
+  await k.start('t1')
+  await ui.press({ key: 'd-d1-1' })
+  await ui.press({ key: 'd-d3-0' })
+  expect((await ui.find({ type: 'Text', text: QUEUED }))?.props).toMatchObject({ size: 'caption' })
+  expect((await ui.find({ type: 'Text', text: QUEUED_PUSH }))?.props).toMatchObject({ size: 'caption' })
+  expect(await ui.find({ type: 'Text', text: /Gönderildi/ })).toBeUndefined()
+  expect((await ui.find({ key: 'd-d1' }))?.props.borderColor).toBe('rgba(128,128,128,0.28)')
+  expect((await ui.find({ key: 'd-d1-1' }))?.props.label).toBe('Sonra') // not ticked before it was delivered
+  await k.tool() // d1 goes by context, the push approval stays
+  expect(await ui.find({ type: 'Text', text: QUEUED })).toBeUndefined()
+  expect((await ui.find({ key: 'd-d1' }))?.props.borderColor).toBe('success')
+  expect((await ui.find({ key: 'd-d1-1' }))?.props).toMatchObject({ label: '✓ Sonra', variant: 'primary' })
+  expect((await ui.find({ type: 'Text', text: 'Gönderildi: Sonra' }))?.props).toMatchObject({ color: 'success', size: 'caption' })
+  expect(await ui.find({ type: 'Text', text: QUEUED_PUSH })).toBeDefined()
+  await k.end('t1')
+  expect(k.log.sent).toEqual(['Karar (d3): Onayla'])
+  expect(await ui.find({ type: 'Text', text: QUEUED_PUSH })).toBeUndefined()
+  expect((await ui.find({ type: 'Text', text: 'Gönderildi: Onayla' }))?.props).toMatchObject({ color: 'success' })
+  await ui.unmount()
+})
+
+for (const surface of ['desktop', 'terminal'] as const) {
+  test(`criterion 5 (${surface}): Pause shows a short pending state "Pause · sırada" while queued, then follows the status file`, async ($, on) => {
+    const k = await pBoot($, on, { surface })
+    const ui = await k.mount(surface)
+    await k.start('t1')
+    expect((await ui.find({ key: 'pause' }))?.props.label).toBe('Pause')
+    await ui.press({ key: 'pause' })
+    expect((await ui.find({ key: 'pause' }))?.props.label).toBe('Pause · sırada')
+    await k.tool()
+    expect((await ui.find({ key: 'pause' }))?.props.label).toBe('Pause')
+    await ui.unmount()
+  })
+}
+
+test('criterion 5: Devam shows "Devam · sırada" while queued', async ($, on) => {
+  const k = await pBoot($, on, { status: PSTATUS.replace('"v":1', '"v":1,"paused":true') })
+  const ui = await k.mount()
+  await k.start('t1')
+  await ui.press({ key: 'resume' })
+  expect((await ui.find({ key: 'resume' }))?.props.label).toBe('Devam · sırada')
+  await ui.unmount()
+})
+
+test('criterion 5 (terminal): the decision buttons keep the fill path and queue nothing', async ($, on) => {
+  const k = await pBoot($, on, { surface: 'terminal' })
+  const ui = await k.mount()
+  await k.start('t1')
+  await ui.press({ key: 'd-d1-1' })
+  expect(k.log.fills).toEqual(['Karar (d1): Sonra'])
+  expect(textNode(await drawnOf(ui), /Sırada/)).toBeUndefined()
+  expect((await k.tool()).context).toBeUndefined()
+  await ui.unmount()
+})
+
+test('criterion 5 (terminal): a refused fill goes through the queue; delivered, the box says "Gönderildi: <o>"', async ($, on) => {
+  const f = await pBoot($, on, { surface: 'terminal', isFilled: false })
+  const ui2 = await f.mount()
+  await f.start('t1')
+  await ui2.press({ key: 'd-d2-0' })
+  expect(f.log.sent).toEqual([])
+  expect(textNode(await drawnOf(ui2), new RegExp(`^${QUEUED}$`))).toBeDefined()
+  expect((await f.tool()).context).toEqual([`${HEAD}\nKarar (d2): Evet`])
+  const done = await drawnOf(ui2)
+  expect(textNode(done, /Sırada/)).toBeUndefined()
+  expect(textNode(done, /^Gönderildi: Evet$/)).toBeDefined()
+  await ui2.unmount()
+})
+
+test('criterion 5 (terminal): a push approval whose fill was refused waits for the turn end and says so', async ($, on) => {
+  const k = await pBoot($, on, { surface: 'terminal', isFilled: false })
+  const ui = await k.mount()
+  await k.start('t1')
+  await ui.press({ key: 'd-d3-0' })
+  expect(textNode(await drawnOf(ui), new RegExp(`^${QUEUED_PUSH}$`))).toBeDefined()
+  expect(await k.tool()).toEqual({ result: 'ok', text: 'ok' })
+  await k.end('t1')
+  expect(k.log.sent).toEqual(['Karar (d3): Onayla'])
   await ui.unmount()
 })

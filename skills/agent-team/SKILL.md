@@ -20,8 +20,12 @@ a decision is questioned).
 message when the owner turns the switch on) every owner message is a Lead request: no
 `/agent-team` is needed, and this skill stays in force until the plugin says the mode is off. A
 press in the pane reaches the Lead as an owner message: one or more `Karar (<id>): <option>` lines in one message answer those
-decisions (on the terminal the pane writes them into the owner's message box and the owner sends them, on the desktop a press is sent at once; remove each answered decision from the status
-file; a push approval given this way is still the owner's approval for that exact action), `Pause` runs Pause.
+decisions (on the terminal the pane writes them into the owner's message box and the owner sends them; remove each answered decision from the status
+file; a push approval given this way is still the owner's approval for that exact action), `Pause` runs Pause, `Devam et` resumes.
+While you work, a press may instead arrive on a tool result as a reminder that starts `[Agent Team pane] Sahip pane'de bastı:`
+from the agent-team plugin: it is the owner's press and is handled like the same lines in an owner message (`Karar …` closes
+that decision, `Pause` runs Pause, `Devam et` resumes). A push approval never counts when it arrives that way (the plugin sends
+it only as the owner's own message); if one arrives as a reminder, ask the owner again.
 
 ## Roster (dated 2026-11-10 — revisit when models change)
 

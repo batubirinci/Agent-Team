@@ -1,6 +1,6 @@
 import type { EngineInterface } from 'claude-code'
 
-import type { Decision, Other, Role, RoleStatus, Task, TaskState } from '../types'
+import type { Decision, Other, Outbox, Role, RoleStatus, Task, TaskState } from '../types'
 import { STAGE_LABELS, decisionTask, pickedAt } from './status'
 
 // The terminal drawing of the pane and the footer (approved design "Terminal arayüzü · şimdi ve öneri"):
@@ -9,8 +9,9 @@ export type UI = Pick<ReturnType<EngineInterface['ui']['resolve']>, 'Box' | 'But
 
 export const TBOX = { flexDirection: 'column', borderStyle: 'single', borderColor: 'subtle', paddingX: 1 } as const
 export const ROUND = { ...TBOX, borderStyle: 'round' } as const
-// The press of a decision went out by submit (the box could not be filled): the card says when the Lead reads it.
-export const WENT = 'Gönderildi · Lead işini bitirince okuyacak'
+// A press that goes through the outbox (the box could not be filled, or the desktop): the card says when the Lead reads it.
+export const QUEUED = 'Sırada · Lead sıradaki adımda okuyacak'
+export const QUEUED_PUSH = 'Sırada · Lead işini bitirince okuyacak'
 export const hk = (key: string) => ({ plain: true, hotkey: key }) as const
 // Not b l p s t (back, pause, ask, pane are the pane's own); "o" last, as pane-team-on takes it.
 const TASK_KEYS = 'acdefghijkmno'
@@ -31,15 +32,15 @@ export function bar(pct: number) {
   return { fill: '█'.repeat(full) + (part ? ' ▏▎▍▌▋▊▉'[part] : ''), rest: '░'.repeat(10 - full - (part ? 1 : 0)) }
 }
 
-export function termHeader({ Box, Button, Text }: UI, sub: string, paused: boolean | undefined, say: (t: string) => void) {
+export function termHeader({ Box, Button, Text }: UI, sub: string, paused: boolean | undefined, waiting: boolean, say: (t: string) => void) {
   return (
     <Box flexDirection="row" flexWrap="wrap" alignItems="center" gap={2}>
       <Text color="claude" weight="bold">AGENT TEAM</Text>
       <Text dimColor>{sub}</Text>
       {paused === undefined ? null : paused ? (
-        <Button key="resume" label="Devam" onPress={() => say('Devam et')} {...hk('p')} />
+        <Button key="resume" label={waiting ? 'Devam · sırada' : 'Devam'} onPress={() => say('Devam et')} {...hk('p')} />
       ) : (
-        <Button key="pause" label="Pause" onPress={() => say('Pause')} {...hk('p')} />
+        <Button key="pause" label={waiting ? 'Pause · sırada' : 'Pause'} onPress={() => say('Pause')} {...hk('p')} />
       )}
     </Box>
   )
@@ -63,8 +64,8 @@ export function termUsage({ Text }: UI, rows: readonly (readonly [string, number
   )
 }
 
-// A press writes the decision's line into the prompt box (`lines`: the decision lines now in it); `went`: ids sent by submit instead.
-export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], tasks: Task[], press: (d: Decision, o: string) => void, lines: readonly string[], went: readonly string[]) {
+// A press writes the decision's line into the prompt box (`lines`: the decision lines now in it); `out`: what went through the outbox instead.
+export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], tasks: Task[], press: (d: Decision, o: string) => void, lines: readonly string[], out: Outbox) {
   let n = 0
   return (
     <Box flexDirection="column" gap={1}>
@@ -72,6 +73,8 @@ export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], 
       {decisions.map(d => {
         const { kind, blocked } = decisionTask(d, tasks)
         const at = pickedAt(lines, d)
+        const queued = out.queue.find(q => q.id === d.id)
+        const sentTo = out.sent.find(([id]) => id === d.id)?.[1]
         return (
         <Box key={`d-${d.id}`} {...TBOX} borderColor={blocked ? 'error' : TBOX.borderColor}>
           {kind && <Text color={blocked ? 'error' : 'claude'}>{kind}</Text>}
@@ -92,7 +95,8 @@ export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], 
             </Box>
           )}
           {at >= 0 && <Text color="success">{`✓ seçildi: ${d.options[at]} · Enter ile gider`}</Text>}
-          {at < 0 && went.includes(d.id) && <Text dimColor>{WENT}</Text>}
+          {at < 0 && queued && <Text dimColor>{queued.push ? QUEUED_PUSH : QUEUED}</Text>}
+          {at < 0 && !queued && sentTo !== undefined && <Text dimColor>{`Gönderildi: ${sentTo}`}</Text>}
         </Box>
         )
       })}

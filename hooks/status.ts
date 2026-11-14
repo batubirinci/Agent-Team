@@ -17,6 +17,9 @@ const list = (x: unknown): Obj[] => (Array.isArray(x) ? x.filter(isObj) : [])
 // A decision kind that says the work is stuck ("Takıldı ...", any case, also "takildi"): one rule for the parser and the strip.
 export const isStuck = (kind?: string) => !!kind?.trim().toLocaleLowerCase('tr').replace(/ı/g, 'i').startsWith('takildi')
 
+// A decision whose kind says it approves an irreversible action ("Push onayı ...", any case, also "push onayi"): never carried by a tool result.
+export const isPush = (kind?: string) => !!kind?.trim().toLocaleLowerCase('tr').replace(/ı/g, 'i').startsWith('push onayi')
+
 // The file is written by the Lead (a model): read it as untrusted data, keep what is well formed.
 export function parseStatus(text: string): Status {
   const raw: unknown = JSON.parse(text)

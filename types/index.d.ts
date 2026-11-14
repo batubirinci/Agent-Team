@@ -67,6 +67,12 @@ export type OtherDecision = { kind?: string; text: string; options: string[]; st
 // `count` and `stuckCount` count all the file's decisions; `decisions` keeps the first few, cut.
 export type Other = { file: string; project: string; name: string; when: string; count: number; stuckCount: number; decisions: OtherDecision[] }
 
+// A pane press on its way to the Lead: its line, the decision it answers (id, option) and whether it is an approval of an irreversible action.
+export type Press = { line: string; id?: string; option?: string; push?: boolean }
+
+// `queue`: presses not yet delivered, in press order; `sent`: [decision id, option] of decisions whose line was delivered.
+export type Outbox = { queue: Press[]; sent: [string, string][] }
+
 // One entry of $.fs.list.
 export type DirEntry = { name: string; kind: string; size: number; mtimeMs: number; isLink: boolean }
 
@@ -79,7 +85,7 @@ declare module 'claude-code' {
       others: Shaped<Other[]>
       othersOpen: Shaped<boolean>
       karar: Shaped<string[]>
-      sent: Shaped<[string, string][]>
+      outbox: Shaped<Outbox>
     }
   }
 }
