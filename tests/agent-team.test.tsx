@@ -4505,3 +4505,44 @@ test('hardening R9: two prompts submitted at the same time carry the reopen line
   await Promise.all([send('bir'), send('iki'), send('üç')])
   expect(r.log.contexts.flatMap(c => c ?? []).filter(c => c.startsWith(R_PREFIX))).toHaveLength(1)
 })
+
+// Round 3 (S1): one raw-string id rule for every id the parser reads: the decision id, the task id and a decision's `task` link. A `task` value
+// that fails the rule links to nothing. Source: QA r2 (Opus) and the Lead's adjudication: `task: "t1\r"` must not link to `t1` (it did not on base).
+test('hardening S1: a decision whose `task` fails the id rule (control character, space, too long, not a string) links to no task', async () => {
+  const link = (task: unknown) => {
+    const s = parseStatus(
+      JSON.stringify({
+        v: 1,
+        decisions: [{ id: 'd1', kind: 'Takıldı · Developer', text: 'Ne?', task, options: [] }],
+        tasks: [{ id: 't1', title: 'Yazılı', stage: 'build', roles: [{ name: 'Developer', state: 'yazıyor', status: 'running' }] }],
+      }),
+    )
+    return { state: s.tasks[0]?.state, linked: decisionTask(s.decisions[0]!, s.tasks), task: s.decisions[0]?.task }
+  }
+  // The written id links, as before.
+  expect(link('t1')).toEqual({ state: 'blocked', linked: { kind: 'Takıldı · Developer · Yazılı', blocked: true }, task: 't1' })
+  for (const bad of ['t1\r', 't\u001b1', 't1\u007f', 't\u00001', ' t1', 't1 ', 'x'.repeat(65), '#1', 5, null]) {
+    expect([bad, link(bad)]).toEqual([bad, { state: 'running', linked: { kind: 'Takıldı · Developer', blocked: false }, task: undefined }])
+  }
+})
+
+test('hardening S1: decisionTask never links a decision to a made-up task id, even one built by hand', async () => {
+  const made = { id: '#1', generatedId: true as const, title: 'Kimliksiz', stage: 0, state: 'running' as const, roles: [] }
+  expect(decisionTask({ id: 'd1', kind: 'K', text: 't', task: '#1', options: [] }, [made])).toEqual({ kind: 'K', blocked: false })
+})
+
+// Round 3 (S2): an offset counts only with hours 00-23 and minutes 00-59; any other reads the time as local, like no offset (base did the same).
+test('hardening S2: an out-of-range offset is ignored (the written clock is read as local); the widest valid ones still count', async () => {
+  const now = new Date(2026, 10, 19, 10, 0).getTime()
+  const digits = { text: '18 Kas 23:30', days: 1 }
+  for (const off of ['+99:99', '-99:99', '+24:00', '+05:60', '+99', '+2400', '-24', '+00:99']) {
+    expect([off, stamp(`2026-11-18T23:30:00${off}`, now)]).toEqual([off, digits])
+  }
+  const evening = new Date(2026, 10, 18, 23, 30).getTime()
+  const local = -new Date(evening).getTimezoneOffset()
+  for (const shift of [-local + 23 * 60 + 59, -local - 23 * 60 - 59]) {
+    // The widest valid offsets: the written digits are the instant's clock in that offset, so the local day and clock come back.
+    const iso = isoAt(evening, local + shift, 'colon')
+    expect([iso, stamp(iso, now)]).toEqual([iso, digits])
+  }
+})

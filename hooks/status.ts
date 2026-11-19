@@ -22,10 +22,13 @@ const short = (x: unknown, n: number): string | undefined => {
 // A decision or task id counts as written only if it is 1-64 letters, digits . _ - and no earlier one in its list had it. A made-up id is
 // `#<position>`: `#` is outside that set, so it never equals a written one (and `): ` can never be inside one).
 const ID = /^[\p{L}\p{N}._-]{1,64}$/u
-// The raw text is tested, before any control character is stripped: `d1\r` is not the written id `d1`.
+// The one id rule, on the raw text (before any control character is stripped: `d1\r` is not the id `d1`): every id the parser reads (a decision's id,
+// a task's id, a decision's `task` link) goes through it, and a value that fails it is no id.
+const idOf = (x: unknown) => (typeof x === 'string' && ID.test(x) ? x : undefined)
+// A written id: one that passes the rule and that no earlier one in its list had.
 const written = (x: unknown, taken: Set<string>) => {
-  const id = typeof x === 'string' ? x : ''
-  return ID.test(id) && !taken.has(id) ? (taken.add(id), id) : undefined
+  const id = idOf(x)
+  return id && !taken.has(id) ? (taken.add(id), id) : undefined
 }
 const num = (x: unknown): number | undefined =>
   typeof x === 'number' && Number.isFinite(x) && x >= 0 ? Math.round(x) : undefined
@@ -54,7 +57,7 @@ export function parseStatus(text: string): Status {
     const t = str(d.text)
     if (!t) return []
     const options = Array.isArray(d.options) ? d.options.map(o => str(o)).filter((o): o is string => !!o).slice(0, 4) : []
-    return [{ id: written(d.id, decisionIds) ?? `#${i + 1}`, kind: str(d.kind), text: t, meta: str(d.meta), task: str(d.task), options }]
+    return [{ id: written(d.id, decisionIds) ?? `#${i + 1}`, kind: str(d.kind), text: t, meta: str(d.meta), task: idOf(d.task), options }]
   })
 
   const tasks: Task[] = list(raw.tasks).flatMap((t, i) => {
@@ -153,8 +156,8 @@ const MONTHS = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl',
 export function stamp(iso: string | undefined, now: number) {
   const m = iso?.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/)
   if (!m) return { text: undefined, days: 0 }
-  // "Z", "+03:00", "+0300" or "+03": the instant is the written clock minus the offset (parsed here: Date reads only "+03:00" forms).
-  const o = iso!.match(/(?:(Z)|([+-])(\d{2}):?(\d{2})?)$/i)
+  // "Z", "+03:00", "+0300" or "+03" (hours 00-23, minutes 00-59; any other offset is read as no offset: local): the instant is the written clock minus the offset (parsed here: Date reads only "+03:00" forms).
+  const o = iso!.match(/(?:(Z)|([+-])([01]\d|2[0-3]):?([0-5]\d)?)$/i)
   const w = o
     ? new Date(Date.UTC(+m[1]!, +m[2]! - 1, +m[3]!, +m[4]!, +m[5]!) - (o[1] ? 0 : (o[2] === '-' ? -1 : 1) * (+o[3]! * 60 + +(o[4] ?? 0)) * 60_000))
     : new Date(+m[1]!, +m[2]! - 1, +m[3]!, +m[4]!, +m[5]!)
