@@ -70,8 +70,9 @@ export type Other = { file: string; project: string; name: string; when: string;
 // A pane press on its way to the Lead: its line, the decision it answers (id, option) and whether it is an approval of an irreversible action.
 export type Press = { line: string; id?: string; option?: string; push?: boolean }
 
-// `queue`: presses not yet delivered, in press order; `sent`: [decision id, option] of decisions whose line was delivered.
-export type Outbox = { queue: Press[]; sent: [string, string][] }
+// `queue`: presses not yet delivered, in press order; `sent`: [decision id, option] of decisions whose line was delivered;
+// `said`: lines with no decision (Pause, Devam) submitted as the owner, until the status file is read again.
+export type Outbox = { queue: Press[]; sent: [string, string][]; said: string[] }
 
 // One entry of $.fs.list.
 export type DirEntry = { name: string; kind: string; size: number; mtimeMs: number; isLink: boolean }

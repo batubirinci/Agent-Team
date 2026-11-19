@@ -223,3 +223,7 @@ export function otherSession(e: DirEntry, s: Status): Other | undefined {
     })),
   }
 }
+
+// Where the pane scrolls once a detail opens (its top) or closes (the card that was left, moved the least that shows it).
+export const detailScroll = (pane: string, open: string | null, left?: string) =>
+  open ? ({ in: pane, to: 'start' } as const) : ({ in: pane, to: { key: `t-${left}` }, block: 'nearest' } as const)

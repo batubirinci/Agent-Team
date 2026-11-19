@@ -32,15 +32,16 @@ export function bar(pct: number) {
   return { fill: '█'.repeat(full) + (part ? ' ▏▎▍▌▋▊▉'[part] : ''), rest: '░'.repeat(10 - full - (part ? 1 : 0)) }
 }
 
-export function termHeader({ Box, Button, Text }: UI, sub: string, paused: boolean | undefined, waiting: boolean, say: (t: string) => void) {
+// `note`: what follows the Pause / Devam label ("sırada", "gönderildi", or nothing).
+export function termHeader({ Box, Button, Text }: UI, sub: string, paused: boolean | undefined, note: string, say: (t: string) => void) {
   return (
     <Box flexDirection="row" flexWrap="wrap" alignItems="center" gap={2}>
       <Text color="claude" weight="bold">AGENT TEAM</Text>
       <Text dimColor>{sub}</Text>
       {paused === undefined ? null : paused ? (
-        <Button key="resume" label={waiting ? 'Devam · sırada' : 'Devam'} onPress={() => say('Devam et')} {...hk('p')} />
+        <Button key="resume" label={note ? `Devam · ${note}` : 'Devam'} onPress={() => say('Devam et')} {...hk('p')} />
       ) : (
-        <Button key="pause" label={waiting ? 'Pause · sırada' : 'Pause'} onPress={() => say('Pause')} {...hk('p')} />
+        <Button key="pause" label={note ? `Pause · ${note}` : 'Pause'} onPress={() => say('Pause')} {...hk('p')} />
       )}
     </Box>
   )
