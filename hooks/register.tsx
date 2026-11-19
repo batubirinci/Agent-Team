@@ -110,7 +110,9 @@ const mark = (sent: Outbox['sent'], got: Press[]) =>
   got.reduce((acc, g) => (g.id === undefined ? acc : [...acc.filter(([id]) => id !== g.id), [g.id, g.option ?? ''] as [string, string]]), sent)
 
 // Takes the deliverable presses out of the outbox (all, or without the push approvals) and marks their decisions sent, in one update.
+// Reads first: with nothing to take (nearly every call) nothing is written, so no state change and no pane redraw per tool call.
 async function take($: EngineInterface, ctx: boolean) {
+  if (!(await read($, outbox)).queue.some(q => !ctx || !q.push)) return []
   let got: Press[] = []
   await update($, outbox, s => {
     got = ctx ? s.queue.filter(q => !q.push) : s.queue
@@ -373,19 +375,23 @@ export const register: Register = (on, options) => {
   // The last Lead turn ending with presses pending submits them (not awaited: the submit enters the next turn). Empty set also when a
   // reload lost the ids, so a press is then submitted as before rather than held.
   on('turn.complete', async ($, e, next) => {
-    const r = await next(e)
-    if (e.agentId === undefined) {
-      running.delete(e.turnId)
-      if (!running.size) void submitOut($)
+    try {
+      return await next(e)
+    } finally {
+      if (e.agentId === undefined) {
+        running.delete(e.turnId)
+        if (!running.size) void submitOut($)
+      }
     }
-    return r
   })
   // The result of a finished tool call of the Lead carries the pending presses (all but push approvals) as one reminder entry. With
-  // nothing pending, or a role agent's call, or a deny, core's result is returned as it is; nothing here throws or waits.
+  // nothing pending, team mode off, or a role agent's call, or a deny, core's result is returned as it is; nothing here throws or waits.
   on('tool.call', async ($, e, next) => {
     const r = await next(e)
     if (e.agentId !== undefined || r.deny !== undefined) return r
     try {
+      // Team mode off: pass through; what is left goes out as an owner submit at the turn end (or the next press).
+      if (!(await read($, outbox)).queue.some(q => !q.push) || !(await read($, mode)).isOn) return r
       const got = await take($, true)
       if (!got.length) return r
       return { ...r, context: [...(r.context ?? []), [HEAD, ...got.map(g => g.line)].join('\n')] }

@@ -2751,7 +2751,7 @@ const QUEUED_PUSH = 'Sırada · Lead işini bitirince okuyacak'
 type CtxResult = { context?: readonly string[]; result?: unknown; deny?: string; isError?: boolean }
 
 const pBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o: { surface?: 'desktop' | 'terminal'; isFilled?: boolean; teamOn?: boolean; status?: string } = {}) => {
-  const log = { sent: [] as string[], asUser: [] as (boolean | undefined)[], fills: [] as string[] }
+  const log = { sent: [] as string[], asUser: [] as (boolean | undefined)[], fills: [] as string[], sets: [] as string[] }
   const gate = { submit: 'ok' as 'ok' | 'throws' | 'drop' }
   const core = { result: { result: 'ok', text: 'ok' } as unknown }
   const box = { text: '', cursor: 0 }
@@ -2762,9 +2762,13 @@ const pBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o:
   on('fs.exists', () => ({ value: true }))
   on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: 1, isLink: false } }))
   on('fs.read', () => ({ value: o.status ?? PSTATUS }))
-  on('clock.every', () => ({ value: undefined }))
+  const clock = mock.clock(on)
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.append', (_, e, next) => next(e))
+  on('state.set', (_, e, next) => {
+    log.sets.push(e.key)
+    return next(e)
+  })
   on('prompt.read', () => ({ value: { text: box.text, cursor: box.cursor } }))
   on('prompt.submit', (_, e) => {
     if (gate.submit === 'throws') throw new Error('no session')
@@ -2789,10 +2793,8 @@ const pBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o:
     await foot.press({ key: 'team-mode' })
     await foot.unmount()
   }
-  // The turn-end submit is not awaited by the hook: let the fakes' microtasks run (no timers, no clock).
-  const settle = async () => {
-    for (let i = 0; i < 200; i++) await Promise.resolve()
-  }
+  // The turn-end submit is not awaited by the hook: the mock clock's advance resolves "once the event loop settled".
+  const settle = () => clock.advance(0)
   const start = (turnId: string, agentId?: string) => $.turn.start({ text: 'x', turnId, ...(agentId ? { agentId } : {}) })
   const end = async (turnId: string, agentId?: string) => {
     await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, reason: 'answer', turnId, ...(agentId ? { agentId } : {}) })
@@ -3093,5 +3095,60 @@ test('criterion 5 (terminal): a push approval whose fill was refused waits for t
   expect(await k.tool()).toEqual({ result: 'ok', text: 'ok' })
   await k.end('t1')
   expect(k.log.sent).toEqual(['Karar (d3): Onayla'])
+  await ui.unmount()
+})
+
+// Round 2 (QA r1, Lead's consolidated list). Sources: brief criterion 6 (team mode off: the hooks pass through, a press submits as
+// today) with both QAs' reproductions; the Lead's rule that nothing may write the atom on a tool call with nothing to take.
+test('criterion 6 (round 2): team mode off, lines left over from a dropped idle submit never go by context; the turn end submits them as the owner', async ($, on) => {
+  const k = await pBoot($, on, { teamOn: false })
+  const ui = await k.mount()
+  k.gate.submit = 'drop'
+  await ui.press({ key: 'pause' })
+  k.gate.submit = 'ok'
+  await k.start('t1')
+  expect(await k.tool()).toEqual({ result: 'ok', text: 'ok' })
+  await k.end('t1')
+  expect(k.log.sent).toEqual(['Pause'])
+  expect(k.log.asUser).toEqual([true])
+  await ui.unmount()
+})
+
+test('criterion 6 (round 2): Pause queued mid-turn, team mode then switched off: the tool call is untouched, the turn end submits it as the owner', async ($, on) => {
+  const k = await pBoot($, on)
+  const ui = await k.mount()
+  await k.start('t1')
+  await ui.press({ key: 'pause' })
+  const foot = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
+  await foot.press({ key: 'team-mode' }) // on to off
+  await foot.unmount()
+  expect(await k.tool()).toEqual({ result: 'ok', text: 'ok' })
+  expect(k.log.sent).toEqual([])
+  await k.end('t1')
+  expect(k.log.sent).toEqual(['Pause'])
+  expect(k.log.asUser).toEqual([true])
+  await ui.unmount()
+})
+
+test('round 2: with nothing to take, a Lead tool call and a turn end write no atom', async ($, on) => {
+  const k = await pBoot($, on)
+  const ui = await k.mount()
+  await k.start('t1')
+  k.log.sets.length = 0
+  await k.tool()
+  await k.tool('agent-1')
+  await k.end('t1')
+  expect(k.log.sets).toEqual([])
+  await ui.unmount()
+})
+
+test('round 2: with only a push approval pending, a tool call writes no atom and leaves the result alone', async ($, on) => {
+  const k = await pBoot($, on)
+  const ui = await k.mount()
+  await k.start('t1')
+  await ui.press({ key: 'd-d3-0' })
+  k.log.sets.length = 0
+  expect(await k.tool()).toEqual({ result: 'ok', text: 'ok' })
+  expect(k.log.sets).toEqual([])
   await ui.unmount()
 })
