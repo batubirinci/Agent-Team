@@ -826,9 +826,23 @@ test('round 3: /clear then a quit before the first poll still leaves a record un
   await c.team()
   await $.session.end({ reason: 'clear', sessionId: ID_OLD, resume: { id: ID_OLD } })
   c.wipe(ID_NEW) // the id changes and the atoms reset after session.end
-  await c.clock.advance(600) // less than the 3 s poll
-  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }, CLEAR_NOW + 500)) // the timer fires at 500 ms
+  await c.clock.advance(600)
+  // hardening F24: the poll is 500 ms now, so it fires no later than the session.end timer (500 ms): the mutant "session.end carry removed" survives
+  // this test (measured, mutants.log), so it pins the outcome, not which of the two carried it.
+  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }, CLEAR_NOW + 500))
   expect(c.modeNow()).toEqual(SWITCH)
+})
+
+test('hardening F24: a quit after the first poll tick after /clear leaves the record under the new id (mutant: poll without follow)', async ($, on) => {
+  const c = await continuity($, on)
+  on('session.end', (_, e) => ({ sessionId: e.sessionId }))
+  c.present.add(OLD)
+  await c.start()
+  await c.team()
+  c.wipe(ID_NEW) // /clear with no session.end seen by the plugin (the id changes, the atoms reset)
+  await c.clock.advance(POLL) // the first tick
+  await $.session.end({ reason: 'quit', sessionId: ID_NEW })
+  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }, CLEAR_NOW + POLL))
 })
 
 test('round 4: a team session turned off by the footer chip after /clear, before any poll, ends off and stays off after the poll', async ($, on) => {

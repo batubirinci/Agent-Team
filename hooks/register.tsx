@@ -394,7 +394,8 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // /clear ends the old session and the new id shows a moment later: look soon, not only at the next poll, so a quit right after still leaves a record.
+  // /clear ends the old session and the new id shows a moment later. The 500 ms poll looks no later than this timer (same period), so today it is a second
+  // path, kept for a poll that does not tick in that window (not measured); removing it changes no test outcome.
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') $.clock.after(SOON_MS, () => follow($))
     return next(e)
