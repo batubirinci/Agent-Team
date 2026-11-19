@@ -1618,7 +1618,7 @@ test('terminal: header counts, a state line per task, blocked box and decision i
   expect(textNode(d2, /^Ürün kararı · Koşan görev$/)?.props?.color).toBe('claude')
   const d3 = keyed(root, 'd-d3')
   expect(d3.props).toMatchObject({ borderColor: 'subtle' })
-  expect(textNode(d3, /·/)).toBeUndefined()
+  expect(textNode(d3, /^(?!1-9 ile seç).*·/)).toBeUndefined() // no kind line (the caption row of hardening E18 has a · of its own)
   // Theme keys only: no raw color anywhere in the drawn tree.
   expect(nodesOf(root).filter(n => RAW_COLOR.test(JSON.stringify(n.props ?? {}))).length).toBe(0)
 })
@@ -4152,4 +4152,44 @@ test('hardening D16: the header date uses the written instant in local time; a t
   expect(example.text).toBe(clockOfLocal(instant)) // same local day as `now` or not, the clock part is the local one
   if (new Date(2026, 10, 19).getTimezoneOffset() === -180) expect(example).toEqual({ text: '02:30', days: 0 })
   expect(stamp(undefined, now)).toEqual({ text: undefined, days: 0 })
+})
+
+// Group E: the terminal decision card has one caption row from the start. Source: criterion 18 of the hardening brief (text, same rows
+// before and after a press); the other rows' texts are the ones the earlier terminal tests above pin.
+const CAPTION = '1-9 ile seç · kutuna yazılır'
+test('hardening E18 (terminal): a decision card with options says "1-9 ile seç · kutuna yazılır" until a press, and a press replaces that row, never adds one', async ($, on) => {
+  const k = await kBoot($, on)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const card = async (key = 'd-d1') => nodesOf(await drawnOf(ui)).find(n => n.props?.key === key) as Node
+  const rows = async (key = 'd-d1') => (await card(key)).children?.length
+  const before = await rows()
+  expect((await card()).children?.map(c => (typeof c === 'string' ? c : textOf(c)))).toContain(CAPTION)
+  await pressKey(ui, k.echo, 'd-d1-1')
+  expect(await rows()).toBe(before)
+  expect(textNode(await card(), /^✓ seçildi: Sonra · Enter ile gider$/)).toBeDefined()
+  expect(textNode(await card(), new RegExp(`^${CAPTION}$`))).toBeUndefined()
+  // Taking the line out of the box brings the caption back, still the same number of rows.
+  await k.type(0, k.box.text.length, '')
+  expect(await rows()).toBe(before)
+  expect(textNode(await card(), new RegExp(`^${CAPTION}$`))).toBeDefined()
+  await ui.unmount()
+})
+
+test('hardening E18 (terminal): a press that goes through the queue, and its delivery, keep the card at the same number of rows', async ($, on) => {
+  const k = await kBoot($, on, TERM, { isFilled: false })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const rows = async () => ((nodesOf(await drawnOf(ui)).find(n => n.props?.key === 'd-d2') as Node).children ?? []).length
+  const before = await rows()
+  await ui.press({ key: 'd-d2-0' }) // the box refuses the fill: the press is submitted at once
+  expect(k.log.sent).toEqual(['Karar (d2): Evet'])
+  expect(await rows()).toBe(before)
+  expect(textNode(await drawnOf(ui), /^Gönderildi: Evet$/)).toBeDefined()
+  await ui.unmount()
+})
+
+test('hardening E18 (terminal): a decision without options has no caption row', async ($, on) => {
+  await kBoot($, on, JSON.stringify({ v: 1, decisions: [{ id: 'd9', text: 'Yalnız bilgi', options: [] }] }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(textNode(await drawnOf(ui), new RegExp(`^${CAPTION}$`))).toBeUndefined()
+  await ui.unmount()
 })

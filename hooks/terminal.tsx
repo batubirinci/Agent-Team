@@ -98,6 +98,8 @@ export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], 
           {at >= 0 && <Text color="success">{`✓ seçildi: ${d.options[at]} · Enter ile gider`}</Text>}
           {at < 0 && queued && <Text dimColor>{queued.push ? QUEUED_PUSH : QUEUED}</Text>}
           {at < 0 && !queued && sentTo !== undefined && <Text dimColor>{`Gönderildi: ${sentTo}`}</Text>}
+          {/* One caption row from the start, so a press changes its text and never the card's height. */}
+          {at < 0 && !queued && sentTo === undefined && d.options.length > 0 && <Text dimColor>1-9 ile seç · kutuna yazılır</Text>}
         </Box>
         )
       })}
