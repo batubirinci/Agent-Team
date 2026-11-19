@@ -1841,7 +1841,9 @@ test('criterion 6: a task without an id gets a generated id, but no decision lin
     tasks: [{ title: 'Kimliksiz', stage: 'build', roles: [run] }],
   })
   const s = parseStatus(text)
-  expect(s.tasks[0]?.id).toBe('t1')
+  // hardening criterion 5: a made-up id has a character a written one cannot have (here `#1`), so it never equals a written `t1`.
+  expect(s.tasks[0]?.id).toBe('#1')
+  expect(s.tasks[0]?.generatedId).toBe(true)
   expect([s.tasks[0]?.state, s.tasks[0]?.reason]).toEqual(['running', undefined])
   expect(decisionTask(s.decisions[0]!, s.tasks)).toEqual({ kind: 'Takıldı · Developer', blocked: false })
   // A written id links as before.
@@ -2389,7 +2391,7 @@ test('criterion 2: a line break in an id or option becomes a space; regex charac
 
 // A fake prompt box under a mounted session: the box is the single truth, `fill` edits it, and the engine's `prompt.change`
 // (origin plugin, after a plugin's fill) is raised by `echo`, as the d.ts says it is; `type` is the owner typing (`prompt.edit`).
-const kBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], text = TERM, o: { isFilled?: boolean; boxText?: string; throws?: boolean; atomFails?: boolean } = {}) => {
+const kBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], text = TERM, o: { isFilled?: boolean; boxText?: string; throws?: boolean; atomFails?: boolean; readFails?: boolean; surface?: 'terminal' | 'desktop' } = {}) => {
   const box = { text: o.boxText ?? '', cursor: 0 }
   const log = { reads: 0, sent: [] as string[], fills: [] as { text: string; mode?: string }[], sets: [] as string[], gets: [] as string[] }
   let file = text
@@ -2415,6 +2417,7 @@ const kBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], te
   })
   on('prompt.read', () => {
     log.reads++
+    if (o.readFails) throw new Error('no composer')
     return { value: { text: box.text, cursor: box.cursor } }
   })
   // `submit` is flipped by a test: a rejected submit, or one a hook refused (`{ drop }`), enters nothing and is not in log.sent.
@@ -2435,7 +2438,7 @@ const kBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], te
   })
   on('prompt.change', (_, e) => ({ text: e.text }))
   on('prompt.edit', (_, e) => ({ text: e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end), cursor: e.start + e.inputText.length }))
-  const start = () => $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'terminal', isInteractive: true })
+  const start = () => $.session.start({ cwd: '/Users/x/Projeler/shop', surface: o.surface ?? 'terminal', isInteractive: true })
   await start()
   // The test engine's `$.prompt` has `edit` and `change` at run time, but the d.ts (EventCalls) does not list them.
   const ev = $.prompt as unknown as {
@@ -2498,11 +2501,12 @@ test('criterion 1 (terminal): a press replaces the same decision line in place a
 })
 
 test('criterion 2 (terminal): a decision from the file with a line break and regex characters writes one clean line', async ($, on) => {
-  const odd = JSON.stringify({ v: 1, decisions: [{ id: 'a.b(1)', text: 'K', options: ['bir\niki', 'x'] }, { id: 'axb(1)', text: 'L', options: ['y'] }] })
-  const k = await kBoot($, on, odd, { boxText: 'Karar (axb(1)): eski' })
+  // (hardening criterion 5: an id may hold only letters, digits . _ -, so the regex characters now live in the unit test above.)
+  const odd = JSON.stringify({ v: 1, decisions: [{ id: 'a.b', text: 'K', options: ['bir\niki', 'x'] }, { id: 'axb', text: 'L', options: ['y'] }] })
+  const k = await kBoot($, on, odd, { boxText: 'Karar (axb): eski' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await pressKey(ui, k.echo, 'd-a.b(1)-0')
-  expect(k.box.text).toBe('Karar (axb(1)): eski\nKarar (a.b(1)): bir iki')
+  await pressKey(ui, k.echo, 'd-a.b-0')
+  expect(k.box.text).toBe('Karar (axb): eski\nKarar (a.b): bir iki')
   await ui.unmount()
 })
 
@@ -2545,7 +2549,7 @@ test('criterion 5 (terminal): a fill that rejects falls back to the same submit'
 // Desktop and any other graphical surface: the composer is the app's own, a fill would only write an engine draft the owner never
 // sees (live check 2026-11-13, tasks/decision-buttons/live-desktop.md). Source for 1 to 4: the Lead's criteria for desktop-karar.
 test('criterion 1 (desktop): a press submits the one clean Karar line as the owner and never reads or fills the box', async ($, on) => {
-  const k = await kBoot($, on, TERM, { boxText: 'yarım yazı' })
+  const k = await kBoot($, on, TERM, { boxText: 'yarım yazı', surface: 'desktop' }) // a desktop session: only the terminal reads the box at the start (B7)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.press({ key: 'd-d1-1' })
   expect(k.log.sent).toEqual(['Karar (d1): Sonra'])
@@ -2554,12 +2558,12 @@ test('criterion 1 (desktop): a press submits the one clean Karar line as the own
   expect(k.box.text).toBe('yarım yazı')
   await ui.unmount()
   k.log.sent.length = 0
-  // Ids and options with line breaks stay one line.
+  // Options with line breaks stay one line; an id with one is not a written id (hardening criterion 5), so the line carries the made-up `#1`.
   const odd = JSON.stringify({ v: 1, decisions: [{ id: 'x\ny', text: 'K', options: ['bir\r\niki'] }] })
   await k.rewrite(odd)
   const ui2 = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await ui2.press({ key: 'd-x\ny-0' })
-  expect(k.log.sent).toEqual(['Karar (x y): bir iki'])
+  await ui2.press({ key: 'd-#1-0' })
+  expect(k.log.sent).toEqual(['Karar (#1): bir iki'])
   await ui2.unmount()
 })
 
@@ -3761,4 +3765,126 @@ test('hardening A3 (terminal): an example key fills the box with the example as 
   expect(k.log.fills).toEqual(['Bir hatayı düzelt: '])
   expect(k.log.sent).toEqual([])
   await ui.unmount()
+})
+
+// Group B: decision-line safety. Sources: criteria 5-7 of the hardening brief; decision-buttons QA r1 LOW 1 (id `): `), qa-fixes QA
+// (generated `t1` vs written `t1`), decision-buttons QA r1 follow-ups (CRLF, picked state at start). The made-up id form `#<position>`
+// is the Developer's choice (the brief only says it holds a character outside the set, e.g. `#2`).
+const IDRE = /^[\p{L}\p{N}._-]{1,64}$/u
+
+test('hardening B5 (parser): a written id counts only if it is 1-64 letters, digits . _ -; anything else, or a repeat, is not written', async () => {
+  const s = parseStatus(
+    JSON.stringify({
+      v: 1,
+      decisions: [
+        { id: 'a', text: 'A', options: ['x'] },
+        { id: 'a): b', text: 'B', options: ['y'] },
+        { id: 'a', text: 'tekrar', options: ['z'] },
+        { id: 'Şu-1_ü.2', text: 'U', options: [] },
+        { id: 'x'.repeat(65), text: 'uzun', options: [] },
+        { id: 'x'.repeat(64), text: 'sınır', options: [] },
+        { id: 'a b', text: 'boşluklu', options: [] },
+        { text: 'kimliksiz', options: [] },
+      ],
+    }),
+  )
+  const ids = s.decisions.map(d => d.id)
+  expect(ids[0]).toBe('a')
+  expect(ids[3]).toBe('Şu-1_ü.2')
+  expect(ids[5]).toBe('x'.repeat(64))
+  for (const i of [1, 2, 4, 6, 7]) expect(IDRE.test(ids[i] as string)).toBe(false) // not written: made up, with a character a written id cannot hold
+  expect(new Set(ids).size).toBe(ids.length)
+
+  const t = parseStatus(
+    JSON.stringify({
+      v: 1,
+      decisions: [{ id: 'd1', kind: 'Takıldı', text: 'Ne?', task: 't1', options: [] }],
+      tasks: [
+        { title: 'Kimliksiz', stage: 'build' },
+        { id: 't1', title: 'Yazılı', stage: 'build' },
+        { id: 't1', title: 'Tekrar', stage: 'build' },
+        { id: 'a): b', title: 'Bozuk', stage: 'build' },
+      ],
+    }),
+  )
+  expect(t.tasks.map(x => x.generatedId === true)).toEqual([true, false, true, true])
+  expect(t.tasks[1]?.id).toBe('t1')
+  expect(new Set(t.tasks.map(x => x.id)).size).toBe(4)
+  // The decision links to the written t1 only.
+  expect(t.tasks.map(x => x.state)).toEqual(['waiting', 'blocked', 'waiting', 'waiting'])
+  expect(decisionTask(t.decisions[0]!, t.tasks)).toEqual({ kind: 'Takıldı · Yazılı', blocked: true })
+})
+
+test('hardening B5 (terminal): an id with `): ` next to `a` — each card writes and finds only its own line', async ($, on) => {
+  const odd = JSON.stringify({ v: 1, decisions: [{ id: 'a', text: 'A?', options: ['X', 'Y'] }, { id: 'a): b', text: 'B?', options: ['P', 'Q'] }] })
+  const k = await kBoot($, on, odd)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await pressKey(ui, k.echo, 'd-a-0')
+  expect(k.box.text).toBe('Karar (a): X')
+  await pressKey(ui, k.echo, 'd-#2-0')
+  expect(k.box.text).toBe('Karar (a): X\nKarar (#2): P')
+  await pressKey(ui, k.echo, 'd-a-1')
+  expect(k.box.text).toBe('Karar (a): Y\nKarar (#2): P')
+  const root = await drawnOf(ui)
+  const card = (key: string) => nodesOf(root).find(n => n.props?.key === key) as Node
+  expect(textNode(card('d-a'), /^✓ seçildi: Y/)).toBeDefined()
+  expect(textNode(card('d-#2'), /^✓ seçildi: P/)).toBeDefined()
+  await ui.unmount()
+})
+
+test('hardening B5 (pane): an id-less task before a written t1 — every key is unique and "Ayrıntı" opens the written t1', async ($, on) => {
+  const text = JSON.stringify({ v: 1, tasks: [{ title: 'Kimliksiz', stage: 'build' }, { id: 't1', title: 'Kimlikli', stage: 'review' }] })
+  await boot($, on, text)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    const keys = nodesOf(await drawnOf(ui)).flatMap(n => (n.props?.key === undefined ? [] : [String(n.props.key)]))
+    expect(keys.filter((k, i) => keys.indexOf(k) !== i)).toEqual([])
+    await ui.press({ key: 'detail-t1' })
+    const root = await drawnOf(ui)
+    expect(textNode(root, /^Kimlikli$/)).toBeDefined()
+    expect(textNode(root, /^Kimliksiz$/)).toBeUndefined()
+    await ui.press({ key: 'detail-back' })
+    await ui.unmount()
+  }
+})
+
+test('hardening B6: a Karar row ending in \\r is picked; replacing it keeps every other row (their \\r too) and its own \\r', async () => {
+  // Expected values by hand: CRLF rows split on \n leave a \r at the end of each row but the last.
+  expect(kararLines('önce\r\nKarar (d1): A\r\nKarar (d2): B\r\nsonra')).toEqual(['Karar (d1): A', 'Karar (d2): B'])
+  const d = { id: 'd1', text: 't', options: ['A', 'B'] }
+  expect(pickedAt(kararLines('Karar (d1): B\r\n'), d)).toBe(1)
+  expect(withKarar('önce\r\nKarar (d1): A\r\nsonra\r\n', 'd1', 'B')).toBe('önce\r\nKarar (d1): B\r\nsonra\r\n')
+  expect(withKarar('önce\r\nKarar (d1): A\nsonra\r\n', 'd1', 'B')).toBe('önce\r\nKarar (d1): B\nsonra\r\n') // the replaced row had no \r: none is added
+  expect(withKarar('önce\r\n', 'd1', 'B')).toBe('önce\r\nKarar (d1): B')
+})
+
+test('hardening B6 (terminal): a CRLF box shows the picked option at once and a press keeps the other rows byte for byte', async ($, on) => {
+  const k = await kBoot($, on, TERM, { boxText: 'önce\r\nKarar (d1): Durumları gör\r\nsonra' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(textNode(await drawnOf(ui), /^✓ seçildi: Durumları gör/)).toBeDefined()
+  await pressKey(ui, k.echo, 'd-d1-1')
+  expect(k.box.text).toBe('önce\r\nKarar (d1): Sonra\r\nsonra')
+  await ui.unmount()
+})
+
+test('hardening B7 (terminal): Karar lines already in the box when the session starts show picked without any edit', async ($, on) => {
+  const k = await kBoot($, on, TERM, { boxText: 'Karar (d1): Sonra\nyarım' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(textNode(await drawnOf(ui), /^✓ seçildi: Sonra · Enter ile gider$/)).toBeDefined()
+  expect(k.log.fills).toEqual([])
+  await ui.unmount()
+})
+
+test('hardening B7: a failing prompt.read does not break session.start (the pane still draws, nothing is picked); the desktop never reads the box', async ($, on) => {
+  const k = await kBoot($, on, TERM, { readFails: true })
+  expect(k.log.reads).toBeGreaterThan(0) // the read was tried at the start and failed
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ key: 'd-d1' })).toBeDefined()
+  expect(textNode(await drawnOf(ui), /^✓ seçildi/)).toBeUndefined()
+  await ui.unmount()
+})
+
+test('hardening B7 (desktop): starting reads nothing from the box', async ($, on) => {
+  const k = await kBoot($, on, TERM, { surface: 'desktop', boxText: 'Karar (d1): Sonra' })
+  expect(k.log.reads).toBe(0)
 })

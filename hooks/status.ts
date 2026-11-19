@@ -10,6 +10,13 @@ const isObj = (x: unknown): x is Obj => typeof x === 'object' && x !== null && !
 const str = (x: unknown): string | undefined => (typeof x === 'string' && x.trim() ? x : undefined)
 // A string cut to n characters: the file is model-written, a pane line is not a place for an essay.
 const short = (x: unknown, n: number): string | undefined => str(x)?.trim().slice(0, n)
+// A decision or task id counts as written only if it is 1-64 letters, digits . _ - and no earlier one in its list had it. A made-up id is
+// `#<position>`: `#` is outside that set, so it never equals a written one (and `): ` can never be inside one).
+const ID = /^[\p{L}\p{N}._-]{1,64}$/u
+const written = (x: unknown, taken: Set<string>) => {
+  const id = str(x)
+  return id && ID.test(id) && !taken.has(id) ? (taken.add(id), id) : undefined
+}
 const num = (x: unknown): number | undefined =>
   typeof x === 'number' && Number.isFinite(x) && x >= 0 ? Math.round(x) : undefined
 const list = (x: unknown): Obj[] => (Array.isArray(x) ? x.filter(isObj) : [])
@@ -25,11 +32,13 @@ export function parseStatus(text: string): Status {
   const raw: unknown = JSON.parse(text)
   if (!isObj(raw) || raw.v !== 1) throw new Error('durum dosyası v:1 değil')
 
+  const decisionIds = new Set<string>()
+  const taskIds = new Set<string>()
   const decisions: Decision[] = list(raw.decisions).flatMap((d, i) => {
     const t = str(d.text)
     if (!t) return []
     const options = Array.isArray(d.options) ? d.options.filter((o): o is string => !!str(o)).slice(0, 4) : []
-    return [{ id: str(d.id) ?? `d${i + 1}`, kind: str(d.kind), text: t, meta: str(d.meta), task: str(d.task), options }]
+    return [{ id: written(d.id, decisionIds) ?? `#${i + 1}`, kind: str(d.kind), text: t, meta: str(d.meta), task: str(d.task), options }]
   })
 
   const tasks: Task[] = list(raw.tasks).flatMap((t, i) => {
@@ -62,12 +71,12 @@ export function parseStatus(text: string): Status {
         return label && path ? [{ label, path }] : []
       })
       .slice(0, 6)
-    // A task with no id in the file gets one for the UI only; a decision can name only an id that is written.
-    const written = str(t.id)
-    const id = written ?? `t${i + 1}`
+    // A task with no (usable) id in the file gets one for the UI only; a decision can name only an id that is written.
+    const own = written(t.id, taskIds)
+    const id = own ?? `#${i + 1}`
     const sessionName = isObj(t.session) ? short(t.session.name, 60) : undefined
     const wait = short(t.wait, 120)
-    const asked = written ? decisions.filter(d => d.task === written) : []
+    const asked = own ? decisions.filter(d => d.task === own) : []
     const blocked = roles.find(r => r.status === 'blocked')
     const state: TaskState =
       blocked || asked.some(d => isStuck(d.kind)) ? 'blocked' : roles.some(r => r.status === 'running') ? 'running' : 'waiting'
@@ -77,7 +86,7 @@ export function parseStatus(text: string): Status {
       id,
       title,
       branch: str(t.branch),
-      ...(!written && { generatedId: true as const }),
+      ...(!own && { generatedId: true as const }),
       stage: stage < 0 ? 0 : stage,
       round: num(t.round),
       candidate: str(t.candidate),
@@ -194,12 +203,14 @@ export const kararLine = (id: string, option: string) => head(id) + flat(option)
 export function withKarar(draft: string, id: string, option: string) {
   const line = kararLine(id, option)
   const rows = draft.split('\n')
-  if (rows.some(r => r.startsWith(head(id)))) return rows.map(r => (r.startsWith(head(id)) ? line : r)).join('\n')
+  // The replaced row keeps its own \r (a CRLF draft); the other rows are not touched.
+  if (rows.some(r => r.startsWith(head(id)))) return rows.map(r => (r.startsWith(head(id)) ? line + (r.endsWith('\r') ? '\r' : '') : r)).join('\n')
   return draft && !draft.endsWith('\n') ? `${draft}\n${line}` : draft + line
 }
 
 // The decision lines of a draft (all the pane needs to know of it), and which option of `d` one of them picks (-1: none).
-export const kararLines = (draft: string) => draft.split('\n').filter(r => r.startsWith(KARAR))
+// A CRLF draft's rows end in \r: it is not part of the line.
+export const kararLines = (draft: string) => draft.split('\n').filter(r => r.startsWith(KARAR)).map(r => r.replace(/\r$/, ''))
 export const pickedAt = (lines: readonly string[], d: Decision) => d.options.findIndex(o => lines.includes(kararLine(d.id, o)))
 
 // The sentence that tells the Lead the status path (register.tsx leadText) and the prefix of the row that carries it.

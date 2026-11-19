@@ -363,6 +363,9 @@ export const register: Register = (on, options) => {
       await sweep($)
     } catch {} // a store that fails must not stop the start
 
+    // Karar lines already in the box (a session started or the plugin reloaded with a draft) show picked; the desktop's box is the app's own.
+    if (e.surface === 'terminal') await $.prompt.read().then(box => syncKarar($, box.text)).catch(() => undefined)
+
     const seen: Seen = new Map()
     // Independent: one failing stops neither the other nor the clock.
     const poll = () => Promise.allSettled([follow($), refresh($, file), scanOthers($, dir, file, seen)])

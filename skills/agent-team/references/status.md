@@ -89,6 +89,9 @@ Fields:
   result, as one or more such lines: remove each answered decision from the file. Use `kind: "Push onayı"` for every approval of
   an irreversible outward action (push, PR, remote merge, deletion), with `options: ["Onayla", "Reddet"]` and, for a push,
   the branch and short SHA in `meta`: such an answer is always the owner's own message, never a reminder.
+  A decision or task `id` counts only if it is 1-64 letters, digits, `.`, `_` or `-` and not used before in its list; any other (or
+  missing) id is made up as `#<position>`, so an id-less decision is answered as `Karar (#<position>): <option>` (its place among the
+  file's decisions) and no decision links to a made-up task id: write ids.
 - `tasks`: every task not yet reported (Flow 5). Write each task's `id`: a task without one still
   draws (the pane makes up an id), but no decision can link to it. `stage` is one of `spec`, `build`, `review`,
   `revise`, `report`. `round` is the review round (omit before the first review). `candidate` is
