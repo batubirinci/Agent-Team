@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Decision, DirEntry, Mode, Other, Outbox, Press, RoleStatus, SessionRecord, StatusView, Task, TaskState } from '../types'
-import { ANNOUNCE, ASK_WHERE, KARAR, OPEN_ROW, STAGE_LABELS, baseName, countStates, decisionTask, detailScroll, expandHome, isInside, isPush, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, reopenLine, stamp, stopped, trimSlash, withKarar } from './status'
+import { ANNOUNCE, ASK_WHERE, KARAR, OPEN_ROW, STAGE_LABELS, baseName, countStates, decisionTask, detailScroll, expandHome, flat, isInside, isPush, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, reopenLine, stamp, stopped, trimSlash, withKarar } from './status'
 import { AMBER, BAD, CLAY, MUTED, OK, TRACK, dotSvg, meterSvg, stagesSvg } from './svg'
 import { QUEUED, QUEUED_PUSH, TBOX, hk, termBanner, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termTasks, termUsage } from './terminal'
 
@@ -666,6 +666,7 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
+    const asked = (t: Task) => flat(`${t.title} ne durumda?`)
     const detailView = (t: Task) => {
       const last = t.rounds?.at(-1)
       return (
@@ -718,7 +719,8 @@ export const register: Register = (on, options) => {
               ))}
             </Box>
           )}
-          <Button key="detail-ask" label="Lead'e sor" {...key('s')} onPress={() => void $.prompt.fill({ text: `${t.title} hakkında: `, mode: 'replace' })} />
+          {/* The composer is the app's own here (a fill is a draft the owner never sees): the question is a press, one line. */}
+          <Button key="detail-ask" label={labelled("Lead'e sor", asked(t))} onPress={() => void press($, running, { line: asked(t) })} />
         </Box>
       )
     }
@@ -831,7 +833,7 @@ export const register: Register = (on, options) => {
             {m.isOn ? (
               <Box flexDirection="column" gap="xs">
                 {EXAMPLES.map((x, i) => (
-                  <Button key={`ex-${i}`} label={`${x}…`} {...key(String(i + 1))} onPress={() => void $.prompt.fill({ text: x, mode: 'replace' })} />
+                  <Button key={`ex-${i}`} label={`${x}…`} {...key(String(i + 1))} onPress={() => void (term ? $.prompt.fill({ text: x, mode: 'replace' }) : press($, running, { line: x.trimEnd() }))} />
                 ))}
               </Box>
             ) : (

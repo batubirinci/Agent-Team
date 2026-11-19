@@ -296,12 +296,17 @@ test('in team mode an owner prompt carries the Lead role, outside it nothing is 
 test('an empty pane says the team is ready, lists the roles, and an example fills the prompt', async ($, on) => {
   // Approved design "Boş pane": hero, example tasks that fill the composer, how it works, 7 roles.
   const filled: string[] = []
+  const sent: string[] = []
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.close', () => ({ value: undefined }))
   on('session.append', (_, e, next) => next(e))
   on('prompt.fill', (_, e) => {
     filled.push(e.text)
     return { isFilled: true }
+  })
+  on('prompt.submit', (_, e) => {
+    sent.push(e.text)
+    return { text: e.text }
   })
   // pane-motion criterion 10: before the first read the pane draws placeholders, so this test now lets the session read (no file yet) first.
   on('command.register', (_, e) => ({ value: { command: e.name } }))
@@ -324,7 +329,9 @@ test('an empty pane says the team is ready, lists the roles, and an example fill
   expect((await ready.findAll({ type: 'Text', text: /^(Analyst|Analyst 2|Developer|Developer \(zor iş\)|QA|QA 2 · canlı|Helper)$/ })).length).toBe(7)
   await ready.press({ key: 'ex-0' })
   await ready.unmount()
-  expect(filled).toEqual(['Bir hatayı düzelt: '])
+  // hardening criterion 2: on the desktop an example is a press (the draft a fill writes is one the owner never sees), trailing space trimmed.
+  expect(filled).toEqual([])
+  expect(sent).toEqual(['Bir hatayı düzelt:'])
 })
 
 // Task detail (owner request 2026-11-12 + approved design "Görev ayrıntısı"; criteria 1-6 of the task-detail task).
@@ -381,6 +388,7 @@ test('a task card opens its detail view with rounds and evidence, back returns, 
   // Criteria 2, 3, 5 and the approved design: every round with findings and note, evidence, same on desktop and terminal.
   const filled: string[] = []
   const modes: unknown[] = []
+  const sent: string[] = []
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('env.get', () => ({ value: '/Users/x' }))
@@ -393,6 +401,10 @@ test('a task card opens its detail view with rounds and evidence, back returns, 
     filled.push(e.text)
     modes.push(e.mode)
     return { isFilled: true }
+  })
+  on('prompt.submit', (_, e) => {
+    sent.push(e.text)
+    return { text: e.text }
   })
   await $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'desktop', isInteractive: true })
 
@@ -422,9 +434,11 @@ test('a task card opens its detail view with rounds and evidence, back returns, 
     expect(await ui.find({ key: 'detail-back' })).toBeUndefined()
     await ui.unmount()
   }
-  expect(filled).toEqual(['Seçim kutusu taşması hakkında: ', 'Seçim kutusu taşması hakkında: '])
+  // hardening criterion 1: the terminal fills the box; the desktop (where a fill is an unseen draft) presses a one-line question.
+  expect(filled).toEqual(['Seçim kutusu taşması hakkında: '])
   // Review revision 1: the ask replaces what is in the prompt box, as the empty-pane examples do.
-  expect(modes).toEqual(['replace', 'replace'])
+  expect(modes).toEqual(['replace'])
+  expect(sent).toEqual(['Seçim kutusu taşması ne durumda?'])
 })
 
 test('a task without rounds opens a detail view with no Turlar section, and a vanished task returns to the list', async ($, on) => {
@@ -2757,7 +2771,7 @@ const QUEUED = 'Sırada · Lead sıradaki adımda okuyacak'
 const QUEUED_PUSH = 'Sırada · Lead işini bitirince okuyacak'
 type CtxResult = { context?: readonly string[]; result?: unknown; deny?: string; isError?: boolean }
 
-const pBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o: { surface?: 'desktop' | 'terminal'; isFilled?: boolean; teamOn?: boolean; status?: string } = {}) => {
+const pBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o: { surface?: 'desktop' | 'terminal'; isFilled?: boolean; teamOn?: boolean; status?: string; noFile?: boolean } = {}) => {
   const log = { sent: [] as string[], asUser: [] as (boolean | undefined)[], fills: [] as string[], sets: [] as string[] }
   const gate = { submit: 'ok' as 'ok' | 'throws' | 'drop' }
   const core = { result: { result: 'ok', text: 'ok' } as unknown }
@@ -2766,7 +2780,7 @@ const pBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o:
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.close', () => ({ value: undefined }))
   on('env.get', () => ({ value: '/Users/x' }))
-  on('fs.exists', () => ({ value: true }))
+  on('fs.exists', () => ({ value: !o.noFile }))
   on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: 1, isLink: false } }))
   on('fs.read', () => ({ value: o.status ?? PSTATUS }))
   const clock = mock.clock(on)
@@ -3684,4 +3698,67 @@ test('a reopened session whose roles are all done still shows the banner (no sto
   expect((await bannerOf(ui))?.text).toBe('Oturum yeniden açıldı · durum 5 gün önceki')
   await ui.unmount()
   expect((await r.prompt())[0]).toContain('Çalışıyor görünen rol yok')
+})
+
+// hardening (small follow-ups from the QA reports). Group A: on the desktop "Lead'e sor" and the example buttons are presses, not fills.
+// Source of the expected strings for A1-A3: the Lead's criteria 1-3 of the hardening brief (`<title> ne durumda?`, the trimmed example, the
+// ' · sırada' / ' · gönderildi' label like Pause, the terminal unchanged), and the pause-fast delivery rules already pinned above (HEAD entry).
+const ASK_STATUS = JSON.stringify({ v: 1, tasks: [{ id: 't1', title: 'Seçim\nkutusu  taşması', stage: 'build' }] })
+const ASKED = 'Seçim kutusu  taşması ne durumda?'
+
+test('hardening A1 (desktop): "Lead\'e sor" sends the one-line question as the owner, never fills, and says "gönderildi"', async ($, on) => {
+  const k = await pBoot($, on, { status: ASK_STATUS })
+  const ui = await k.mount()
+  await ui.press({ key: 'detail-t1' })
+  expect((await ui.find({ key: 'detail-ask' }))?.props.label).toBe("Lead'e sor")
+  await ui.press({ key: 'detail-ask' })
+  expect(k.log.sent).toEqual([ASKED])
+  expect(k.log.asUser).toEqual([true])
+  expect(k.log.fills).toEqual([])
+  expect((await ui.find({ key: 'detail-ask' }))?.props.label).toBe("Lead'e sor · gönderildi")
+  await ui.unmount()
+})
+
+test('hardening A1 (desktop): mid-turn the question waits ("sırada") and rides the next Lead tool result in the pane reminder', async ($, on) => {
+  const k = await pBoot($, on, { status: ASK_STATUS })
+  const ui = await k.mount()
+  await ui.press({ key: 'detail-t1' })
+  await k.start('turn-1')
+  await ui.press({ key: 'detail-ask' })
+  expect(k.log.sent).toEqual([])
+  expect((await ui.find({ key: 'detail-ask' }))?.props.label).toBe("Lead'e sor · sırada")
+  expect((await k.tool()).context).toEqual([`${HEAD}\n${ASKED}`])
+  expect((await ui.find({ key: 'detail-ask' }))?.props.label).toBe("Lead'e sor")
+  expect(k.log.fills).toEqual([])
+  await ui.unmount()
+})
+
+test('hardening A2 (desktop): an example button sends the example with its trailing space trimmed, never fills', async ($, on) => {
+  const k = await pBoot($, on, { noFile: true })
+  const ui = await k.mount()
+  expect((await ui.find({ key: 'ex-0' }))?.props.label).toBe('Bir hatayı düzelt: …')
+  await ui.press({ key: 'ex-0' })
+  await ui.press({ key: 'ex-2' })
+  expect(k.log.sent).toEqual(['Bir hatayı düzelt:', 'Şu değişikliği incelet:'])
+  expect(k.log.fills).toEqual([])
+  await ui.unmount()
+})
+
+test('hardening A3 (terminal): `s` in the detail view and the example keys still fill the box as before, and send nothing', async ($, on) => {
+  const k = await pBoot($, on, { surface: 'terminal', status: ASK_STATUS })
+  const ui = await k.mount()
+  await ui.press({ key: 'detail-t1' })
+  await ui.press({ key: 'detail-ask' })
+  expect(k.log.fills).toEqual(['Seçim\nkutusu  taşması hakkında: '])
+  expect(k.log.sent).toEqual([])
+  await ui.unmount()
+})
+
+test('hardening A3 (terminal): an example key fills the box with the example as written, and sends nothing', async ($, on) => {
+  const k = await pBoot($, on, { surface: 'terminal', noFile: true })
+  const ui = await k.mount()
+  await ui.press({ key: 'ex-0' })
+  expect(k.log.fills).toEqual(['Bir hatayı düzelt: '])
+  expect(k.log.sent).toEqual([])
+  await ui.unmount()
 })

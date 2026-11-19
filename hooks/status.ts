@@ -185,7 +185,7 @@ export function decisionTask(d: Decision, tasks: readonly Task[]) {
 // A decision answer is one line of the owner's draft, "Karar (<id>): <option>". The id and the option are model-written:
 // a line break in them would start another line, so it becomes a space.
 export const KARAR = 'Karar ('
-const flat = (s: string) => s.replace(/\r\n|[\r\n]/g, ' ')
+export const flat = (s: string) => s.replace(/\r\n|[\r\n]/g, ' ')
 const head = (id: string) => `${KARAR}${flat(id)}): `
 export const kararLine = (id: string, option: string) => head(id) + flat(option)
 
