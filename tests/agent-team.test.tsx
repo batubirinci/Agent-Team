@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { decisionTask, detailScroll, isInside, isPush, isStuck, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseStatus, pickedAt, summary, withKarar } from '../hooks/status'
+import { decisionTask, detailScroll, isInside, isPush, isStuck, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseStatus, pickedAt, stamp, summary, withKarar } from '../hooks/status'
 import { CLAY, MUTED, STUCK, TRACK, dotSvg, meterSvg, stagesSvg } from '../hooks/svg'
 
 const fills = (svg: string) => [...svg.matchAll(/<rect [^>]*fill="([^"]+)"/g)].map(m => m[1])
@@ -3492,7 +3492,7 @@ const R_TASK = { id: 't1', title: 'Seçim kutusu taşması', stage: 'build', rol
 const reopenStatus = (tasks: unknown[] = [R_TASK], updatedAt = '2026-11-14T22:10:00+03:00') => JSON.stringify({ v: 1, updatedAt, lead: 'Opus 5.5', tasks })
 const BANNER = /^Oturum yeniden açıldı · durum 5 gün önceki · çalışıyor görünen 1 rol durmuş olabilir$/
 
-const rBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o: { status?: string; record?: boolean; surface?: 'desktop' | 'terminal'; placed?: boolean } = {}) => {
+const rBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o: { status?: string; record?: boolean; surface?: 'desktop' | 'terminal'; placed?: boolean; exists?: boolean } = {}) => {
   const disk = { text: o.status ?? reopenStatus(), mtime: R_OLD_MTIME }
   const log = { sent: [] as string[], contexts: [] as (readonly string[] | undefined)[], opens: 0 }
   const state = { id: ID_OLD }
@@ -3522,7 +3522,7 @@ const rBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o:
   on('ui.close', () => ({ value: undefined }))
   on('env.get', () => ({ value: '/Users/x' }))
   on('session.id', () => ({ value: state.id }))
-  on('fs.exists', () => ({ value: true }))
+  on('fs.exists', () => ({ value: o.exists ?? true }))
   on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: disk.mtime, isLink: false } }))
   on('fs.read', () => ({ value: disk.text }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -4082,4 +4082,74 @@ test('hardening C12: a file under the cap whose view does not fit the state gets
   expect(await k.ui.findAll({ type: 'Text', text: /^Durum dosyası/ })).toEqual([])
   expect(await k.ui.find({ type: 'Text', text: /Yeni görev/ })).toBeDefined()
   await k.ui.unmount()
+})
+
+// Group D: reopen follow-ups. Sources: criteria 14-16 of the hardening brief (reload keeps the banner and the pending line; an unreadable
+// status still carries one line; the header date uses the instant in local time), tasks/reopen/qa (lead-r1-adjudication.md). The test
+// harness runs in the machine's own time zone (Europe/Istanbul here; the engine ignores TZ set outside), so dates are built from local parts.
+test('hardening D14: a hot reload while the reopen banner is up keeps the banner and the pending reopen line', async ($, on) => {
+  const r = await rBoot($, on)
+  const ui = await r.mount()
+  expect(await bannerOf(ui)).toBeDefined()
+  await r.start() // the same process again: atoms and store kept, as a hot reload leaves them
+  expect((await bannerOf(ui))?.text).toMatch(BANNER)
+  const line = await r.prompt()
+  expect(line).toHaveLength(1)
+  expect(line[0]).toContain('14 Kas 22:10')
+  expect(await r.prompt()).toEqual([])
+  await ui.unmount()
+})
+
+test('hardening D14: a /clear after the reopen still ends the banner and the line', async ($, on) => {
+  const r = await rBoot($, on)
+  await r.clear(ID_NEW)
+  expect(await r.prompt()).toEqual([])
+  const ui = await r.mount()
+  expect(await bannerOf(ui)).toBeUndefined()
+  await ui.unmount()
+})
+
+test('hardening D15: an unreadable status file at the first prompt still carries one reopen line that says so and asks for "Geri dönüş"', async ($, on) => {
+  const r = await rBoot($, on, { status: '{ bozuk' })
+  const first = await r.prompt()
+  expect(first).toHaveLength(1)
+  expect(first[0]).toContain(R_PREFIX)
+  expect(first[0]).toContain('okunamadı')
+  expect(first[0]).toContain('Geri dönüş')
+  expect(first[0]).not.toMatch(/son yazımı|Çalışıyor görünen/)
+  expect(await r.prompt()).toEqual([]) // once only
+})
+
+test('hardening D15: a missing status file at the first prompt carries the same line', async ($, on) => {
+  const r = await rBoot($, on, { exists: false })
+  const first = await r.prompt()
+  expect(first).toHaveLength(1)
+  expect(first[0]).toContain('okunamadı')
+  expect(first[0]).toContain('Geri dönüş')
+})
+
+test('hardening D15: an unreadable file the Lead rewrote since the reopen sends no line', async ($, on) => {
+  const r = await rBoot($, on, { status: '{ bozuk' })
+  await r.rewrite('{ hâlâ bozuk')
+  expect(await r.prompt()).toEqual([])
+})
+
+// stamp: the written instant, the shown time and the day difference both in local time.
+const clockOfLocal = (d: Date) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+test('hardening D16: the header date uses the written instant in local time; a time without an offset counts as local', async () => {
+  const now = new Date(2026, 10, 19, 10, 0).getTime()
+  // Written 18 Nov 23:30 local, spelled as an instant (Z): the digits in it are not the local time unless the zone is UTC.
+  expect(stamp(new Date(2026, 10, 18, 23, 30).toISOString(), now)).toEqual({ text: '18 Kas 23:30', days: 1 })
+  // No offset: local as written.
+  expect(stamp('2026-11-18T23:30:00', now)).toEqual({ text: '18 Kas 23:30', days: 1 })
+  expect(stamp('2026-11-19T08:05:00', now)).toEqual({ text: '08:05', days: 0 })
+  // Just after midnight: yesterday's evening is one day back whatever the offset it is written in.
+  const midnight = new Date(2026, 10, 19, 0, 10).getTime()
+  expect(stamp(new Date(2026, 10, 18, 23, 50).toISOString(), midnight)).toEqual({ text: '18 Kas 23:50', days: 1 })
+  // The brief's example, for a local +03:00 (this Mac); in another zone the same instant is only checked against the local clock.
+  const example = stamp('2026-11-18T23:30:00+00:00', now)
+  const instant = new Date('2026-11-18T23:30:00+00:00')
+  expect(example.text).toBe(clockOfLocal(instant)) // same local day as `now` or not, the clock part is the local one
+  if (new Date(2026, 10, 19).getTimezoneOffset() === -180) expect(example).toEqual({ text: '02:30', days: 0 })
+  expect(stamp(undefined, now)).toEqual({ text: undefined, days: 0 })
 })

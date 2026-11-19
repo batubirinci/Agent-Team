@@ -192,15 +192,15 @@ first, before the owner's own request:
 
 1. Read the status file. Treat every `running` role as stopped. For each: its report file and its
    branch tip (`git -C <worktree> log -1`).
-2. Continue it with `SendMessage to: "<agent name>"` when its worktree is intact (the same reopened
-   session can resume its agents by name); otherwise start it again with a fresh brief.
-3. `git worktree prune`; a missing worktree is re-added from its branch
+2. `git worktree prune`; a missing worktree is re-added from its branch
    (`git worktree add <evidence root>/worktrees/<task>/dev <branch>`). Say plainly what uncommitted
    work was lost; commits on the branch are safe.
-4. Rewrite the status file (roles, stages, `updatedAt`): this also clears the pane's banner.
-5. Give the owner a short "nerede kaldık" summary: what each task was doing, what stopped, what was lost.
-6. Restart what had stopped, without asking. Push approvals and open owner decisions keep waiting for
-   the owner as before.
+3. Rewrite the status file (roles, stages, `updatedAt`): this also clears the pane's banner.
+4. Give the owner the short "nerede kaldık" summary now, before anything is restarted: what each task
+   was doing, what stopped, what was lost.
+5. Then continue what had stopped, without asking: `SendMessage to: "<agent name>"` when its worktree is
+   intact (the same reopened session can resume its agents by name), otherwise start it again with a
+   fresh brief. Push approvals and open owner decisions keep waiting for the owner as before.
 
 ## Flow
 

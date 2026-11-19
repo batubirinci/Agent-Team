@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Decision, DirEntry, Mode, Other, Outbox, Press, RoleStatus, SessionRecord, Status, StatusView, Task, TaskState } from '../types'
+import type { Decision, DirEntry, Mode, Other, Outbox, Press, Reopen, RoleStatus, SessionRecord, Status, StatusView, Task, TaskState } from '../types'
 import { ANNOUNCE, ASK_WHERE, KARAR, OPEN_ROW, STAGE_LABELS, baseName, clip, countStates, decisionTask, detailScroll, expandHome, flat, isBlocking, isInside, isPush, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, reopenLine, stamp, stopped, trimSlash, withKarar } from './status'
 import { AMBER, BAD, CLAY, MUTED, OK, TRACK, dotSvg, meterSvg, stagesSvg } from './svg'
 import { QUEUED, QUEUED_PUSH, TBOX, hk, termBanner, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termTasks, termUsage } from './terminal'
@@ -32,6 +32,9 @@ const karar = atom({ plugin: 'agent-team', key: 'karar' } as const, [] as string
 // when the decision leaves the file). `said`: lines without a decision (Pause, Devam) submitted as the owner, until the next status read.
 // One atom, so every change (a press, a delivery, a give-back) is one atomic update.
 const outbox = atom({ plugin: 'agent-team', key: 'outbox' } as const, { queue: [], sent: [], said: [] } as Outbox, { shape: 'outbox-2' })
+// A resumed session in team mode: when it started (the pane warns while the status file is older), and whether its first prompt still owes the
+// Lead the reopen line. since 0: not reopened (a new session, /clear). An atom: a hot reload keeps it, /clear resets it.
+const reopened = atom({ plugin: 'agent-team', key: 'reopen' } as const, { since: 0, line: false } as Reopen, { shape: 'reopen-1' })
 
 // Raw colors that read on a light and a dark pane alike (a theme key has no card fill).
 const CARD = {
@@ -277,17 +280,14 @@ async function sweep($: EngineInterface) {
 // `followed` is what session.start settled on: the status folder, the file it reads, the last session id seen.
 const followed = { dir: '', file: '', last: '' }
 
-// A resumed session (a store record, empty atoms) in team mode: when it started (the pane warns while the status file is older), and
-// whether its first prompt still owes the Lead the reopen line. since 0: not reopened (a new session, a reload, /clear).
-const reopen = { since: 0, line: false }
-
 // The reopen line, once: the first prompt of any kind (commands excepted) takes it, unless the Lead already rewrote the file.
 async function takeReopen($: EngineInterface) {
-  if (!reopen.line) return undefined
-  reopen.line = false
   try {
+    const { since, line } = await read($, reopened)
+    if (!line) return undefined
+    await update($, reopened, s => ({ ...s, line: false }))
     const { data, mtime } = await read($, status)
-    return data && mtime < reopen.since ? reopenLine(data, await $.clock.now()) : undefined
+    return mtime < since ? reopenLine(data, await $.clock.now()) : undefined
   } catch {
     return undefined
   }
@@ -301,7 +301,7 @@ async function follow($: EngineInterface) {
     const id = String(await $.session.id().catch(() => ''))
     if (!id || id === was) return
     followed.last = id
-    Object.assign(reopen, { since: 0, line: false }) // /clear: the owner cleared, nothing was reopened
+    await update($, reopened, () => ({ since: 0, line: false })) // /clear: the owner cleared, nothing was reopened
     // The path comes back first, record or none: a session that never was a team session has no record, and a /team
     // before the next poll must not read the reset (empty) path.
     await refresh($, file)
@@ -359,8 +359,11 @@ export const register: Register = (on, options) => {
       const to: Mode | undefined = isInside(e.cwd, parseFolders(options.teamFolders, home)) ? { isOn: true, source: 'folder' } : rec?.mode.isOn ? rec.mode : undefined
       if (to) await update($, mode, () => (m = to))
     }
-    reopen.since = m.isOn && !held && rec ? await $.clock.now().catch(() => 0) : 0
-    reopen.line = reopen.since > 0
+    // A reload (the atom holds the file) leaves the reopen state as it is.
+    if (m.isOn && !held && rec) {
+      const since = await $.clock.now().catch(() => 0)
+      await update($, reopened, () => ({ since, line: since > 0 }))
+    }
     let announced = rec?.announced
     if (m.isOn) {
       void $.ui.open(PANE_OPEN).catch(() => undefined) // not placed (a narrow terminal, no surface yet): session.attach asks again
@@ -512,7 +515,8 @@ export const register: Register = (on, options) => {
     const view = await read($, status)
     const { file, error } = view
     // A reopened session whose file was not written since the start: its running roles are drawn stopped until the Lead writes again.
-    const cut = reopen.since > 0 && view.data && view.mtime < reopen.since ? stopped(view.data) : undefined
+    const since = (await read($, reopened)).since
+    const cut = since > 0 && view.data && view.mtime < since ? stopped(view.data) : undefined
     const data = cut?.data ?? view.data
     const now = await $.clock.now().catch(() => NaN)
     const lines = await read($, karar)

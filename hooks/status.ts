@@ -144,16 +144,20 @@ export const isInside = (cwd: string, folders: readonly string[]) =>
 // "14:32" from an ISO time, in the time written there (the Lead writes local time with offset).
 export const clockOf = (iso?: string) => iso?.match(/T(\d{2}:\d{2})/)?.[1]
 
+const pad2 = (n: number) => String(n).padStart(2, '0')
 const MONTHS = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara']
 
-// An ISO time as the pane writes it: "14 Kas 22:10" when its written day is not `now`'s (local) day, else "22:10"; `days` is how many
-// days before `now`'s day it was written (0: today, or `now` unknown).
+// An ISO time as the pane writes it: "14 Kas 22:10" when its day is not `now`'s day, else "22:10", both in local time (a time written with an
+// offset is an instant; one without is local already); `days` is how many days before `now`'s day it was written (0: today, or `now` unknown).
 export function stamp(iso: string | undefined, now: number) {
-  const m = iso?.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}:\d{2})/)
+  const m = iso?.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/)
   if (!m) return { text: undefined, days: 0 }
+  let w = /(?:Z|[+-]\d{2}(?::?\d{2})?)$/i.test(iso!) ? new Date(iso!) : new Date(NaN)
+  if (Number.isNaN(w.getTime())) w = new Date(+m[1]!, +m[2]! - 1, +m[3]!, +m[4]!, +m[5]!)
   const t = Number.isFinite(now) ? new Date(now) : undefined
-  const days = t ? Math.max(0, Math.round((Date.UTC(t.getFullYear(), t.getMonth(), t.getDate()) - Date.UTC(+m[1]!, +m[2]! - 1, +m[3]!)) / 86_400_000)) : 0
-  return { text: days ? `${+m[3]!} ${MONTHS[+m[2]! - 1]} ${m[4]}` : m[4], days }
+  const days = t ? Math.max(0, Math.round((Date.UTC(t.getFullYear(), t.getMonth(), t.getDate()) - Date.UTC(w.getFullYear(), w.getMonth(), w.getDate())) / 86_400_000)) : 0
+  const clock = `${pad2(w.getHours())}:${pad2(w.getMinutes())}`
+  return { text: days ? `${w.getDate()} ${MONTHS[w.getMonth()]} ${clock}` : clock, days }
 }
 
 // A reopened session (a resume): the roles the file calls running belong to a process that is gone. They are drawn stopped, their task
@@ -172,7 +176,9 @@ export function stopped(s: Status) {
 export const ASK_WHERE = 'Nerede kaldık?'
 export const REOPEN = '[Agent Team · yeniden açılış]'
 
-export function reopenLine(s: Status, now: number) {
+export function reopenLine(s: Status | null, now: number) {
+  // A file the pane could not read (missing, bad): no time, no roles, only the step.
+  if (!s) return `${REOPEN} Oturum yeniden açıldı; durum dosyası okunamadı. agent-team skill'inin "Geri dönüş" adımını çalıştır.`
   const names = s.tasks.filter(t => !t.session).flatMap(t => t.roles.filter(r => r.status === 'running').map(r => `${t.title} · ${r.name}`))
   const when = stamp(s.updatedAt, now).text
   return [
@@ -253,8 +259,6 @@ export const otherFiles = (entries: readonly DirEntry[], dir: string, own: strin
     .filter(e => e.kind === 'file' && !e.isLink && e.name.endsWith('.json') && `${dir}/${e.name}` !== own && now - e.mtimeMs < OTHER_DAY_MS && e.size <= OTHER_MAX_BYTES)
     .sort((a, b) => b.mtimeMs - a.mtimeMs || a.name.localeCompare(b.name))
     .slice(0, OTHER_MAX_FILES)
-
-const pad2 = (n: number) => String(n).padStart(2, '0')
 
 // The file is untrusted and the result goes in a state atom (4 MiB limit) and on the pane: cut what is drawn.
 const OTHER_KIND = 120
