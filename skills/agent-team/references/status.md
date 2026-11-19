@@ -122,5 +122,11 @@ Fields:
 - Pressing `Ayrıntı ›` on a task card opens its detail view: rounds, findings, notes and evidence.
   A task without `rounds` still opens, just without the Turlar section.
 
+Reopened session: when the session is opened again (a resume) the pane keeps the old tasks and decisions and
+shows the day of `updatedAt` when it is not today. Until the file is written again, a banner says how old it is and
+how many `running` roles may have stopped with the old process, those roles are
+drawn stopped and a `Nerede kaldık?` button asks you; the first prompt also carries one context line that starts
+`[Agent Team · yeniden açılış]`. Run the skill's "Geri dönüş" step and rewrite the file: that clears the banner.
+
 Keep the texts short (one line each in a 380 px pane). Never put secrets, tokens or file contents
 in the file.

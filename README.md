@@ -38,6 +38,7 @@ gerekmez (slash komutları hariç). Üç yolu var:
 - `/team` yazmak; aç/kapa anahtarıdır.
 
 Mod açılınca pane da açılır. `/team-pane` de pane'i açar.
+Oturum başka gün yeniden açılınca pane eski görev ve kararlarla gelir, durmuş olabilecek rolleri durmuş çizer ve **Nerede kaldık?** düğmesi Lead'den özet ister.
 
 **Terminalde kısayollar.** Pane odaktayken: `1`-`9` karar seçenekleri, `a c d e f g h i j k m n o` görev
 ayrıntıları (sırayla), `p` pause/devam, ayrıntıda `b` geri ve `s` Lead'e sor, alt satırda `t` pane'i açar;

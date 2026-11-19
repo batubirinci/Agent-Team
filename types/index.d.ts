@@ -30,6 +30,8 @@ export type Task = {
   roles: Role[]
   rounds?: Round[]
   evidence?: Evidence[]
+  // A live task session carries this: its roles are that session's, so a reopen never draws them as stopped.
+  session?: { name: string }
 }
 
 export type Decision = {

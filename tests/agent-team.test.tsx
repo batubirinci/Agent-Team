@@ -3539,12 +3539,12 @@ const bannerOf = async (ui: Awaited<ReturnType<Awaited<ReturnType<typeof rBoot>>
 test('R1 (desktop): a reopened session shows the day in the header, the banner with the stopped count and age, nothing counted as running, and the Nerede kaldık? button', async ($, on) => {
   const r = await rBoot($, on)
   const ui = await r.mount()
-  expect(await ui.find({ type: 'Text', text: /^Lead · Opus 5\.5 · 14 Kas 22:10'da güncellendi$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Lead · Opus 5\.5 · 14 Kas 22:10'de güncellendi$/ })).toBeDefined()
   expect((await bannerOf(ui))?.text).toMatch(BANNER)
   expect(await ui.find({ type: 'Text', text: /^0 çalışıyor · 1 bekliyor · 1 görev$/ })).toBeDefined()
   const dots = (await ui.findAll({ type: 'Svg' })).filter(s => s.props.width === 8).map(s => s.props.alt)
   expect(dots).toEqual(['boşta', 'bitti'])
-  expect(await ui.find({ type: 'Text', text: /^durmuş olabilir$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^durmuş olabilir · inceliyor$/ })).toBeDefined()
   expect((await ui.find({ key: 'reopen-ask' }))?.props.label).toBe('Nerede kaldık?')
   await ui.press({ key: 'reopen-ask' })
   expect(r.log.sent).toEqual(['Nerede kaldık?']) // an owner message: the pane press goes through the outbox like Pause
@@ -3606,7 +3606,7 @@ test('R4: a new session (no record) shows no banner and sends no line', FOLDERS,
   const r = await rBoot($, on, { record: false })
   const ui = await r.mount()
   expect(await bannerOf(ui)).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /^Lead · Opus 5\.5 · 14 Kas 22:10'da güncellendi$/ })).toBeDefined() // an old file still shows its day
+  expect(await ui.find({ type: 'Text', text: /^Lead · Opus 5\.5 · 14 Kas 22:10'de güncellendi$/ })).toBeDefined() // an old file still shows its day
   await ui.unmount()
   expect(await r.prompt()).toEqual([])
 })
@@ -3683,5 +3683,5 @@ test('a reopened session whose roles are all done still shows the banner (no sto
   const ui = await r.mount()
   expect((await bannerOf(ui))?.text).toBe('Oturum yeniden açıldı · durum 5 gün önceki')
   await ui.unmount()
-  expect((await r.prompt())[0]).toContain('çalışıyor görünen rol yok')
+  expect((await r.prompt())[0]).toContain('Çalışıyor görünen rol yok')
 })
