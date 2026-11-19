@@ -3534,7 +3534,7 @@ const rBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o:
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('ui.open', () => {
     log.opens++
-    if (log.openFails) throw new Error('no surface')
+    if (log.openFails) throw new Error('no surface') // the engine skips a throwing mock: a real rejection of ui.open (a pane another plugin holds, d.ts) cannot be simulated
     return { value: o.placed === false ? { isPlaced: false as const, reason: 'no surface' } : { isPlaced: true as const } }
   })
   on('ui.close', () => ({ value: undefined }))
@@ -4311,7 +4311,7 @@ test('hardening F22: a command neither carries the reopen line nor consumes it',
   expect(await r.prompt()).toHaveLength(1) // the first real prompt still owes it
 })
 
-test('hardening F22: ui.open throwing at session.attach does not escape the hook, and next(e) still runs', async ($, on) => {
+test('hardening F22: a failing ui.open at session.attach leaves the hook standing and next(e) still runs (mutant: the hook drops next(e); a rejecting ui.open itself cannot be simulated, see the mock)', async ($, on) => {
   const r = await rBoot($, on)
   r.log.openFails = true
   const before = r.log.attached
