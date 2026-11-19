@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { decisionTask, detailScroll, isInside, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseStatus, pickedAt, summary, withKarar } from '../hooks/status'
+import { decisionTask, detailScroll, isInside, isPush, isStuck, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseStatus, pickedAt, summary, withKarar } from '../hooks/status'
 import { CLAY, MUTED, STUCK, TRACK, dotSvg, meterSvg, stagesSvg } from '../hooks/svg'
 
 const fills = (svg: string) => [...svg.matchAll(/<rect [^>]*fill="([^"]+)"/g)].map(m => m[1])
@@ -3887,4 +3887,199 @@ test('hardening B7: a failing prompt.read does not break session.start (the pane
 test('hardening B7 (desktop): starting reads nothing from the box', async ($, on) => {
   const k = await kBoot($, on, TERM, { surface: 'desktop', boxText: 'Karar (d1): Sonra' })
   expect(k.log.reads).toBe(0)
+})
+
+// Group C: small correctness. Sources: criteria 8-12 of the hardening brief; qa-fixes QA (lowercase blocking, U+0307); other-decisions QA r2
+// follow-ups (surrogate cut, control characters, own file ~4 MiB). Expected strings by hand.
+const SEVERITIES = [['blocking', 'a'], ['Blocking', 'b'], ['BLOCKING', 'c'], ['LOW', 'd']] as const
+test('hardening C8: a finding severity "blocking" in any letter case is drawn like BLOCKING (error colour, not dim), desktop and terminal', async ($, on) => {
+  const findings = SEVERITIES.map(([severity, origin], i) => ({ severity, origin, what: `w${i}` }))
+  await boot($, on, detailStatus({ rounds: [{ n: 1, verdict: 'NO-GO', findings }] }))
+  for (const surface of ['desktop', 'terminal'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await ui.press({ key: 'detail-t1' })
+    const root = await drawnOf(ui)
+    for (const [severity, origin] of SEVERITIES) {
+      const tag = textNode(root, new RegExp(`^${severity} · ${origin}$`)) as Node
+      expect([surface, severity, tag.props?.color]).toEqual([surface, severity, severity === 'LOW' ? undefined : 'error'])
+      expect([surface, severity, !!tag.props?.dimColor]).toEqual([surface, severity, severity === 'LOW' && surface === 'terminal'])
+    }
+    await ui.press({ key: 'detail-back' })
+    await ui.unmount()
+  }
+})
+
+test('hardening C9: isStuck and isPush also match a kind that carries U+0307 after lowercasing without Turkish rules, and NFD forms; what matched still matches', async () => {
+  const dotted = ['Taki̇ldi', 'TAKİLDİ'.toLowerCase(), 'TAKİLDİ'.normalize('NFD'), 'taki̇ldi · Developer', ' TAKİLDİ'.normalize('NFD')]
+  const before = ['Takıldı', 'Takildi', 'TAKILDI', 'TAKİLDİ', 'takildi · Developer', ' TAKİLDİ', 'takıldı']
+  for (const k of [...dotted, ...before]) expect([k, isStuck(k)]).toEqual([k, true])
+  for (const k of ['Bu takildi mı', 'Takilmis', 'Ürün kararı', '', undefined]) expect([k, isStuck(k)]).toEqual([k, false])
+  const push = ['Push onayı', 'push onayi', 'PUSH ONAYI', 'PUSH ONAYİ', 'PUSH ONAYİ'.toLowerCase(), 'PUSH ONAYİ'.normalize('NFD'), 'Push onayi̇ · main']
+  for (const k of push) expect([k, isPush(k)]).toEqual([k, true])
+  for (const k of ['Push', 'Önce push onayı', 'Ürün kararı', undefined]) expect([k, isPush(k)]).toEqual([k, false])
+})
+
+test('hardening C10 (parser): every cap on a status text counts code points and never cuts a surrogate pair', async () => {
+  // n - 1 letters then two emoji: n + 1 code points, so a cut to n code points keeps the first emoji whole (a cut by code unit would split it).
+  const over = (n: number) => 'a'.repeat(n - 1) + '😀😀'
+  const kept = (n: number) => 'a'.repeat(n - 1) + '😀'
+  const s = parseStatus(
+    detailStatus({
+      wait: over(120),
+      session: { name: over(60) },
+      rounds: [{ n: 1, verdict: over(12), candidate: over(64), note: over(400), findings: [{ severity: over(20), origin: over(20), what: over(300), where: over(200) }] }],
+      evidence: [{ label: over(60), path: over(300) }],
+    }),
+  )
+  const t = s.tasks[0]!
+  const r = t.rounds![0]!
+  const f = r.findings[0]!
+  expect([t.wait, t.session?.name]).toEqual([kept(120), kept(60)])
+  expect([r.verdict, r.candidate, r.note]).toEqual([kept(12), kept(64), kept(400)])
+  expect([f.severity, f.origin, f.what, f.where]).toEqual([kept(20), kept(20), kept(300), kept(200)])
+  expect([t.evidence![0]!.label, t.evidence![0]!.path]).toEqual([kept(60), kept(300)])
+})
+
+test('hardening C10 (other sessions): `cut` counts code points, keeps its …, and never leaves a lone surrogate', async () => {
+  const e = { name: 'p--aaaaaaaa.json', kind: 'file', size: 10, mtimeMs: NOW, isLink: false }
+  // n + 1 code points: the first n - 1 are kept (n - 2 letters and one whole emoji), then …
+  const over = (n: number) => 'a'.repeat(n - 2) + '😀😀😀'
+  const kept = (n: number) => 'a'.repeat(n - 2) + '😀…'
+  const o = otherSession(e, parseStatus(JSON.stringify({ v: 1, decisions: [{ id: 'd', kind: over(120), text: over(400), options: [over(60)] }] })))!
+  expect([o.decisions[0]!.kind, o.decisions[0]!.text, o.decisions[0]!.options[0]]).toEqual([kept(120), kept(400), kept(60)])
+  // 120 emoji are 120 code points (240 code units): not cut.
+  const fits = otherSession(e, parseStatus(JSON.stringify({ v: 1, decisions: [{ id: 'd', kind: '😀'.repeat(120), text: 'x', options: [] }] })))!
+  expect(fits.decisions[0]!.kind).toBe('😀'.repeat(120))
+})
+
+test('hardening C10 (pane): a candidate shortened to 7 characters (card, detail, round) never splits an emoji, desktop and terminal', async ($, on) => {
+  const sha = '😀'.repeat(8)
+  await boot($, on, detailStatus({ candidate: sha, rounds: [{ n: 1, verdict: 'GO', candidate: sha, findings: [] }] }))
+  const seven = '😀'.repeat(7)
+  for (const surface of ['desktop', 'terminal'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    const list = await drawnOf(ui)
+    expect(textNode(list, new RegExp(`^aday ${seven}$`))).toBeDefined()
+    await ui.press({ key: 'detail-t1' })
+    const detail = await drawnOf(ui)
+    expect(strings(detail).some(x => x.includes(seven))).toBe(true)
+    for (const root of [list, detail]) expect(strings(root).filter(x => /\p{Cs}/u.test(x))).toEqual([])
+    await ui.press({ key: 'detail-back' })
+    await ui.unmount()
+  }
+})
+
+// Every string a drawn tree holds: text children and string props (labels, keys, colours).
+const strings = (n: Node | string): string[] =>
+  typeof n === 'string' ? [n] : [...Object.values(n.props ?? {}).filter((v): v is string => typeof v === 'string'), ...(n.children ?? []).flatMap(strings)]
+const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/
+
+test('hardening C11: C0 controls but tab and line feed, DEL and C1 controls are removed from every kept string, so an escape sequence never reaches the pane', async ($, on) => {
+  const x = (v: string) => `${v}\u001b[2J\u009b[2J\u007f\u0000`
+  const file = JSON.stringify({
+    v: 1,
+    lead: x('Lead'),
+    decisions: [{ id: 'd1', kind: x('Tür'), text: x('Soru'), meta: x('meta'), options: [x('Evet'), x('Hayır')] }],
+    tasks: [
+      {
+        id: 't1',
+        title: x('Başlık'),
+        branch: x('dal'),
+        wait: x('bekle'),
+        stage: 'review',
+        roles: [{ name: x('Rol'), state: x('durum'), status: 'running' }],
+        rounds: [{ n: 1, verdict: x('GO'), note: x('not'), findings: [{ severity: x('LOW'), origin: x('kök'), what: x('bulgu'), where: x('yer') }] }],
+        evidence: [{ label: x('etiket'), path: x('/yol') }],
+      },
+    ],
+  })
+  const s = parseStatus(file)
+  // Removed, not replaced by a space; tab and line feed stay.
+  expect(s.tasks[0]?.title).toBe('Başlık[2J[2J')
+  expect(s.decisions[0]?.options).toEqual(['Evet[2J[2J', 'Hayır[2J[2J'])
+  expect(parseStatus(JSON.stringify({ v: 1, tasks: [{ id: 't', title: 'a\tb\nc', stage: 'build' }] })).tasks[0]?.title).toBe('a\tb\nc')
+  await boot($, on, file)
+  for (const surface of ['desktop', 'terminal'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    const list = await drawnOf(ui)
+    await ui.press({ key: 'detail-t1' })
+    const detail = await drawnOf(ui)
+    for (const root of [list, detail]) expect([surface, strings(root).filter(v => CONTROL.test(v))]).toEqual([surface, []])
+    expect(textNode(detail, /^Başlık\[2J\[2J$/)).toBeDefined()
+    await ui.press({ key: 'detail-back' })
+    await ui.unmount()
+  }
+})
+
+test('hardening C11 (other sessions): the same strip applies to another session\'s file before it is drawn', async ($, on) => {
+  const file = JSON.stringify({ v: 1, decisions: [{ id: 'd', kind: 'Tür\u001b[2J', text: 'Soru\u001b[2J', options: ['Evet\u001b[2J'] }] })
+  await bootOthers($, on, 'terminal', [entry('x--bbbbbbbb.json')], { 'x--bbbbbbbb.json': file })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'others-toggle' })
+  const root = await drawnOf(ui)
+  expect(strings(root).filter(v => CONTROL.test(v))).toEqual([])
+  expect(textIn(root, 'Soru[2J')).toBe(true)
+  await ui.unmount()
+})
+
+// Own status file too big. Source: criterion 12 of the hardening brief (cap 1 MiB, the example line, last good view kept, poll goes on).
+const BIG_GOOD = JSON.stringify({ v: 1, tasks: [{ id: 't1', title: 'İyi görev', stage: 'build' }] })
+const sBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], surface: 'desktop' | 'terminal' = 'desktop') => {
+  const disk = { text: BIG_GOOD, mtime: 1, size: 100, reads: 0 }
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.close', () => ({ value: undefined }))
+  on('env.get', () => ({ value: '/Users/x' }))
+  on('fs.exists', () => ({ value: true }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: disk.size, mtimeMs: disk.mtime, isLink: false } }))
+  on('fs.read', () => {
+    disk.reads++
+    return { value: disk.text }
+  })
+  const clock = mock.clock(on)
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/Users/x/Projeler/shop', surface, isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface })
+  const change = async (text: string, size: number) => {
+    Object.assign(disk, { text, size, mtime: disk.mtime + 1 })
+    await clock.advance(500)
+  }
+  return { disk, ui, change, clock }
+}
+
+for (const surface of ['desktop', 'terminal'] as const) {
+  test(`hardening C12 (${surface}): a file over 1 MiB is not read, one short Turkish line says size and limit, the last good view stays, and the poll recovers`, async ($, on) => {
+    const k = await sBoot($, on, surface)
+    const base = k.disk.reads // the reads the start made
+    expect(base).toBeGreaterThan(0)
+    expect(await k.ui.find({ key: 'detail-t1' })).toBeDefined()
+    await k.change('X'.repeat(10), 1300 * 1024)
+    expect(k.disk.reads).toBe(base) // not read
+    const line = await k.ui.find({ type: 'Text', text: /^Durum dosyası çok büyük/ })
+    expect(line?.text).toBe('Durum dosyası çok büyük: 1300 KiB (en çok 1024 KiB)')
+    expect(await k.ui.find({ key: 'detail-t1' })).toBeDefined() // the last good view
+    await k.clock.advance(5000) // the poll goes on, and reads nothing while the file stays too big
+    expect(k.disk.reads).toBe(base)
+    // Exactly 1 MiB is within the cap and is read; the line goes.
+    await k.change(BIG_GOOD.replace('İyi', 'Küçük'), 1024 * 1024)
+    expect(k.disk.reads).toBe(base + 1)
+    expect(await k.ui.find({ type: 'Text', text: /^Durum dosyası çok büyük/ })).toBeUndefined()
+    expect(await k.ui.find({ key: 'detail-t1' })).toBeDefined()
+    await k.ui.unmount()
+  })
+}
+
+test('hardening C12: a file under the cap whose view does not fit the state gets a short Turkish line, never the engine\'s message; the next good file recovers', async ($, on) => {
+  const k = await sBoot($, on)
+  // The stat says 900 KiB (under the cap) but the text read is 5 MiB, so the engine itself refuses the view (its state value limit is 4 MiB).
+  await k.change(JSON.stringify({ v: 1, decisions: [{ id: 'd1', text: 'Y'.repeat(5 * 1024 * 1024), options: [] }] }), 900 * 1024)
+  const lines = (await k.ui.findAll({ type: 'Text', text: /^Durum dosyası/ })).map(n => n.text)
+  expect(lines.length).toBe(1)
+  expect(lines[0]).not.toMatch(/\$\.state|4194304|characters|limit/i)
+  expect(lines[0]!.length).toBeLessThan(80)
+  expect(await k.ui.find({ type: 'Text', text: /İyi görev/ })).toBeDefined() // the last good view
+  await k.change(BIG_GOOD.replace('İyi', 'Yeni'), 100)
+  expect(await k.ui.findAll({ type: 'Text', text: /^Durum dosyası/ })).toEqual([])
+  expect(await k.ui.find({ type: 'Text', text: /Yeni görev/ })).toBeDefined()
+  await k.ui.unmount()
 })

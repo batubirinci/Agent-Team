@@ -27,7 +27,8 @@ resume): read it before writing, keep what you did not finish, and update only w
 start from an empty file.
 
 Write the whole file each time (Write tool, never append), valid JSON, UTF-8. The pane re-reads it
-every few seconds; a field it does not know is ignored, a missing optional field is not drawn.
+every few seconds; a field it does not know is ignored, a missing optional field is not drawn. A file over 1 MiB is not read (the pane
+keeps its last good view and says so), so keep it short; control characters other than tab and line feed are removed from every text.
 
 ```json
 {

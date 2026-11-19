@@ -7,9 +7,18 @@ const ROLE_STATUSES: readonly RoleStatus[] = ['running', 'done', 'waiting', 'blo
 type Obj = Record<string, unknown>
 
 const isObj = (x: unknown): x is Obj => typeof x === 'object' && x !== null && !Array.isArray(x)
-const str = (x: unknown): string | undefined => (typeof x === 'string' && x.trim() ? x : undefined)
-// A string cut to n characters: the file is model-written, a pane line is not a place for an essay.
-const short = (x: unknown, n: number): string | undefined => str(x)?.trim().slice(0, n)
+// C0 controls but tab and line feed, DEL and C1 controls (an escape sequence is one) are removed from every string the file gives.
+const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g
+const str = (x: unknown): string | undefined => {
+  const s = typeof x === 'string' ? x.replace(CONTROL, '') : ''
+  return s.trim() ? s : undefined
+}
+// A string cut to n code points (never between the halves of a surrogate pair): the file is model-written, a pane line is not a place for an essay.
+export const clip = (s: string, n: number) => (s.length <= n ? s : Array.from(s).slice(0, n).join(''))
+const short = (x: unknown, n: number): string | undefined => {
+  const s = str(x)?.trim()
+  return s && clip(s, n)
+}
 // A decision or task id counts as written only if it is 1-64 letters, digits . _ - and no earlier one in its list had it. A made-up id is
 // `#<position>`: `#` is outside that set, so it never equals a written one (and `): ` can never be inside one).
 const ID = /^[\p{L}\p{N}._-]{1,64}$/u
@@ -21,11 +30,17 @@ const num = (x: unknown): number | undefined =>
   typeof x === 'number' && Number.isFinite(x) && x >= 0 ? Math.round(x) : undefined
 const list = (x: unknown): Obj[] => (Array.isArray(x) ? x.filter(isObj) : [])
 
+// A kind as the two rules below read it: trimmed, lower case (Turkish rules), ı as i, and no U+0307 (an İ lowered without Turkish rules, or in NFD, is i + U+0307).
+const kindOf = (kind?: string) => (kind ?? '').trim().normalize('NFD').toLocaleLowerCase('tr').replace(/ı/g, 'i').replace(/\u0307/g, '')
+
 // A decision kind that says the work is stuck ("Takıldı ...", any case, also "takildi"): one rule for the parser and the strip.
-export const isStuck = (kind?: string) => !!kind?.trim().toLocaleLowerCase('tr').replace(/ı/g, 'i').startsWith('takildi')
+export const isStuck = (kind?: string) => kindOf(kind).startsWith('takildi')
 
 // A decision whose kind says it approves an irreversible action ("Push onayı ...", any case, also "push onayi"): never carried by a tool result.
-export const isPush = (kind?: string) => !!kind?.trim().toLocaleLowerCase('tr').replace(/ı/g, 'i').startsWith('push onayi')
+export const isPush = (kind?: string) => kindOf(kind).startsWith('push onayi')
+
+// A finding that blocks, "BLOCKING" in any letter case: one rule for the parser's cap order and for both drawings.
+export const isBlocking = (f: Finding) => f.severity?.toLowerCase() === 'blocking'
 
 // The file is written by the Lead (a model): read it as untrusted data, keep what is well formed.
 export function parseStatus(text: string): Status {
@@ -37,7 +52,7 @@ export function parseStatus(text: string): Status {
   const decisions: Decision[] = list(raw.decisions).flatMap((d, i) => {
     const t = str(d.text)
     if (!t) return []
-    const options = Array.isArray(d.options) ? d.options.filter((o): o is string => !!str(o)).slice(0, 4) : []
+    const options = Array.isArray(d.options) ? d.options.map(o => str(o)).filter((o): o is string => !!o).slice(0, 4) : []
     return [{ id: written(d.id, decisionIds) ?? `#${i + 1}`, kind: str(d.kind), text: t, meta: str(d.meta), task: str(d.task), options }]
   })
 
@@ -59,8 +74,7 @@ export function parseStatus(text: string): Status {
         return what ? [{ severity: short(f.severity, 20), origin: short(f.origin, 20), what, where: short(f.where, 200) }] : []
       })
       // Over the cap, a BLOCKING finding is never dropped for a non-blocking one; the kept ones read BLOCKING first, then file order.
-      const blocking = (f: Finding) => f.severity?.toLowerCase() === 'blocking'
-      const findings = all.length > 10 ? [...all.filter(blocking), ...all.filter(f => !blocking(f))].slice(0, 10) : all
+      const findings = all.length > 10 ? [...all.filter(isBlocking), ...all.filter(f => !isBlocking(f))].slice(0, 10) : all
       // A round numbered 0 (or with no valid number) is shown by its position.
       return [{ n: num(r.n) || j + 1, verdict, candidate: short(r.candidate, 64), note: short(r.note, 400), findings }]
     }).slice(-10)
@@ -247,7 +261,7 @@ const OTHER_KIND = 120
 const OTHER_TEXT = 400
 const OTHER_OPTION = 60
 const OTHER_DECISIONS = 10
-const cut = (x: string, n: number) => (x.length > n ? `${x.slice(0, n - 1)}…` : x)
+const cut = (x: string, n: number) => (Array.from(x).length > n ? `${clip(x, n - 1)}…` : x)
 
 // One other session from its parsed file, or undefined when it asks nothing. <project>--<id8>.json is "<project> · <id8>",
 // <project>.json is "<project>"; the time is the file's updatedAt, else its mtime (local). `count` and `stuckCount` are of ALL

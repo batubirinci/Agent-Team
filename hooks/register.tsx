@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Decision, DirEntry, Mode, Other, Outbox, Press, RoleStatus, SessionRecord, StatusView, Task, TaskState } from '../types'
-import { ANNOUNCE, ASK_WHERE, KARAR, OPEN_ROW, STAGE_LABELS, baseName, countStates, decisionTask, detailScroll, expandHome, flat, isInside, isPush, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, reopenLine, stamp, stopped, trimSlash, withKarar } from './status'
+import type { Decision, DirEntry, Mode, Other, Outbox, Press, RoleStatus, SessionRecord, Status, StatusView, Task, TaskState } from '../types'
+import { ANNOUNCE, ASK_WHERE, KARAR, OPEN_ROW, STAGE_LABELS, baseName, clip, countStates, decisionTask, detailScroll, expandHome, flat, isBlocking, isInside, isPush, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, reopenLine, stamp, stopped, trimSlash, withKarar } from './status'
 import { AMBER, BAD, CLAY, MUTED, OK, TRACK, dotSvg, meterSvg, stagesSvg } from './svg'
 import { QUEUED, QUEUED_PUSH, TBOX, hk, termBanner, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termTasks, termUsage } from './terminal'
 
@@ -196,20 +196,30 @@ async function setView($: EngineInterface, view: StatusView) {
   if (open && !view.data?.tasks.some(t => t.id === open)) await update($, detail, () => null)
 }
 
+// The own file is read only up to this size: the pane's state holds the parsed view (4 MiB at most), and a file this big is not a status.
+const MAX_KIB = 1024
 async function refresh($: EngineInterface, file: string) {
   const prev = await read($, status)
   if (!(await $.fs.exists(file))) {
     if (prev.file !== file || prev.data || prev.error) await setView($, { file, mtime: 0, data: null, error: null })
     return
   }
-  const { mtimeMs } = await $.fs.stat(file)
+  const { mtimeMs, size } = await $.fs.stat(file)
   if (prev.file === file && prev.mtime === mtimeMs) return
+  // Every failure keeps the last good view and shows one Turkish line; the next change of the file tries again.
+  const fail = (error: string) => setView($, { file, mtime: mtimeMs, data: prev.data, error })
+  if (size > MAX_KIB * 1024) return fail(`Durum dosyası çok büyük: ${Math.ceil(size / 1024)} KiB (en çok ${MAX_KIB} KiB)`)
+  let data: Status
   try {
     const text = await $.fs.read(file)
-    await setView($, { file, mtime: mtimeMs, data: parseStatus(typeof text === 'string' ? text : ''), error: null })
+    data = parseStatus(typeof text === 'string' ? text : '')
   } catch (err) {
-    const error = err instanceof Error ? err.message : String(err)
-    await setView($, { file, mtime: mtimeMs, data: prev.data, error })
+    return fail(`Durum dosyası okunamadı: ${err instanceof Error ? err.message : String(err)}`)
+  }
+  try {
+    await setView($, { file, mtime: mtimeMs, data, error: null })
+  } catch {
+    await fail("Durum dosyası pane'in durum sınırına sığmıyor (en çok 4 MiB)")
   }
 }
 
@@ -520,7 +530,7 @@ export const register: Register = (on, options) => {
     const openId = await read($, detail)
     const open = openId ? data?.tasks.find(t => t.id === openId) : undefined
 
-    const errorLine = error && <Text color="error" size="caption">Durum dosyası okunamadı: {error}</Text>
+    const errorLine = error && <Text color="error" size="caption">{error}</Text>
 
     const decisionCard = (d: Decision) => {
       const { kind, blocked } = decisionTask(d, data?.tasks ?? [])
@@ -650,7 +660,7 @@ export const register: Register = (on, options) => {
         )}
         {t.candidate && (
           <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="sm">
-            <Text size="caption" mono dimColor>aday {t.candidate.slice(0, 7)}</Text>
+            <Text size="caption" mono dimColor>aday {clip(t.candidate, 7)}</Text>
             <Box flexDirection="row" gap="xs">
               {!!t.blocking && (
                 <Box key={`chip-blocking-${t.id}`} backgroundColor={CHIP_BLOCKING} paddingX="xs">
@@ -683,7 +693,7 @@ export const register: Register = (on, options) => {
               {reason(t)}
             </Box>
             {t.branch && <Text size="caption" mono dimColor wrap="truncate-end">{t.branch}</Text>}
-            {t.candidate && <Text size="caption" mono dimColor>{t.candidate.slice(0, 7)}</Text>}
+            {t.candidate && <Text size="caption" mono dimColor>{clip(t.candidate, 7)}</Text>}
             {last && <Text size="caption" dimColor>{`${last.verdict} · ${last.n} tur`}</Text>}
           </Box>
           {t.rounds && (
@@ -693,13 +703,13 @@ export const register: Register = (on, options) => {
                 <Box key={`round-${i}`} {...card}>
                   <Box flexDirection="row" justifyContent="space-between" gap="sm">
                     <Text weight="semibold" color={r.verdict === 'GO' ? 'success' : r.verdict.startsWith('NO') ? 'error' : undefined}>{`Tur ${r.n} · ${r.verdict}`}</Text>
-                    {r.candidate && <Text size="caption" mono dimColor>{r.candidate.slice(0, 7)}</Text>}
+                    {r.candidate && <Text size="caption" mono dimColor>{clip(r.candidate, 7)}</Text>}
                   </Box>
                   {r.findings.map((f, j) => {
                     const tag = [f.severity, f.origin].filter(Boolean).join(' · ')
                     return (
                     <Box key={`round-${i}-f-${j}`} flexDirection="column">
-                      {!!tag && <Text size="caption" weight="medium" color={f.severity === 'BLOCKING' ? 'error' : undefined}>{tag}</Text>}
+                      {!!tag && <Text size="caption" weight="medium" color={isBlocking(f) ? 'error' : undefined}>{tag}</Text>}
                       <Text>{f.what}</Text>
                       {f.where && <Text size="caption" mono dimColor>{f.where}</Text>}
                     </Box>
