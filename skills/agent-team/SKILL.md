@@ -21,7 +21,7 @@ message when the owner turns the switch on) every owner message is a Lead reques
 `/agent-team` is needed, and this skill stays in force until the plugin says the mode is off. A
 press in the pane reaches the Lead as an owner message: one or more `Karar (<id>): <option>` lines in one message answer those
 decisions (on the terminal the pane writes them into the owner's message box and the owner sends them; remove each answered decision from the status
-file; a push approval given this way is still the owner's approval for that exact action), `Pause` runs Pause, `Devam et` resumes.
+file; a push approval given this way is still the owner's approval for that exact action), `Pause` runs Pause, `Devam et` resumes, `Nerede kaldık?` runs "Geri dönüş" below.
 While you work, a press may instead arrive on a tool result as a reminder that starts `[Agent Team pane] Sahip pane'de bastı:`
 from the agent-team plugin: it is the owner's press and is handled like the same lines in an owner message (`Karar …` closes
 that decision, `Pause` runs Pause, `Devam et` resumes). A push approval never counts when it arrives that way (the plugin sends
@@ -163,19 +163,42 @@ unverified premise is marked so.
   Every request to the owner (a question, or an action only the owner can take) is written at once as a
   decision in the status file (`kind` e.g. `Takıldı` or `Ürün kararı`, `task` = the task it concerns,
   `options` = the choices) and removed when answered; a task that waits on another gets `wait`.
-- **Evidence lives outside the scratchpad.** The session scratchpad can be deleted when the chat
-  changes; worktrees may live there, but evidence, reports and gate logs go to the persistent
-  evidence root named in the Lead's memory (`<evidence root>/<candidate SHA>/`), and every
-  worktree is committed before the chat ends.
+- **Evidence lives outside the scratchpad.** The session scratchpad is under `/private/tmp`, which
+  macOS cleans (files untouched for about 3 days: a session reopened after 5 days found worktree
+  files and helper scripts gone). Evidence, reports and gate logs go to the persistent evidence
+  root named in the Lead's memory (`<evidence root>/<candidate SHA>/`); so do worktrees and helper
+  files (`<evidence root>/worktrees/<task>/…`), never the scratchpad; and every worktree is
+  committed before the chat ends.
 - **Limits — stop safely before them:** before starting new work, read the usage view (5-hour
   and weekly). 5-hour ≥ 95 % or weekly ≥ 97 %, or the Lead's context nearing ~600k (the owner's
   `/context` is authoritative; transcript growth is only an estimate) → start nothing new, run
   Pause, write a hand-off note and give the owner one paste-ready continuation prompt for a fresh
-  chat. Agents cannot be resumed from a new chat; the prompt carries fresh briefs.
+  chat. A different chat cannot resume this chat's agents, so the prompt carries fresh briefs; the
+  same session reopened can continue them by name (measured: `SendMessage to: "<name>"` answered
+  "Resuming agent …" in the reopened session, so "Geri dönüş" below).
 - **Long-run watch:** while a background run (Codex, Helper, subagent) is active, check its output
   at bounded intervals. After 20 min without progress (40 min for a Fable role at high — its turns
   are long and quiet), inspect it and tell the owner; silence alone does not prove a hang. A hung
   task-owned command is stopped with its child processes and the cleanup proven.
+
+## Geri dönüş (a session opened again)
+
+Trigger: the per-prompt context line that starts `[Agent Team · yeniden açılış]` (the plugin adds it once
+to the first prompt after a reopen), or the owner's `Nerede kaldık?` press. Every agent of the old
+process is gone, so a role the status file calls `running` is stopped, whatever the file says. Do this
+first, before the owner's own request:
+
+1. Read the status file. Treat every `running` role as stopped. For each: its report file and its
+   branch tip (`git -C <worktree> log -1`).
+2. Continue it with `SendMessage to: "<agent name>"` when its worktree is intact (the same reopened
+   session can resume its agents by name); otherwise start it again with a fresh brief.
+3. `git worktree prune`; a missing worktree is re-added from its branch
+   (`git worktree add <evidence root>/worktrees/<task>/dev <branch>`). Say plainly what uncommitted
+   work was lost; commits on the branch are safe.
+4. Rewrite the status file (roles, stages, `updatedAt`): this also clears the pane's banner.
+5. Give the owner a short "nerede kaldık" summary: what each task was doing, what stopped, what was lost.
+6. Restart what had stopped, without asking. Push approvals and open owner decisions keep waiting for
+   the owner as before.
 
 ## Flow
 
@@ -192,7 +215,7 @@ unverified premise is marked so.
    acceptance test in "Done when". The Lead fixes one agreed set of criteria before the Developer
    starts; a case discovered later still goes to the Lead.
 2. **Build** — the Lead opens the Developer's worktree
-   (`git worktree add -b <branch> <scratchpad>/dev-<task> <base>` + the project's dependency setup
+   (`git worktree add -b <branch> <evidence root>/worktrees/<task>/dev <base>` + the project's dependency setup
    inside it, or the project's worktree script); the Developer runs no command in the owner's
    checkout. It implements with tests and hands off one **candidate SHA**; verify it with Git
    before routing. The Lead records the owner's checkout branch, HEAD and `git status` at start and
@@ -290,7 +313,7 @@ yes for that session by name. Resume only on the owner's word.
 
 ## Review worktrees (disposable)
 
-For each QA: `git worktree add --detach <scratchpad>/review-<qa>-<sha> <candidate SHA>`, then the
+For each QA: `git worktree add --detach <evidence root>/worktrees/<task>/review-<qa>-<sha> <candidate SHA>`, then the
 project's dependency setup inside that worktree only (offline/frozen where available). The
 owner's and the Developer's checkouts stay outside GPT QA's writable sandbox
 (`-C <its review worktree>`). Before testing, verify the project's own packages resolve into that

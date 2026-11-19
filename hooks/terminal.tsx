@@ -251,9 +251,19 @@ export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void) {
   )
 }
 
-export function termHint({ Text }: UI, hasOthers = false) {
+// A reopened session: what the pane knows, and a button that asks the Lead where things stand (`note`: "sırada", "gönderildi" or nothing).
+export function termBanner({ Box, Button, Text }: UI, text: string, note: string, ask: () => void) {
+  return (
+    <Box {...TBOX} borderColor="warning">
+      <Text color="warning">{text}</Text>
+      <Button key="reopen-ask" label={note ? `Nerede kaldık? · ${note}` : 'Nerede kaldık?'} onPress={ask} {...hk('r')} />
+    </Box>
+  )
+}
+
+export function termHint({ Text }: UI, hasOthers = false, hasAsk = false) {
   const k = (s: string) => <Text color="claude">{s}</Text>
-  return <Text dimColor>{k('a-o')} ayrıntı  {k('1-9')} karar seç  {hasOthers && <Text>{k('v')} diğer  </Text>}{k('p')} pause  {k('esc')} çık</Text>
+  return <Text dimColor>{k('a-o')} ayrıntı  {k('1-9')} karar seç  {hasOthers && <Text>{k('v')} diğer  </Text>}{hasAsk && <Text>{k('r')} nerede kaldık  </Text>}{k('p')} pause  {k('esc')} çık</Text>
 }
 
 // Other team sessions' decisions, read-only: no number keys, options as dim text; "v" opens and closes (approved design "Diğer oturumların kararları").

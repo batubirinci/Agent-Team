@@ -3463,3 +3463,225 @@ test('criterion 12: opening a detail scrolls to the pane start, back to the card
   expect(await ui.find({ key: 't-tr' })).toBeDefined()
   await ui.unmount()
 })
+
+// Coming back another day (task "reopen", criteria R1-R7 of analyst-report.md §3 plus owner Q4). Fixture: a store record for the session id,
+// empty atoms, a status file written 2026-11-14 22:10 (+03:00), a clock at 2026-11-19 13:25 (+03:00) and a file mtime before the start.
+// Every expected string is spelled out by hand from those: 14 Kas, 22:10, 5 gün (19 - 14), one running role = 1, then 0 running tasks.
+const R_NOW = Date.parse('2026-11-19T13:25:00+03:00')
+const R_OLD_MTIME = Date.parse('2026-11-14T22:10:00+03:00')
+const R_PREFIX = '[Agent Team · yeniden açılış]'
+const R_TASK = { id: 't1', title: 'Seçim kutusu taşması', stage: 'build', roles: [{ name: 'QA · GPT-6 Astra', state: 'inceliyor', status: 'running' }, { name: 'Analyst', state: 'bitti', status: 'done' }] }
+const reopenStatus = (tasks: unknown[] = [R_TASK], updatedAt = '2026-11-14T22:10:00+03:00') => JSON.stringify({ v: 1, updatedAt, lead: 'Opus 5.5', tasks })
+const BANNER = /^Oturum yeniden açıldı · durum 5 gün önceki · çalışıyor görünen 1 rol durmuş olabilir$/
+
+const rBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o: { status?: string; record?: boolean; surface?: 'desktop' | 'terminal'; placed?: boolean } = {}) => {
+  const disk = { text: o.status ?? reopenStatus(), mtime: R_OLD_MTIME }
+  const log = { sent: [] as string[], contexts: [] as (readonly string[] | undefined)[], opens: 0 }
+  const state = { id: ID_OLD }
+  const clock = mock.clock(on, { now: R_NOW })
+  const store = new Map<string, unknown>(o.record === false ? [] : [[KEY_OLD, rec(OLD, SWITCH, { announced: OLD })]])
+  on('store.get', (_, e) => ({ value: store.get(e.key) }))
+  on('store.set', (_, e) => {
+    store.set(e.key, JSON.parse(JSON.stringify(e.value)))
+    return { value: undefined }
+  })
+  on('store.delete', () => ({ value: undefined }))
+  on('store.keys', () => ({ value: [...store.keys()] }))
+  const atoms = new Map<string, { value: unknown; version: number }>()
+  const slot = (e: { plugin: string; key: string }) => `${e.plugin}/${e.key}`
+  on('state.get', (_, e) => ({ value: { value: atoms.get(slot(e))?.value, version: atoms.get(slot(e))?.version ?? 0 } }))
+  on('state.set', (_, e) => {
+    const version = atoms.get(slot(e))?.version ?? 0
+    if (e.ifVersion !== undefined && e.ifVersion !== version) return { value: { isSet: false, version } }
+    atoms.set(slot(e), { value: e.value, version: version + 1 })
+    return { value: { isSet: true, version: version + 1 } }
+  })
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => {
+    log.opens++
+    return { value: o.placed === false ? { isPlaced: false as const, reason: 'no surface' } : { isPlaced: true as const } }
+  })
+  on('ui.close', () => ({ value: undefined }))
+  on('env.get', () => ({ value: '/Users/x' }))
+  on('session.id', () => ({ value: state.id }))
+  on('fs.exists', () => ({ value: true }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: disk.mtime, isLink: false } }))
+  on('fs.read', () => ({ value: disk.text }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.attach', (_, e) => ({ clientId: e.clientId }))
+  on('session.append', (_, e, next) => next(e))
+  on('prompt.submit', (_, e) => {
+    log.sent.push(e.text)
+    log.contexts.push(e.context)
+    return { text: e.text }
+  })
+  const start = () => $.session.start({ cwd: '/Users/x/Projeler/shop', surface: o.surface ?? 'desktop', isInteractive: true })
+  await start()
+  const mount = () => $.ui.mount({ ...PANE, surface: o.surface ?? 'desktop' })
+  const prompt = async (extra: object = {}) => {
+    await $.prompt.submit({ wait: false, origin: { kind: 'composer' }, text: 'merhaba', ...extra } as never)
+    return (log.contexts.at(-1) ?? []).filter(c => c.startsWith(R_PREFIX))
+  }
+  const rewrite = async (text = disk.text) => {
+    disk.text = text
+    disk.mtime = R_NOW + 1000
+    await clock.advance(POLL)
+  }
+  const clear = async (id: string) => {
+    state.id = id
+    atoms.clear()
+    await clock.advance(POLL)
+  }
+  return { disk, log, state, clock, start, mount, prompt, rewrite, clear }
+}
+const bannerOf = async (ui: Awaited<ReturnType<Awaited<ReturnType<typeof rBoot>>['mount']>>) => ui.find({ type: 'Text', text: /Oturum yeniden açıldı/ })
+
+test('R1 (desktop): a reopened session shows the day in the header, the banner with the stopped count and age, nothing counted as running, and the Nerede kaldık? button', async ($, on) => {
+  const r = await rBoot($, on)
+  const ui = await r.mount()
+  expect(await ui.find({ type: 'Text', text: /^Lead · Opus 5\.5 · 14 Kas 22:10'de güncellendi$/ })).toBeDefined()
+  expect((await bannerOf(ui))?.text).toMatch(BANNER)
+  expect(await ui.find({ type: 'Text', text: /^0 çalışıyor · 1 bekliyor · 1 görev$/ })).toBeDefined()
+  const dots = (await ui.findAll({ type: 'Svg' })).filter(s => s.props.width === 8).map(s => s.props.alt)
+  expect(dots).toEqual(['boşta', 'bitti'])
+  expect(await ui.find({ type: 'Text', text: /^durmuş olabilir · inceliyor$/ })).toBeDefined()
+  expect((await ui.find({ key: 'reopen-ask' }))?.props.label).toBe('Nerede kaldık?')
+  await ui.press({ key: 'reopen-ask' })
+  expect(r.log.sent).toEqual(['Nerede kaldık?']) // an owner message: the pane press goes through the outbox like Pause
+  await ui.unmount()
+})
+
+test('R1 (terminal): the same banner, the day in the header, 0 running in the count, the button on r', async ($, on) => {
+  const r = await rBoot($, on, { surface: 'terminal' })
+  const ui = await r.mount()
+  const root = await drawnOf(ui)
+  expect(textNode(root, /14 Kas 22:10/)).toBeDefined()
+  expect(textNode(root, BANNER)).toBeDefined()
+  expect(textNode(root, /^GÖREVLER · 0 çalışıyor · 1 bekliyor$/)).toBeDefined()
+  expect(hotkeys(root)['reopen-ask']).toBe('r')
+  await ui.press({ key: 'reopen-ask' })
+  expect(r.log.sent).toEqual(['Nerede kaldık?'])
+  await ui.unmount()
+})
+
+test('R2: once the file is rewritten (mtime after the start) there is no banner and the running role is drawn and counted as running', async ($, on) => {
+  const r = await rBoot($, on)
+  await r.rewrite()
+  const ui = await r.mount()
+  expect(await bannerOf(ui)).toBeUndefined()
+  expect(await ui.find({ key: 'reopen-ask' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^1 çalışıyor · 1 görev$/ })).toBeDefined()
+  expect((await ui.findAll({ type: 'Svg' })).filter(s => s.props.width === 8).map(s => s.props.alt)).toEqual(['çalışıyor', 'bitti'])
+  // the day stays in the header: it is still the 14th's file
+  expect(await ui.find({ type: 'Text', text: /14 Kas 22:10/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('R3: the first prompt after the start carries exactly one reopen line (prefix, last write, task · role of the one running role, the step name); the second carries none', async ($, on) => {
+  const r = await rBoot($, on)
+  const first = await r.prompt()
+  expect(first).toHaveLength(1)
+  expect(first[0]).toContain('14 Kas 22:10')
+  expect(first[0]).toContain('Seçim kutusu taşması · QA · GPT-6 Astra')
+  expect(first[0]).not.toContain('Analyst')
+  expect(first[0]).toContain('Geri dönüş')
+  expect(await r.prompt()).toEqual([])
+})
+
+test('R3: a prompt the engine marks isMeta (a notification) takes the line too, without the Lead rule; the line is not repeated after it', async ($, on) => {
+  const r = await rBoot($, on)
+  const meta = await r.prompt({ isMeta: true })
+  expect(meta).toHaveLength(1)
+  expect((r.log.contexts.at(-1) ?? []).some(c => c.includes("Sen Lead'sin"))).toBe(false)
+  expect(await r.prompt()).toEqual([])
+})
+
+test('R3: when the Lead already rewrote the file before the first prompt there is no reopen line', async ($, on) => {
+  const r = await rBoot($, on)
+  await r.rewrite()
+  expect(await r.prompt()).toEqual([])
+})
+
+test('R4: a new session (no record) shows no banner and sends no line', FOLDERS, async ($, on) => {
+  const r = await rBoot($, on, { record: false })
+  const ui = await r.mount()
+  expect(await bannerOf(ui)).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^Lead · Opus 5\.5 · 14 Kas 22:10'de güncellendi$/ })).toBeDefined() // an old file still shows its day
+  await ui.unmount()
+  expect(await r.prompt()).toEqual([])
+})
+
+test('R4: a hot reload (the atom already holds the file) shows no banner and sends no line', FOLDERS, async ($, on) => {
+  const r = await rBoot($, on, { record: false })
+  await r.start() // the second start: a record exists now and the atom holds the file
+  const ui = await r.mount()
+  expect(await bannerOf(ui)).toBeUndefined()
+  await ui.unmount()
+  expect(await r.prompt()).toEqual([])
+})
+
+test('R4: after /clear (no session.start) there is no banner and no line, though the file is still the old one', async ($, on) => {
+  const r = await rBoot($, on)
+  await r.clear(ID_NEW)
+  const ui = await r.mount()
+  expect(await ui.find({ type: 'Text', text: /Lead · Opus 5\.5/ })).toBeDefined() // the file is read again on the same path
+  expect(await bannerOf(ui)).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^1 çalışıyor · 1 görev$/ })).toBeDefined() // not stopped: the owner cleared, nothing was reopened
+  await ui.unmount()
+  expect(await r.prompt()).toEqual([])
+})
+
+test('R5: a status written on the clock\'s own day shows the clock only, as before', async ($, on) => {
+  const r = await rBoot($, on, { status: reopenStatus([R_TASK], '2026-11-19T08:05:00+03:00') })
+  const ui = await r.mount()
+  expect(await ui.find({ type: 'Text', text: /^Lead · Opus 5\.5 · 08:05'de güncellendi$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Kas/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('R6 / Q4: in team mode a session.attach asks ui.open again, and an answer of isPlaced:false breaks nothing', async ($, on) => {
+  const r = await rBoot($, on, { placed: false })
+  await r.clock.advance(0)
+  expect(r.log.opens).toBe(1) // at session.start
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+  expect(r.log.opens).toBe(2)
+  const ui = await r.mount() // the pane still draws
+  expect(await ui.find({ type: 'Text', text: /Lead · Opus 5\.5/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('R6: with team mode off a session.attach opens nothing', async ($, on) => {
+  const r = await rBoot($, on, { record: false })
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+  expect(r.log.opens).toBe(0)
+})
+
+test('R7: a task that carries `session` (a live task session) is never drawn as stopped, and is not in the banner count nor the line', async ($, on) => {
+  const live = { ...R_TASK, id: 't2', title: 'Ayrı oturum', session: { name: 'gorev-2' } }
+  const r = await rBoot($, on, { status: reopenStatus([R_TASK, live]) })
+  const ui = await r.mount()
+  expect((await bannerOf(ui))?.text).toMatch(BANNER) // still 1 stopped role, the t1 one
+  expect(await ui.find({ type: 'Text', text: /^1 çalışıyor · 1 bekliyor · 2 görev$/ })).toBeDefined()
+  expect((await ui.findAll({ type: 'Svg' })).filter(s => s.props.width === 8).map(s => s.props.alt)).toEqual(['boşta', 'bitti', 'çalışıyor', 'bitti'])
+  await ui.unmount()
+  const line = (await r.prompt())[0] ?? ''
+  expect(line).toContain('Seçim kutusu taşması · QA · GPT-6 Astra')
+  expect(line).not.toContain('Ayrı oturum')
+})
+
+test('R7 (parser): `session` is kept only as { name } with a non-empty name', async () => {
+  const one = (session: unknown) => parseStatus(JSON.stringify({ v: 1, tasks: [{ id: 't1', title: 'G', stage: 'build', session }] })).tasks[0]?.session
+  expect(one({ name: 'gorev-2' })).toEqual({ name: 'gorev-2' })
+  expect(one({ name: '' })).toBeUndefined()
+  expect(one('gorev-2')).toBeUndefined()
+  expect(one(undefined)).toBeUndefined()
+})
+
+test('a reopened session whose roles are all done still shows the banner (no stopped count) and the line says no role looked running', async ($, on) => {
+  const done = { ...R_TASK, roles: [{ name: 'Analyst', state: 'bitti', status: 'done' }] }
+  const r = await rBoot($, on, { status: reopenStatus([done]) })
+  const ui = await r.mount()
+  expect((await bannerOf(ui))?.text).toBe('Oturum yeniden açıldı · durum 5 gün önceki')
+  await ui.unmount()
+  expect((await r.prompt())[0]).toContain('Çalışıyor görünen rol yok')
+})

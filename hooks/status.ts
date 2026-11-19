@@ -65,6 +65,7 @@ export function parseStatus(text: string): Status {
     // A task with no id in the file gets one for the UI only; a decision can name only an id that is written.
     const written = str(t.id)
     const id = written ?? `t${i + 1}`
+    const sessionName = isObj(t.session) ? short(t.session.name, 60) : undefined
     const wait = short(t.wait, 120)
     const asked = written ? decisions.filter(d => d.task === written) : []
     const blocked = roles.find(r => r.status === 'blocked')
@@ -86,6 +87,7 @@ export function parseStatus(text: string): Status {
       state,
       reason,
       roles,
+      ...(sessionName && { session: { name: sessionName } }),
       ...(rounds.length > 0 && { rounds }),
       ...(evidence.length > 0 && { evidence }),
     }]
@@ -118,6 +120,44 @@ export const isInside = (cwd: string, folders: readonly string[]) =>
 
 // "14:32" from an ISO time, in the time written there (the Lead writes local time with offset).
 export const clockOf = (iso?: string) => iso?.match(/T(\d{2}:\d{2})/)?.[1]
+
+const MONTHS = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara']
+
+// An ISO time as the pane writes it: "14 Kas 22:10" when its written day is not `now`'s (local) day, else "22:10"; `days` is how many
+// days before `now`'s day it was written (0: today, or `now` unknown).
+export function stamp(iso: string | undefined, now: number) {
+  const m = iso?.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}:\d{2})/)
+  if (!m) return { text: undefined, days: 0 }
+  const t = Number.isFinite(now) ? new Date(now) : undefined
+  const days = t ? Math.max(0, Math.round((Date.UTC(t.getFullYear(), t.getMonth(), t.getDate()) - Date.UTC(+m[1]!, +m[2]! - 1, +m[3]!)) / 86_400_000)) : 0
+  return { text: days ? `${+m[3]!} ${MONTHS[+m[2]! - 1]} ${m[4]}` : m[4], days }
+}
+
+// A reopened session (a resume): the roles the file calls running belong to a process that is gone. They are drawn stopped, their task
+// no longer running, and counted. A task that carries `session` is a live task session's: left as it is.
+export function stopped(s: Status) {
+  let count = 0
+  const tasks = s.tasks.map((t): Task => {
+    if (t.session || !t.roles.some(r => r.status === 'running')) return t
+    const roles = t.roles.map((r): Role => (r.status === 'running' ? (count++, { ...r, status: 'idle', state: ['durmuş olabilir', r.state].filter(Boolean).join(' · ') }) : r))
+    return { ...t, roles, ...(t.state === 'running' && { state: 'waiting' as const, reason: t.wait }) }
+  })
+  return { data: { ...s, tasks }, count }
+}
+
+// The press that asks the Lead where things stand, and the fixed prefix of the one context line a reopened session's first prompt carries.
+export const ASK_WHERE = 'Nerede kaldık?'
+export const REOPEN = '[Agent Team · yeniden açılış]'
+
+export function reopenLine(s: Status, now: number) {
+  const names = s.tasks.filter(t => !t.session).flatMap(t => t.roles.filter(r => r.status === 'running').map(r => `${t.title} · ${r.name}`))
+  const when = stamp(s.updatedAt, now).text
+  return [
+    `${REOPEN} Oturum yeniden açıldı; durum dosyasının son yazımı ${when ?? 'bilinmiyor'}.`,
+    names.length ? `Çalışıyor görünen roller (eski sürecin işiydi, durmuştur): ${names.slice(0, 10).join('; ')}.` : 'Çalışıyor görünen rol yok.',
+    `agent-team skill'inin "Geri dönüş" adımını çalıştır.`,
+  ].join(' ')
+}
 
 export function summary(s: Status | null): string {
   if (!s) return 'durum dosyası henüz yok'

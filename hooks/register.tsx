@@ -2,9 +2,9 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Decision, DirEntry, Mode, Other, Outbox, Press, RoleStatus, SessionRecord, StatusView, Task, TaskState } from '../types'
-import { ANNOUNCE, KARAR, OPEN_ROW, STAGE_LABELS, baseName, clockOf, countStates, decisionTask, detailScroll, expandHome, isInside, isPush, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, trimSlash, withKarar } from './status'
+import { ANNOUNCE, ASK_WHERE, KARAR, OPEN_ROW, STAGE_LABELS, baseName, countStates, decisionTask, detailScroll, expandHome, isInside, isPush, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, reopenLine, stamp, stopped, trimSlash, withKarar } from './status'
 import { AMBER, BAD, CLAY, MUTED, OK, TRACK, dotSvg, meterSvg, stagesSvg } from './svg'
-import { QUEUED, QUEUED_PUSH, TBOX, hk, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termTasks, termUsage } from './terminal'
+import { QUEUED, QUEUED_PUSH, TBOX, hk, termBanner, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termTasks, termUsage } from './terminal'
 
 const PANE = 'agent-team'
 const PANE_OPEN = { id: PANE, title: 'Agent Team', columns: 48 } as const
@@ -267,6 +267,22 @@ async function sweep($: EngineInterface) {
 // `followed` is what session.start settled on: the status folder, the file it reads, the last session id seen.
 const followed = { dir: '', file: '', last: '' }
 
+// A resumed session (a store record, empty atoms) in team mode: when it started (the pane warns while the status file is older), and
+// whether its first prompt still owes the Lead the reopen line. since 0: not reopened (a new session, a reload, /clear).
+const reopen = { since: 0, line: false }
+
+// The reopen line, once: the first prompt of any kind (commands excepted) takes it, unless the Lead already rewrote the file.
+async function takeReopen($: EngineInterface) {
+  if (!reopen.line) return undefined
+  reopen.line = false
+  try {
+    const { data, mtime } = await read($, status)
+    return data && mtime < reopen.since ? reopenLine(data, await $.clock.now()) : undefined
+  } catch {
+    return undefined
+  }
+}
+
 async function follow($: EngineInterface) {
   const { dir, file, last: was } = followed
   if (!dir) return
@@ -275,6 +291,7 @@ async function follow($: EngineInterface) {
     const id = String(await $.session.id().catch(() => ''))
     if (!id || id === was) return
     followed.last = id
+    Object.assign(reopen, { since: 0, line: false }) // /clear: the owner cleared, nothing was reopened
     // The path comes back first, record or none: a session that never was a team session has no record, and a /team
     // before the next poll must not read the reset (empty) path.
     await refresh($, file)
@@ -323,7 +340,8 @@ export const register: Register = (on, options) => {
     const sid = String(await $.session.id().catch(() => ''))
     const rec = sid ? parseRecord(await $.store.get(`session:${sid}`).catch(() => undefined), dir) : undefined
     let file = ''
-    for (const old of [(await read($, status)).file, rec?.file]) if (!file && old && (await $.fs.exists(old))) file = old
+    const held = (await read($, status)).file
+    for (const old of [held, rec?.file]) if (!file && old && (await $.fs.exists(old))) file = old
     if (!file) file = `${dir}/${baseName(e.cwd)}${sid ? `--${sid.slice(0, 8)}` : ''}.json`
     Object.assign(followed, { dir, file, last: sid })
     let m = await read($, mode)
@@ -331,9 +349,11 @@ export const register: Register = (on, options) => {
       const to: Mode | undefined = isInside(e.cwd, parseFolders(options.teamFolders, home)) ? { isOn: true, source: 'folder' } : rec?.mode.isOn ? rec.mode : undefined
       if (to) await update($, mode, () => (m = to))
     }
+    reopen.since = m.isOn && !held && rec ? await $.clock.now().catch(() => 0) : 0
+    reopen.line = reopen.since > 0
     let announced = rec?.announced
     if (m.isOn) {
-      void $.ui.open(PANE_OPEN)
+      void $.ui.open(PANE_OPEN).catch(() => undefined) // not placed (a narrow terminal, no surface yet): session.attach asks again
       // The path goes to the Lead once per path (the store says so): a reload or a resume does not repeat it.
       if (announced !== file) await announce($, file).then(() => (announced = file), () => undefined)
     }
@@ -352,6 +372,12 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // A surface joined: a pane opened unasked at the start may not have been placed then (F11), so ask again. The answer changes nothing here.
+  on('session.attach', async ($, e, next) => {
+    if ((await read($, mode)).isOn) await $.ui.open(PANE_OPEN).catch(() => undefined)
+    return next(e)
+  })
+
   // /clear ends the old session and the new id shows a moment later: look soon, not only at the next poll, so a quit right after still leaves a record.
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') $.clock.after(SOON_MS, () => follow($))
@@ -363,9 +389,11 @@ export const register: Register = (on, options) => {
   // thread's system prompt does not change.
   on('prompt.submit', async ($, e, next) => {
     await follow($)
-    if (e.command || e.isMeta || !(await read($, mode)).isOn) return next(e)
+    if (e.command || !(await read($, mode)).isOn) return next(e)
     const { file } = await read($, status)
-    return next({ ...e, context: [...(e.context ?? []), leadText(file)] })
+    const line = await takeReopen($)
+    const added = [...(e.isMeta ? [] : [leadText(file)]), ...(line ? [line] : [])]
+    return next(added.length ? { ...e, context: [...(e.context ?? []), ...added] } : e)
   })
 
   // Lead turns now running (a set of ids: a queued prompt's turn starts before the old one completes). A role agent's turn is not the Lead's.
@@ -468,7 +496,12 @@ export const register: Register = (on, options) => {
     const other = await read($, others)
     const otherOpen = await read($, othersOpen)
     const otherTotal = other.reduce((n, o) => n + o.count, 0)
-    const { file, data, error } = await read($, status)
+    const view = await read($, status)
+    const { file, error } = view
+    // A reopened session whose file was not written since the start: its running roles are drawn stopped until the Lead writes again.
+    const cut = reopen.since > 0 && view.data && view.mtime < reopen.since ? stopped(view.data) : undefined
+    const data = cut?.data ?? view.data
+    const now = await $.clock.now().catch(() => NaN)
     const lines = await read($, karar)
     const out = await read($, outbox)
     // What a Pause / Devam button adds to its label: queued behind a running turn, or already submitted as the owner (until the file changes).
@@ -705,7 +738,10 @@ export const register: Register = (on, options) => {
     }
     if (open) return detailView(open)
 
-    const updated = clockOf(data?.updatedAt)
+    const written = stamp(data?.updatedAt, now)
+    const updated = written.text
+    const reopenText = cut && `Oturum yeniden açıldı · durum ${written.days ? `${written.days} gün önceki` : 'önceki oturumdan'}${cut.count ? ` · çalışıyor görünen ${cut.count} rol durmuş olabilir` : ''}`
+    const askWhere = () => void press($, running, { line: ASK_WHERE })
     const lim = data?.limits
     const usage = (
       [
@@ -766,6 +802,13 @@ export const register: Register = (on, options) => {
             ))}
         </Box>
         )}
+
+        {reopenText && (term ? termBanner(ui, reopenText, note(ASK_WHERE), askWhere) : (
+          <Box key="reopen-banner" {...CARD} borderColor="rgba(229,192,123,0.40)" backgroundColor="rgba(229,192,123,0.08)">
+            <Text>{reopenText}</Text>
+            <Button key="reopen-ask" label={labelled(ASK_WHERE, ASK_WHERE)} onPress={askWhere} />
+          </Box>
+        ))}
 
         {otherTotal > 0 && (term ? termOthers(ui, other, otherOpen, toggleOthers) : othersDesktop())}
 
@@ -841,7 +884,7 @@ export const register: Register = (on, options) => {
 
         {term && data && data.tasks.length > 0 && termTasks(ui, data.tasks, n, showOn, id => void show(id))}
 
-        {term && data && termHint(ui, otherTotal > 0)}
+        {term && data && termHint(ui, otherTotal > 0, !!reopenText)}
 
         {!term && data && data.decisions.length > 0 && (
           <Box flexDirection="column" gap="sm">
