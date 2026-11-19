@@ -3152,3 +3152,309 @@ test('round 2: with only a push approval pending, a tool call writes no atom and
   expect(k.log.sets).toEqual([])
   await ui.unmount()
 })
+
+// pane-motion (owner 2026-11-19, option A): a pane that moves and answers at once. Expected values come from three places, all
+// spelled out by hand and never read back from the implementation: the Analyst's report §4 criteria 1-12 (criterion numbers below),
+// the Lead's settlements in the brief (idle caption text, "gönderildi" label, 500 ms poll, timings 1600 ms / 0.4 / 24 px), and
+// arithmetic of my own (segment = (320 - 4 * 4) / 5 = 60.8, so segment 2 starts at 2 * 64.8 = 129.6).
+const MOTION = JSON.stringify({
+  v: 1,
+  decisions: [
+    { id: 'd1', text: 'Hangisi sayılsın?', options: ['A', 'B'] },
+    { id: 'd2', text: 'Takılan görev?', kind: 'Takıldı', task: 'tb', options: ['C'] },
+  ],
+  tasks: [
+    {
+      id: 'tr',
+      title: 'Koşan',
+      stage: 'review',
+      roles: [
+        { name: 'Dev', state: 'teslim etti', status: 'done' },
+        { name: 'QA', state: 'inceliyor', status: 'running' },
+        { name: 'Helper', state: 'boşta', status: 'idle' },
+      ],
+    },
+    { id: 'tb', title: 'Takılan', stage: 'build', roles: [{ name: 'QA 2', state: 'başlatılamadı', status: 'blocked' }] },
+    { id: 'tw', title: 'Bekleyen', stage: 'spec', wait: 'sırada', roles: [{ name: 'Analyst', state: 'sırada', status: 'waiting' }] },
+  ],
+})
+const withPaused = (s: string) => s.replace('"v":1', '"v":1,"paused":true')
+const stripStyle = (s: string) => s.replace(/<style>[\s\S]*?<\/style>/g, '')
+const stripBand = (s: string) => stripStyle(s).replace(/<clipPath[\s\S]*?<\/clipPath>/g, '').replace(/<g class="band"[\s\S]*?<\/g>/g, '')
+const moves = (s: string) => /@keyframes|animation|<animate/.test(s)
+const svgOf = (root: Node, alt: RegExp | string) => String(nodesOf(root).find(n => n.type === 'Svg' && (typeof alt === 'string' ? n.props?.alt === alt : alt.test(String(n.props?.alt))))?.props?.source)
+const OUT = "Bir seçeneğe bas · Lead'e gider"
+const HOVER_EDGE = 'rgba(128,128,128,0.55)'
+const HOVER_FILL = 'rgba(128,128,128,0.16)'
+
+const mBoot = async (
+  $: Parameters<TestBody>[0],
+  on: Parameters<TestBody>[1],
+  o: { surface?: 'desktop' | 'terminal'; status?: string; lazy?: boolean; noFile?: boolean; teamOn?: boolean } = {},
+) => {
+  const disk = { text: o.status ?? MOTION, mtime: 1, exists: !o.noFile }
+  const log = { sent: [] as string[], sets: [] as string[], scroll: [] as unknown[], hold: false, fail: false }
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.close', () => ({ value: undefined }))
+  on('env.get', () => ({ value: '/Users/x' }))
+  on('fs.exists', () => ({ value: disk.exists }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: disk.mtime, isLink: false } }))
+  on('fs.read', () => ({ value: disk.text }))
+  const clock = mock.clock(on)
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.append', (_, e, next) => next(e))
+  on('state.set', (_, e, next) => {
+    log.sets.push(e.key)
+    return next(e)
+  })
+  on('ui.scroll', (_, e) => {
+    log.scroll.push(e)
+    return {}
+  })
+  on('prompt.submit', async (_, e) => {
+    if (log.fail) throw new Error('no session')
+    log.sent.push(e.text)
+    if (log.hold) await new Promise<never>(() => undefined)
+    return { text: e.text }
+  })
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('tool.call', () => ({ result: 'ok', text: 'ok' }) as never)
+  const start = () => $.session.start({ cwd: '/Users/x/Projeler/shop', surface: o.surface ?? 'desktop', isInteractive: true })
+  if (!o.lazy) await start()
+  if (o.teamOn) {
+    const foot = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
+    await foot.press({ key: 'team-mode' })
+    await foot.unmount()
+  }
+  const mount = (surface: 'desktop' | 'terminal' = o.surface ?? 'desktop') => $.ui.mount({ ...PANE, surface })
+  const change = async (text: string) => {
+    disk.text = text
+    disk.mtime++
+    await clock.advance(500)
+  }
+  return { disk, log, clock, start, mount, change, settle: () => clock.advance(0) }
+}
+
+test('criteria 1, 3, 4 (svg.ts): a running dot pulses 1600 ms ease-in-out to 0.4 behind prefers-reduced-motion; the resting markup is today\'s dot', async () => {
+  const still = dotSvg(CLAY)
+  expect(moves(still)).toBe(false)
+  const live = dotSvg(CLAY, true)
+  expect(live).toMatch(/^<svg [^>]*width="8" height="8"/)
+  expect(live).toContain('<style>@media (prefers-reduced-motion: no-preference){')
+  expect(live.match(/@media/g)?.length).toBe(1)
+  expect(live).toContain('@keyframes')
+  expect(live).toMatch(/opacity:\s*0\.4/)
+  expect(live).toMatch(/animation:[^;}]*1600ms ease-in-out infinite/)
+  expect(live).not.toContain('<animate')
+  expect(stripStyle(live)).toBe(still)
+})
+
+test('criteria 2, 3, 4 (svg.ts): the running stage line has a 24 px band clipped to the current segment; without the animation parts it is today\'s line', async () => {
+  const still = stagesSvg(2)
+  expect(moves(still)).toBe(false)
+  const live = stagesSvg(2, 5, false, true)
+  expect(live).toMatch(/^<svg [^>]*width="320" height="4"/)
+  expect(live).toContain('<style>@media (prefers-reduced-motion: no-preference){')
+  expect(live.match(/@media/g)?.length).toBe(1)
+  expect(live).toMatch(/animation:[^;}]*1600ms ease-in-out infinite/)
+  expect(live).not.toContain('<animate')
+  expect(live).toMatch(/<clipPath [^>]*><rect x="129.6" width="60.8" height="4"/) // the current segment, by my arithmetic
+  expect(live).toMatch(/<rect class="sweep" [^>]*width="24" height="4"[^>]*opacity="0"/) // 24 px, hidden unless the animation runs
+  expect(stripBand(live)).toBe(still)
+  expect(stripBand(stagesSvg(1, 5, true, true))).toBe(stagesSvg(1, 5, true)) // blocked colors stay
+})
+
+test('criteria 1, 2, 3, 4 (desktop): only a running role\'s dot and a running task\'s stage line move; every Svg has its size and no SMIL', async ($, on) => {
+  const k = await mBoot($, on)
+  const ui = await k.mount()
+  const root = await drawnOf(ui)
+  expect(moves(svgOf(root, 'çalışıyor'))).toBe(true)
+  for (const alt of ['bitti', 'takıldı', 'sırada', 'boşta', 'karar bekliyor']) expect(moves(svgOf(root, alt))).toBe(false)
+  const card = (id: string) => nodesOf(keyed(root, `t-${id}`))
+  const stage = (id: string) => String(card(id).find(n => n.type === 'Svg' && /aşamanın/.test(String(n.props?.alt)))?.props?.source)
+  expect(moves(stage('tr'))).toBe(true) // running
+  expect(moves(stage('tb'))).toBe(false) // blocked
+  expect(moves(stage('tw'))).toBe(false) // waiting
+  expect(stripBand(stage('tr'))).toBe(stagesSvg(2))
+  expect(stripStyle(svgOf(root, 'çalışıyor'))).toBe(dotSvg(CLAY))
+  const all = nodesOf(root).filter(n => n.type === 'Svg')
+  expect(all.length).toBeGreaterThan(5)
+  for (const s of all) {
+    expect(String(s.props?.source)).toMatch(/^<svg [^>]*width="\d+" height="\d+"/)
+    expect(String(s.props?.source)).not.toContain('<animate')
+    expect(s.props?.isInteractive).toBeUndefined() // image mode, as the owner's live look chose
+  }
+  await ui.unmount()
+})
+
+test('criterion 5 (terminal): no Svg and no style; a quiet 10 s writes no atom and starts no loop', async ($, on) => {
+  const k = await mBoot($, on, { surface: 'terminal' })
+  const ui = await k.mount()
+  const root = await drawnOf(ui)
+  expect(nodesOf(root).some(n => n.type === 'Svg')).toBe(false)
+  expect(JSON.stringify(root)).not.toMatch(/@keyframes|<style|<animate/)
+  k.log.sets.length = 0
+  await k.clock.advance(10_000)
+  expect(k.log.sets).toEqual([])
+  await ui.unmount()
+})
+
+test('criterion 6: a status change is drawn after 500 ms and not before; a quiet poll writes no atom', async ($, on) => {
+  const k = await mBoot($, on)
+  const ui = await k.mount()
+  expect(await ui.find({ type: 'Text', text: 'Koşan' })).toBeDefined()
+  k.disk.text = MOTION.replace('Koşan', 'Yeni ad')
+  k.disk.mtime = 2
+  await k.clock.advance(499)
+  expect(await ui.find({ type: 'Text', text: 'Yeni ad' })).toBeUndefined()
+  await k.clock.advance(1)
+  expect(await ui.find({ type: 'Text', text: 'Yeni ad' })).toBeDefined()
+  k.log.sets.length = 0
+  await k.clock.advance(5000)
+  expect(k.log.sets).toEqual([])
+  await ui.unmount()
+})
+
+for (const surface of ['desktop', 'terminal'] as const) {
+  test(`criterion 7 (${surface}): Pause and Devam pressed with no turn running say "gönderildi" until the status file changes`, async ($, on) => {
+    const k = await mBoot($, on, { surface })
+    const ui = await k.mount()
+    expect((await ui.find({ key: 'pause' }))?.props.label).toBe('Pause')
+    await ui.press({ key: 'pause' })
+    await k.settle()
+    expect(k.log.sent).toEqual(['Pause'])
+    expect((await ui.find({ key: 'pause' }))?.props.label).toBe('Pause · gönderildi')
+    await k.clock.advance(3000) // time alone changes nothing
+    expect((await ui.find({ key: 'pause' }))?.props.label).toBe('Pause · gönderildi')
+    await k.change(withPaused(MOTION)) // the Lead paused: the button turns into Devam, the old note is gone
+    expect((await ui.find({ key: 'resume' }))?.props.label).toBe('Devam')
+    await ui.press({ key: 'resume' })
+    await k.settle()
+    expect((await ui.find({ key: 'resume' }))?.props.label).toBe('Devam · gönderildi')
+    await k.change(MOTION) // the file changed again, not paused: Pause with no note
+    expect((await ui.find({ key: 'pause' }))?.props.label).toBe('Pause')
+    await ui.press({ key: 'pause' })
+    await k.settle()
+    await k.change(MOTION.replace('Koşan', 'Başka')) // a change that leaves paused as it was still clears the note
+    expect((await ui.find({ key: 'pause' }))?.props.label).toBe('Pause')
+    await ui.unmount()
+  })
+}
+
+test('criterion 7: a failed submit takes "gönderildi" back (the press is not lost, nothing claims it went)', async ($, on) => {
+  const k = await mBoot($, on)
+  k.log.fail = true
+  const ui = await k.mount()
+  await ui.press({ key: 'pause' })
+  await k.settle()
+  expect((await ui.find({ key: 'pause' }))?.props.label).toBe('Pause · sırada')
+  await ui.unmount()
+})
+
+test('criterion 8 (desktop): with the submit held unresolved, a decision, Pause and the detail are already drawn', async ($, on) => {
+  const k = await mBoot($, on)
+  k.log.hold = true
+  const ui = await k.mount()
+  await ui.press({ key: 'd-d1-1' })
+  await k.settle()
+  expect(k.log.sent).toEqual(['Karar (d1): B']) // the submit is in flight
+  expect((await ui.find({ key: 'd-d1-1' }))?.props).toMatchObject({ label: '✓ B', variant: 'primary' })
+  expect((await ui.find({ type: 'Text', text: 'Gönderildi: B' }))?.props).toMatchObject({ color: 'success' })
+  await ui.press({ key: 'detail-tr' })
+  expect(await ui.find({ key: 'detail-back' })).toBeDefined() // drawn without waiting for anything
+  await ui.press({ key: 'detail-back' })
+  await ui.unmount()
+  const p = await mBoot($, on)
+  p.log.hold = true
+  const ui2 = await p.mount()
+  await ui2.press({ key: 'pause' })
+  await p.settle()
+  expect((await ui2.find({ key: 'pause' }))?.props.label).toBe('Pause · gönderildi')
+  await ui2.unmount()
+})
+
+test('criterion 9 (desktop): a decision card has the same rows idle, queued and sent; idle says where the press goes', async ($, on) => {
+  const k = await mBoot($, on, { teamOn: true })
+  const ui = await k.mount()
+  const rows = async () => keyed(await drawnOf(ui), 'd-d1').children?.length
+  expect(await rows()).toBe(3) // text block, options, caption
+  const idle = await ui.find({ type: 'Text', text: OUT })
+  expect(idle?.props).toMatchObject({ size: 'caption', dimColor: true })
+  await $.turn.start({ text: 'x', turnId: 't1' })
+  await ui.press({ key: 'd-d1-1' })
+  expect(await ui.find({ type: 'Text', text: QUEUED })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: OUT })).toBeDefined() // d2 still idle
+  expect(await rows()).toBe(3)
+  await $.tool.call({ tool: 'Bash', command: 'ls' } as never)
+  expect(await ui.find({ type: 'Text', text: 'Gönderildi: B' })).toBeDefined()
+  expect(await rows()).toBe(3)
+  await ui.unmount()
+})
+
+for (const surface of ['desktop', 'terminal'] as const) {
+  test(`criterion 10 (${surface}): before the first read the pane draws placeholders and no onboarding; after a read with no file the onboarding shows`, async ($, on) => {
+    const k = await mBoot($, on, { lazy: true, noFile: true, surface })
+    const ui = await k.mount()
+    const loading = await drawnOf(ui)
+    expect(keyed(loading, 'ph-0')).toBeDefined()
+    expect(keyed(loading, 'ph-1')).toBeDefined()
+    expect(keyed(loading, 'ph-2')).toBeUndefined()
+    for (const t of ['Takım hazır', 'Agent Team kapalı', 'Nasıl işler']) expect(textIn(loading, t)).toBe(false)
+    expect(nodesOf(loading).some(n => n.props?.key === 'pane-team-on')).toBe(false)
+    await k.start()
+    const read = await drawnOf(ui)
+    expect(keyed(read, 'ph-0')).toBeUndefined()
+    expect(textIn(read, 'Agent Team kapalı')).toBe(true)
+    await ui.unmount()
+  })
+}
+
+test('criterion 11: task and decision cards carry the hover override on desktop, other sessions and the terminal do not', async ($, on) => {
+  const k = await mBoot($, on)
+  const ui = await k.mount()
+  const root = await drawnOf(ui)
+  // A plain card lights its edge and fill; a card with its own edge (blocked red) keeps that edge and lights the fill only.
+  expect(keyed(root, 't-tr').props?.hover).toEqual({ borderColor: HOVER_EDGE, backgroundColor: HOVER_FILL })
+  expect(keyed(root, 'd-d1').props?.hover).toEqual({ borderColor: HOVER_EDGE, backgroundColor: HOVER_FILL })
+  expect(keyed(root, 't-tb').props?.hover).toEqual({ backgroundColor: HOVER_FILL })
+  expect(keyed(root, 'd-d2').props?.hover).toEqual({ backgroundColor: HOVER_FILL })
+  expect(keyed(root, 'detail-tr').props?.hover).toEqual({ color: 'claude' }) // lights with its card
+  await ui.unmount()
+  const term = await mBoot($, on, { surface: 'terminal' })
+  const tui = await term.mount()
+  expect(nodesOf(await drawnOf(tui)).filter(n => n.props?.hover !== undefined)).toEqual([])
+  await tui.unmount()
+})
+
+test('criterion 11: the read-only cards of other sessions carry no hover', async ($, on) => {
+  await bootOthers($, on, 'desktop', DESIGN_LISTING, DESIGN_FILES)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'others-toggle' })
+  const root = await drawnOf(ui)
+  expect(otherBoxes(root).length).toBe(2)
+  expect(otherBoxes(root).every(b => b.props?.hover === undefined)).toBe(true)
+  expect(keyed(root, 't-t1').props?.hover).toBeDefined() // the own task card still has it
+  await ui.unmount()
+})
+
+test('criterion 12 (desktop): opening a detail scrolls the pane to its start, back lands on the card left; the terminal scrolls nothing', async ($, on) => {
+  const k = await mBoot($, on)
+  const ui = await k.mount()
+  await ui.press({ key: 'detail-tr' })
+  await k.settle()
+  expect(k.log.scroll).toEqual([{ in: 'agent-team', to: 'start' }])
+  await ui.press({ key: 'detail-back' })
+  await k.settle()
+  expect(k.log.scroll.at(-1)).toEqual({ in: 'agent-team', to: { key: 't-tr' }, block: 'nearest' })
+  expect(k.log.scroll.length).toBe(2)
+  await ui.unmount()
+  const t = await mBoot($, on, { surface: 'terminal' })
+  const tui = await t.mount()
+  await tui.press({ key: 'detail-tr' })
+  await tui.press({ key: 'detail-back' })
+  await t.settle()
+  expect(t.log.scroll).toEqual([])
+  await tui.unmount()
+})
