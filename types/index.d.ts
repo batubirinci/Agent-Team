@@ -76,6 +76,10 @@ export type Press = { line: string; id?: string; option?: string; push?: boolean
 // `said`: lines with no decision (Pause, Devam) submitted as the owner, until the status file is read again.
 export type Outbox = { queue: Press[]; sent: [string, string][]; said: string[] }
 
+// A resumed session: when it started (the pane warns while the status file is older; 0: not reopened) and whether its first prompt still owes
+// the Lead the reopen line. An atom, so a hot reload keeps both and /clear resets them.
+export type Reopen = { since: number; line: boolean }
+
 // One entry of $.fs.list.
 export type DirEntry = { name: string; kind: string; size: number; mtimeMs: number; isLink: boolean }
 
@@ -89,6 +93,7 @@ declare module 'claude-code' {
       othersOpen: Shaped<boolean>
       karar: Shaped<string[]>
       outbox: Shaped<Outbox>
+      reopen: Shaped<Reopen>
     }
   }
 }

@@ -7,29 +7,57 @@ const ROLE_STATUSES: readonly RoleStatus[] = ['running', 'done', 'waiting', 'blo
 type Obj = Record<string, unknown>
 
 const isObj = (x: unknown): x is Obj => typeof x === 'object' && x !== null && !Array.isArray(x)
-const str = (x: unknown): string | undefined => (typeof x === 'string' && x.trim() ? x : undefined)
-// A string cut to n characters: the file is model-written, a pane line is not a place for an essay.
-const short = (x: unknown, n: number): string | undefined => str(x)?.trim().slice(0, n)
+// C0 controls but tab and line feed, DEL and C1 controls (an escape sequence is one) are removed from every string the file gives.
+const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g
+const str = (x: unknown): string | undefined => {
+  const s = typeof x === 'string' ? x.replace(CONTROL, '') : ''
+  return s.trim() ? s : undefined
+}
+// A string cut to n code points (never between the halves of a surrogate pair): the file is model-written, a pane line is not a place for an essay.
+export const clip = (s: string, n: number) => (s.length <= n ? s : Array.from(s).slice(0, n).join(''))
+const short = (x: unknown, n: number): string | undefined => {
+  const s = str(x)?.trim()
+  return s && clip(s, n)
+}
+// A decision or task id counts as written only if it is 1-64 letters, digits . _ - and no earlier one in its list had it. A made-up id is
+// `#<position>`: `#` is outside that set, so it never equals a written one (and `): ` can never be inside one).
+const ID = /^[\p{L}\p{N}._-]{1,64}$/u
+// The one id rule, on the raw text (before any control character is stripped: `d1\r` is not the id `d1`): every id the parser reads (a decision's id,
+// a task's id, a decision's `task` link) goes through it, and a value that fails it is no id.
+const idOf = (x: unknown) => (typeof x === 'string' && ID.test(x) ? x : undefined)
+// A written id: one that passes the rule and that no earlier one in its list had.
+const written = (x: unknown, taken: Set<string>) => {
+  const id = idOf(x)
+  return id && !taken.has(id) ? (taken.add(id), id) : undefined
+}
 const num = (x: unknown): number | undefined =>
   typeof x === 'number' && Number.isFinite(x) && x >= 0 ? Math.round(x) : undefined
 const list = (x: unknown): Obj[] => (Array.isArray(x) ? x.filter(isObj) : [])
 
+// A kind as the two rules below read it: trimmed, lower case (Turkish rules), ı as i, and no U+0307 (an İ lowered without Turkish rules, or in NFD, is i + U+0307).
+const kindOf = (kind?: string) => (kind ?? '').trim().toLocaleLowerCase('tr').replace(/ı/g, 'i').replace(/\u0307/g, '')
+
 // A decision kind that says the work is stuck ("Takıldı ...", any case, also "takildi"): one rule for the parser and the strip.
-export const isStuck = (kind?: string) => !!kind?.trim().toLocaleLowerCase('tr').replace(/ı/g, 'i').startsWith('takildi')
+export const isStuck = (kind?: string) => kindOf(kind).startsWith('takildi')
 
 // A decision whose kind says it approves an irreversible action ("Push onayı ...", any case, also "push onayi"): never carried by a tool result.
-export const isPush = (kind?: string) => !!kind?.trim().toLocaleLowerCase('tr').replace(/ı/g, 'i').startsWith('push onayi')
+export const isPush = (kind?: string) => kindOf(kind).startsWith('push onayi')
+
+// A finding that blocks, "BLOCKING" in any letter case: one rule for the parser's cap order and for both drawings.
+export const isBlocking = (f: Finding) => f.severity?.toLowerCase() === 'blocking'
 
 // The file is written by the Lead (a model): read it as untrusted data, keep what is well formed.
 export function parseStatus(text: string): Status {
   const raw: unknown = JSON.parse(text)
   if (!isObj(raw) || raw.v !== 1) throw new Error('durum dosyası v:1 değil')
 
+  const decisionIds = new Set<string>()
+  const taskIds = new Set<string>()
   const decisions: Decision[] = list(raw.decisions).flatMap((d, i) => {
     const t = str(d.text)
     if (!t) return []
-    const options = Array.isArray(d.options) ? d.options.filter((o): o is string => !!str(o)).slice(0, 4) : []
-    return [{ id: str(d.id) ?? `d${i + 1}`, kind: str(d.kind), text: t, meta: str(d.meta), task: str(d.task), options }]
+    const options = Array.isArray(d.options) ? d.options.map(o => str(o)).filter((o): o is string => !!o).slice(0, 4) : []
+    return [{ id: written(d.id, decisionIds) ?? `#${i + 1}`, kind: str(d.kind), text: t, meta: str(d.meta), task: idOf(d.task), options }]
   })
 
   const tasks: Task[] = list(raw.tasks).flatMap((t, i) => {
@@ -50,8 +78,7 @@ export function parseStatus(text: string): Status {
         return what ? [{ severity: short(f.severity, 20), origin: short(f.origin, 20), what, where: short(f.where, 200) }] : []
       })
       // Over the cap, a BLOCKING finding is never dropped for a non-blocking one; the kept ones read BLOCKING first, then file order.
-      const blocking = (f: Finding) => f.severity?.toLowerCase() === 'blocking'
-      const findings = all.length > 10 ? [...all.filter(blocking), ...all.filter(f => !blocking(f))].slice(0, 10) : all
+      const findings = all.length > 10 ? [...all.filter(isBlocking), ...all.filter(f => !isBlocking(f))].slice(0, 10) : all
       // A round numbered 0 (or with no valid number) is shown by its position.
       return [{ n: num(r.n) || j + 1, verdict, candidate: short(r.candidate, 64), note: short(r.note, 400), findings }]
     }).slice(-10)
@@ -62,12 +89,12 @@ export function parseStatus(text: string): Status {
         return label && path ? [{ label, path }] : []
       })
       .slice(0, 6)
-    // A task with no id in the file gets one for the UI only; a decision can name only an id that is written.
-    const written = str(t.id)
-    const id = written ?? `t${i + 1}`
+    // A task with no (usable) id in the file gets one for the UI only; a decision can name only an id that is written.
+    const own = written(t.id, taskIds)
+    const id = own ?? `#${i + 1}`
     const sessionName = isObj(t.session) ? short(t.session.name, 60) : undefined
     const wait = short(t.wait, 120)
-    const asked = written ? decisions.filter(d => d.task === written) : []
+    const asked = own ? decisions.filter(d => d.task === own) : []
     const blocked = roles.find(r => r.status === 'blocked')
     const state: TaskState =
       blocked || asked.some(d => isStuck(d.kind)) ? 'blocked' : roles.some(r => r.status === 'running') ? 'running' : 'waiting'
@@ -77,7 +104,7 @@ export function parseStatus(text: string): Status {
       id,
       title,
       branch: str(t.branch),
-      ...(!written && { generatedId: true as const }),
+      ...(!own && { generatedId: true as const }),
       stage: stage < 0 ? 0 : stage,
       round: num(t.round),
       candidate: str(t.candidate),
@@ -121,16 +148,23 @@ export const isInside = (cwd: string, folders: readonly string[]) =>
 // "14:32" from an ISO time, in the time written there (the Lead writes local time with offset).
 export const clockOf = (iso?: string) => iso?.match(/T(\d{2}:\d{2})/)?.[1]
 
+const pad2 = (n: number) => String(n).padStart(2, '0')
 const MONTHS = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara']
 
-// An ISO time as the pane writes it: "14 Kas 22:10" when its written day is not `now`'s (local) day, else "22:10"; `days` is how many
-// days before `now`'s day it was written (0: today, or `now` unknown).
+// An ISO time as the pane writes it: "14 Kas 22:10" when its day is not `now`'s day, else "22:10", both in local time (a time written with an
+// offset is an instant; one without is local already); `days` is how many days before `now`'s day it was written (0: today, or `now` unknown).
 export function stamp(iso: string | undefined, now: number) {
-  const m = iso?.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}:\d{2})/)
+  const m = iso?.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/)
   if (!m) return { text: undefined, days: 0 }
+  // "Z", "+03:00", "+0300" or "+03" (hours 00-23, minutes 00-59; any other offset is read as no offset: local): the instant is the written clock minus the offset (parsed here: Date reads only "+03:00" forms).
+  const o = iso!.match(/(?:(Z)|([+-])([01]\d|2[0-3]):?([0-5]\d)?)$/i)
+  const w = o
+    ? new Date(Date.UTC(+m[1]!, +m[2]! - 1, +m[3]!, +m[4]!, +m[5]!) - (o[1] ? 0 : (o[2] === '-' ? -1 : 1) * (+o[3]! * 60 + +(o[4] ?? 0)) * 60_000))
+    : new Date(+m[1]!, +m[2]! - 1, +m[3]!, +m[4]!, +m[5]!)
   const t = Number.isFinite(now) ? new Date(now) : undefined
-  const days = t ? Math.max(0, Math.round((Date.UTC(t.getFullYear(), t.getMonth(), t.getDate()) - Date.UTC(+m[1]!, +m[2]! - 1, +m[3]!)) / 86_400_000)) : 0
-  return { text: days ? `${+m[3]!} ${MONTHS[+m[2]! - 1]} ${m[4]}` : m[4], days }
+  const days = t ? Math.max(0, Math.round((Date.UTC(t.getFullYear(), t.getMonth(), t.getDate()) - Date.UTC(w.getFullYear(), w.getMonth(), w.getDate())) / 86_400_000)) : 0
+  const clock = `${pad2(w.getHours())}:${pad2(w.getMinutes())}`
+  return { text: days ? `${w.getDate()} ${MONTHS[w.getMonth()]} ${clock}` : clock, days }
 }
 
 // A reopened session (a resume): the roles the file calls running belong to a process that is gone. They are drawn stopped, their task
@@ -149,7 +183,9 @@ export function stopped(s: Status) {
 export const ASK_WHERE = 'Nerede kaldık?'
 export const REOPEN = '[Agent Team · yeniden açılış]'
 
-export function reopenLine(s: Status, now: number) {
+export function reopenLine(s: Status | null, now: number) {
+  // A file the pane could not read (missing, bad): no time, no roles, only the step.
+  if (!s) return `${REOPEN} Oturum yeniden açıldı; durum dosyası okunamadı. agent-team skill'inin "Geri dönüş" adımını çalıştır.`
   const names = s.tasks.filter(t => !t.session).flatMap(t => t.roles.filter(r => r.status === 'running').map(r => `${t.title} · ${r.name}`))
   const when = stamp(s.updatedAt, now).text
   return [
@@ -185,7 +221,7 @@ export function decisionTask(d: Decision, tasks: readonly Task[]) {
 // A decision answer is one line of the owner's draft, "Karar (<id>): <option>". The id and the option are model-written:
 // a line break in them would start another line, so it becomes a space.
 export const KARAR = 'Karar ('
-const flat = (s: string) => s.replace(/\r\n|[\r\n]/g, ' ')
+export const flat = (s: string) => s.replace(/\r\n|[\r\n]/g, ' ')
 const head = (id: string) => `${KARAR}${flat(id)}): `
 export const kararLine = (id: string, option: string) => head(id) + flat(option)
 
@@ -194,12 +230,14 @@ export const kararLine = (id: string, option: string) => head(id) + flat(option)
 export function withKarar(draft: string, id: string, option: string) {
   const line = kararLine(id, option)
   const rows = draft.split('\n')
-  if (rows.some(r => r.startsWith(head(id)))) return rows.map(r => (r.startsWith(head(id)) ? line : r)).join('\n')
+  // The replaced row keeps its own \r (a CRLF draft); the other rows are not touched.
+  if (rows.some(r => r.startsWith(head(id)))) return rows.map(r => (r.startsWith(head(id)) ? line + (r.endsWith('\r') ? '\r' : '') : r)).join('\n')
   return draft && !draft.endsWith('\n') ? `${draft}\n${line}` : draft + line
 }
 
 // The decision lines of a draft (all the pane needs to know of it), and which option of `d` one of them picks (-1: none).
-export const kararLines = (draft: string) => draft.split('\n').filter(r => r.startsWith(KARAR))
+// A CRLF draft's rows end in \r: it is not part of the line.
+export const kararLines = (draft: string) => draft.split('\n').filter(r => r.startsWith(KARAR)).map(r => r.replace(/\r$/, ''))
 export const pickedAt = (lines: readonly string[], d: Decision) => d.options.findIndex(o => lines.includes(kararLine(d.id, o)))
 
 // The sentence that tells the Lead the status path (register.tsx leadText) and the prefix of the row that carries it.
@@ -229,14 +267,12 @@ export const otherFiles = (entries: readonly DirEntry[], dir: string, own: strin
     .sort((a, b) => b.mtimeMs - a.mtimeMs || a.name.localeCompare(b.name))
     .slice(0, OTHER_MAX_FILES)
 
-const pad2 = (n: number) => String(n).padStart(2, '0')
-
 // The file is untrusted and the result goes in a state atom (4 MiB limit) and on the pane: cut what is drawn.
 const OTHER_KIND = 120
 const OTHER_TEXT = 400
 const OTHER_OPTION = 60
 const OTHER_DECISIONS = 10
-const cut = (x: string, n: number) => (x.length > n ? `${x.slice(0, n - 1)}…` : x)
+const cut = (x: string, n: number) => (Array.from(x).length > n ? `${clip(x, n - 1)}…` : x)
 
 // One other session from its parsed file, or undefined when it asks nothing. <project>--<id8>.json is "<project> · <id8>",
 // <project>.json is "<project>"; the time is the file's updatedAt, else its mtime (local). `count` and `stuckCount` are of ALL

@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { decisionTask, detailScroll, isInside, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseStatus, pickedAt, summary, withKarar } from '../hooks/status'
+import { decisionTask, detailScroll, isInside, isPush, isStuck, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseStatus, pickedAt, stamp, summary, withKarar } from '../hooks/status'
 import { CLAY, MUTED, STUCK, TRACK, dotSvg, meterSvg, stagesSvg } from '../hooks/svg'
 
 const fills = (svg: string) => [...svg.matchAll(/<rect [^>]*fill="([^"]+)"/g)].map(m => m[1])
@@ -296,12 +296,17 @@ test('in team mode an owner prompt carries the Lead role, outside it nothing is 
 test('an empty pane says the team is ready, lists the roles, and an example fills the prompt', async ($, on) => {
   // Approved design "Boş pane": hero, example tasks that fill the composer, how it works, 7 roles.
   const filled: string[] = []
+  const sent: string[] = []
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.close', () => ({ value: undefined }))
   on('session.append', (_, e, next) => next(e))
   on('prompt.fill', (_, e) => {
     filled.push(e.text)
     return { isFilled: true }
+  })
+  on('prompt.submit', (_, e) => {
+    sent.push(e.text)
+    return { text: e.text }
   })
   // pane-motion criterion 10: before the first read the pane draws placeholders, so this test now lets the session read (no file yet) first.
   on('command.register', (_, e) => ({ value: { command: e.name } }))
@@ -324,7 +329,9 @@ test('an empty pane says the team is ready, lists the roles, and an example fill
   expect((await ready.findAll({ type: 'Text', text: /^(Analyst|Analyst 2|Developer|Developer \(zor iş\)|QA|QA 2 · canlı|Helper)$/ })).length).toBe(7)
   await ready.press({ key: 'ex-0' })
   await ready.unmount()
-  expect(filled).toEqual(['Bir hatayı düzelt: '])
+  // hardening criterion 2: on the desktop an example is a press (the draft a fill writes is one the owner never sees), trailing space trimmed.
+  expect(filled).toEqual([])
+  expect(sent).toEqual(['Bir hatayı düzelt:'])
 })
 
 // Task detail (owner request 2026-11-12 + approved design "Görev ayrıntısı"; criteria 1-6 of the task-detail task).
@@ -381,6 +388,7 @@ test('a task card opens its detail view with rounds and evidence, back returns, 
   // Criteria 2, 3, 5 and the approved design: every round with findings and note, evidence, same on desktop and terminal.
   const filled: string[] = []
   const modes: unknown[] = []
+  const sent: string[] = []
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('env.get', () => ({ value: '/Users/x' }))
@@ -393,6 +401,10 @@ test('a task card opens its detail view with rounds and evidence, back returns, 
     filled.push(e.text)
     modes.push(e.mode)
     return { isFilled: true }
+  })
+  on('prompt.submit', (_, e) => {
+    sent.push(e.text)
+    return { text: e.text }
   })
   await $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'desktop', isInteractive: true })
 
@@ -422,9 +434,11 @@ test('a task card opens its detail view with rounds and evidence, back returns, 
     expect(await ui.find({ key: 'detail-back' })).toBeUndefined()
     await ui.unmount()
   }
-  expect(filled).toEqual(['Seçim kutusu taşması hakkında: ', 'Seçim kutusu taşması hakkında: '])
+  // hardening criterion 1: the terminal fills the box; the desktop (where a fill is an unseen draft) presses a one-line question.
+  expect(filled).toEqual(['Seçim kutusu taşması hakkında: '])
   // Review revision 1: the ask replaces what is in the prompt box, as the empty-pane examples do.
-  expect(modes).toEqual(['replace', 'replace'])
+  expect(modes).toEqual(['replace'])
+  expect(sent).toEqual(['Seçim kutusu taşması ne durumda?'])
 })
 
 test('a task without rounds opens a detail view with no Turlar section, and a vanished task returns to the list', async ($, on) => {
@@ -812,9 +826,23 @@ test('round 3: /clear then a quit before the first poll still leaves a record un
   await c.team()
   await $.session.end({ reason: 'clear', sessionId: ID_OLD, resume: { id: ID_OLD } })
   c.wipe(ID_NEW) // the id changes and the atoms reset after session.end
-  await c.clock.advance(600) // less than the 3 s poll
-  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }, CLEAR_NOW + 500)) // the timer fires at 500 ms
+  await c.clock.advance(600)
+  // hardening F24: the poll is 500 ms, so it fires no later than the session.end timer (500 ms): this test pins the outcome, not which of the two
+  // carried it. The timer alone is tested at the end of the file (F24 / R6).
+  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }, CLEAR_NOW + 500))
   expect(c.modeNow()).toEqual(SWITCH)
+})
+
+test('hardening F24: a quit after the first poll tick after /clear leaves the record under the new id (mutant: poll without follow)', async ($, on) => {
+  const c = await continuity($, on)
+  on('session.end', (_, e) => ({ sessionId: e.sessionId }))
+  c.present.add(OLD)
+  await c.start()
+  await c.team()
+  c.wipe(ID_NEW) // /clear with no session.end seen by the plugin (the id changes, the atoms reset)
+  await c.clock.advance(POLL) // the first tick
+  await $.session.end({ reason: 'prompt_input_exit', sessionId: ID_NEW, resume: { id: ID_NEW } })
+  expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }, CLEAR_NOW + POLL))
 })
 
 test('round 4: a team session turned off by the footer chip after /clear, before any poll, ends off and stays off after the poll', async ($, on) => {
@@ -1604,7 +1632,7 @@ test('terminal: header counts, a state line per task, blocked box and decision i
   expect(textNode(d2, /^Ürün kararı · Koşan görev$/)?.props?.color).toBe('claude')
   const d3 = keyed(root, 'd-d3')
   expect(d3.props).toMatchObject({ borderColor: 'subtle' })
-  expect(textNode(d3, /·/)).toBeUndefined()
+  expect(textNode(d3, /^(?!1-9 ile seç).*·/)).toBeUndefined() // no kind line (the caption row of hardening E18 has a · of its own)
   // Theme keys only: no raw color anywhere in the drawn tree.
   expect(nodesOf(root).filter(n => RAW_COLOR.test(JSON.stringify(n.props ?? {}))).length).toBe(0)
 })
@@ -1827,7 +1855,9 @@ test('criterion 6: a task without an id gets a generated id, but no decision lin
     tasks: [{ title: 'Kimliksiz', stage: 'build', roles: [run] }],
   })
   const s = parseStatus(text)
-  expect(s.tasks[0]?.id).toBe('t1')
+  // hardening criterion 5: a made-up id has a character a written one cannot have (here `#1`), so it never equals a written `t1`.
+  expect(s.tasks[0]?.id).toBe('#1')
+  expect(s.tasks[0]?.generatedId).toBe(true)
   expect([s.tasks[0]?.state, s.tasks[0]?.reason]).toEqual(['running', undefined])
   expect(decisionTask(s.decisions[0]!, s.tasks)).toEqual({ kind: 'Takıldı · Developer', blocked: false })
   // A written id links as before.
@@ -2375,7 +2405,7 @@ test('criterion 2: a line break in an id or option becomes a space; regex charac
 
 // A fake prompt box under a mounted session: the box is the single truth, `fill` edits it, and the engine's `prompt.change`
 // (origin plugin, after a plugin's fill) is raised by `echo`, as the d.ts says it is; `type` is the owner typing (`prompt.edit`).
-const kBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], text = TERM, o: { isFilled?: boolean; boxText?: string; throws?: boolean; atomFails?: boolean } = {}) => {
+const kBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], text = TERM, o: { isFilled?: boolean; boxText?: string; throws?: boolean; atomFails?: boolean; readFails?: boolean; surface?: 'terminal' | 'desktop'; edit?: (e: { text: string; start: number; end: number; inputText: string }) => unknown } = {}) => {
   const box = { text: o.boxText ?? '', cursor: 0 }
   const log = { reads: 0, sent: [] as string[], fills: [] as { text: string; mode?: string }[], sets: [] as string[], gets: [] as string[] }
   let file = text
@@ -2401,6 +2431,7 @@ const kBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], te
   })
   on('prompt.read', () => {
     log.reads++
+    if (o.readFails) throw new Error('no composer')
     return { value: { text: box.text, cursor: box.cursor } }
   })
   // `submit` is flipped by a test: a rejected submit, or one a hook refused (`{ drop }`), enters nothing and is not in log.sent.
@@ -2420,8 +2451,8 @@ const kBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], te
     return { isFilled: true }
   })
   on('prompt.change', (_, e) => ({ text: e.text }))
-  on('prompt.edit', (_, e) => ({ text: e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end), cursor: e.start + e.inputText.length }))
-  const start = () => $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'terminal', isInteractive: true })
+  on('prompt.edit', (_, e) => (o.edit ? o.edit(e) : { text: e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end), cursor: e.start + e.inputText.length }) as never)
+  const start = () => $.session.start({ cwd: '/Users/x/Projeler/shop', surface: o.surface ?? 'terminal', isInteractive: true })
   await start()
   // The test engine's `$.prompt` has `edit` and `change` at run time, but the d.ts (EventCalls) does not list them.
   const ev = $.prompt as unknown as {
@@ -2447,7 +2478,7 @@ const kBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], te
     mtime += 1
     return start()
   }
-  return { box, log, gate, echo, type, send, rewrite }
+  return { box, log, gate, echo, type, send, rewrite, rawEdit: ev.edit }
 }
 const pressKey = async (ui: { press: (a: { key: string }) => Promise<unknown> }, echo: () => Promise<unknown>, key: string) => {
   await ui.press({ key })
@@ -2484,11 +2515,12 @@ test('criterion 1 (terminal): a press replaces the same decision line in place a
 })
 
 test('criterion 2 (terminal): a decision from the file with a line break and regex characters writes one clean line', async ($, on) => {
-  const odd = JSON.stringify({ v: 1, decisions: [{ id: 'a.b(1)', text: 'K', options: ['bir\niki', 'x'] }, { id: 'axb(1)', text: 'L', options: ['y'] }] })
-  const k = await kBoot($, on, odd, { boxText: 'Karar (axb(1)): eski' })
+  // (hardening criterion 5: an id may hold only letters, digits . _ -, so the regex characters now live in the unit test above.)
+  const odd = JSON.stringify({ v: 1, decisions: [{ id: 'a.b', text: 'K', options: ['bir\niki', 'x'] }, { id: 'axb', text: 'L', options: ['y'] }] })
+  const k = await kBoot($, on, odd, { boxText: 'Karar (axb): eski' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await pressKey(ui, k.echo, 'd-a.b(1)-0')
-  expect(k.box.text).toBe('Karar (axb(1)): eski\nKarar (a.b(1)): bir iki')
+  await pressKey(ui, k.echo, 'd-a.b-0')
+  expect(k.box.text).toBe('Karar (axb): eski\nKarar (a.b): bir iki')
   await ui.unmount()
 })
 
@@ -2531,7 +2563,7 @@ test('criterion 5 (terminal): a fill that rejects falls back to the same submit'
 // Desktop and any other graphical surface: the composer is the app's own, a fill would only write an engine draft the owner never
 // sees (live check 2026-11-13, tasks/decision-buttons/live-desktop.md). Source for 1 to 4: the Lead's criteria for desktop-karar.
 test('criterion 1 (desktop): a press submits the one clean Karar line as the owner and never reads or fills the box', async ($, on) => {
-  const k = await kBoot($, on, TERM, { boxText: 'yarım yazı' })
+  const k = await kBoot($, on, TERM, { boxText: 'yarım yazı', surface: 'desktop' }) // a desktop session: only the terminal reads the box at the start (B7)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.press({ key: 'd-d1-1' })
   expect(k.log.sent).toEqual(['Karar (d1): Sonra'])
@@ -2540,12 +2572,12 @@ test('criterion 1 (desktop): a press submits the one clean Karar line as the own
   expect(k.box.text).toBe('yarım yazı')
   await ui.unmount()
   k.log.sent.length = 0
-  // Ids and options with line breaks stay one line.
+  // Options with line breaks stay one line; an id with one is not a written id (hardening criterion 5), so the line carries the made-up `#1`.
   const odd = JSON.stringify({ v: 1, decisions: [{ id: 'x\ny', text: 'K', options: ['bir\r\niki'] }] })
   await k.rewrite(odd)
   const ui2 = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await ui2.press({ key: 'd-x\ny-0' })
-  expect(k.log.sent).toEqual(['Karar (x y): bir iki'])
+  await ui2.press({ key: 'd-#1-0' })
+  expect(k.log.sent).toEqual(['Karar (#1): bir iki'])
   await ui2.unmount()
 })
 
@@ -2757,16 +2789,17 @@ const QUEUED = 'Sırada · Lead sıradaki adımda okuyacak'
 const QUEUED_PUSH = 'Sırada · Lead işini bitirince okuyacak'
 type CtxResult = { context?: readonly string[]; result?: unknown; deny?: string; isError?: boolean }
 
-const pBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o: { surface?: 'desktop' | 'terminal'; isFilled?: boolean; teamOn?: boolean; status?: string } = {}) => {
+const pBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o: { surface?: 'desktop' | 'terminal'; isFilled?: boolean; teamOn?: boolean; status?: string; noFile?: boolean } = {}) => {
   const log = { sent: [] as string[], asUser: [] as (boolean | undefined)[], fills: [] as string[], sets: [] as string[] }
-  const gate = { submit: 'ok' as 'ok' | 'throws' | 'drop' }
+  const gate = { submit: 'ok' as 'ok' | 'throws' | 'drop' | 'hold' }
+  const held = { settle: undefined as undefined | ((fail: boolean) => void) }
   const core = { result: { result: 'ok', text: 'ok' } as unknown }
   const box = { text: '', cursor: 0 }
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.close', () => ({ value: undefined }))
   on('env.get', () => ({ value: '/Users/x' }))
-  on('fs.exists', () => ({ value: true }))
+  on('fs.exists', () => ({ value: !o.noFile }))
   on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: 1, isLink: false } }))
   on('fs.read', () => ({ value: o.status ?? PSTATUS }))
   const clock = mock.clock(on)
@@ -2777,9 +2810,11 @@ const pBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o:
     return next(e)
   })
   on('prompt.read', () => ({ value: { text: box.text, cursor: box.cursor } }))
-  on('prompt.submit', (_, e) => {
+  on('prompt.submit', async (_, e) => {
     if (gate.submit === 'throws') throw new Error('no session')
     if (gate.submit === 'drop') return { drop: 'refused' }
+    // 'hold': the submit stays in flight until the test settles it (held.settle(true) rejects it).
+    if (gate.submit === 'hold') await new Promise<void>((res, rej) => (held.settle = fail => (fail ? rej(new Error('no session')) : res())))
     log.sent.push(e.text)
     log.asUser.push((e.origin as { asUser?: boolean } | undefined)?.asUser)
     return { text: e.text }
@@ -2809,7 +2844,7 @@ const pBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o:
   }
   const tool = async (agentId?: string) => (await $.tool.call({ tool: 'Bash', command: 'ls', ...(agentId ? { agentId } : {}) } as never)) as CtxResult
   const mount = async (surface: 'desktop' | 'terminal' = o.surface ?? 'desktop') => $.ui.mount({ ...PANE, surface })
-  return { log, gate, core, box, settle, start, end, tool, mount }
+  return { log, gate, held, core, box, settle, start, end, tool, mount }
 }
 
 test('criterion 1 (analyst 1, P3): no turn running, Pause submits at once as the owner; tool.call results stay untouched', async ($, on) => {
@@ -3474,12 +3509,12 @@ const R_TASK = { id: 't1', title: 'Seçim kutusu taşması', stage: 'build', rol
 const reopenStatus = (tasks: unknown[] = [R_TASK], updatedAt = '2026-11-14T22:10:00+03:00') => JSON.stringify({ v: 1, updatedAt, lead: 'Opus 5.5', tasks })
 const BANNER = /^Oturum yeniden açıldı · durum 5 gün önceki · çalışıyor görünen 1 rol durmuş olabilir$/
 
-const rBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o: { status?: string; record?: boolean; surface?: 'desktop' | 'terminal'; placed?: boolean } = {}) => {
+const rBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o: { status?: string; record?: boolean; surface?: 'desktop' | 'terminal'; placed?: boolean; exists?: boolean; recordOff?: boolean } = {}) => {
   const disk = { text: o.status ?? reopenStatus(), mtime: R_OLD_MTIME }
-  const log = { sent: [] as string[], contexts: [] as (readonly string[] | undefined)[], opens: 0 }
+  const log = { sent: [] as string[], contexts: [] as (readonly string[] | undefined)[], opens: 0, openFails: false, attached: 0 }
   const state = { id: ID_OLD }
   const clock = mock.clock(on, { now: R_NOW })
-  const store = new Map<string, unknown>(o.record === false ? [] : [[KEY_OLD, rec(OLD, SWITCH, { announced: OLD })]])
+  const store = new Map<string, unknown>(o.record === false ? [] : [[KEY_OLD, rec(OLD, o.recordOff ? OFF : SWITCH, { announced: OLD })]])
   on('store.get', (_, e) => ({ value: store.get(e.key) }))
   on('store.set', (_, e) => {
     store.set(e.key, JSON.parse(JSON.stringify(e.value)))
@@ -3499,16 +3534,20 @@ const rBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o:
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('ui.open', () => {
     log.opens++
+    if (log.openFails) return { deny: 'held by another plugin' } as never // a thrown error is skipped by the engine; a { deny } makes $.ui.open reject (d.ts: a pane another plugin holds)
     return { value: o.placed === false ? { isPlaced: false as const, reason: 'no surface' } : { isPlaced: true as const } }
   })
   on('ui.close', () => ({ value: undefined }))
   on('env.get', () => ({ value: '/Users/x' }))
   on('session.id', () => ({ value: state.id }))
-  on('fs.exists', () => ({ value: true }))
+  on('fs.exists', () => ({ value: o.exists ?? true }))
   on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: disk.mtime, isLink: false } }))
   on('fs.read', () => ({ value: disk.text }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('session.attach', (_, e) => ({ clientId: e.clientId }))
+  on('session.attach', (_, e) => {
+    log.attached++
+    return { clientId: e.clientId }
+  })
   on('session.append', (_, e, next) => next(e))
   on('prompt.submit', (_, e) => {
     log.sent.push(e.text)
@@ -3684,4 +3723,826 @@ test('a reopened session whose roles are all done still shows the banner (no sto
   expect((await bannerOf(ui))?.text).toBe('Oturum yeniden açıldı · durum 5 gün önceki')
   await ui.unmount()
   expect((await r.prompt())[0]).toContain('Çalışıyor görünen rol yok')
+})
+
+// hardening (small follow-ups from the QA reports). Group A: on the desktop "Lead'e sor" and the example buttons are presses, not fills.
+// Source of the expected strings for A1-A3: the Lead's criteria 1-3 of the hardening brief (`<title> ne durumda?`, the trimmed example, the
+// ' · sırada' / ' · gönderildi' label like Pause, the terminal unchanged), and the pause-fast delivery rules already pinned above (HEAD entry).
+const ASK_STATUS = JSON.stringify({ v: 1, tasks: [{ id: 't1', title: 'Seçim\nkutusu  taşması', stage: 'build' }] })
+const ASKED = 'Seçim kutusu  taşması ne durumda?'
+
+test('hardening A1 (desktop): "Lead\'e sor" sends the one-line question as the owner, never fills, and says "gönderildi"', async ($, on) => {
+  const k = await pBoot($, on, { status: ASK_STATUS })
+  const ui = await k.mount()
+  await ui.press({ key: 'detail-t1' })
+  expect((await ui.find({ key: 'detail-ask' }))?.props.label).toBe("Lead'e sor")
+  await ui.press({ key: 'detail-ask' })
+  expect(k.log.sent).toEqual([ASKED])
+  expect(k.log.asUser).toEqual([true])
+  expect(k.log.fills).toEqual([])
+  expect((await ui.find({ key: 'detail-ask' }))?.props.label).toBe("Lead'e sor · gönderildi")
+  await ui.unmount()
+})
+
+test('hardening A1 (desktop): mid-turn the question waits ("sırada") and rides the next Lead tool result in the pane reminder', async ($, on) => {
+  const k = await pBoot($, on, { status: ASK_STATUS })
+  const ui = await k.mount()
+  await ui.press({ key: 'detail-t1' })
+  await k.start('turn-1')
+  await ui.press({ key: 'detail-ask' })
+  expect(k.log.sent).toEqual([])
+  expect((await ui.find({ key: 'detail-ask' }))?.props.label).toBe("Lead'e sor · sırada")
+  expect((await k.tool()).context).toEqual([`${HEAD}\n${ASKED}`])
+  expect((await ui.find({ key: 'detail-ask' }))?.props.label).toBe("Lead'e sor")
+  expect(k.log.fills).toEqual([])
+  await ui.unmount()
+})
+
+test('hardening A2 (desktop): an example button sends the example with its trailing space trimmed, never fills', async ($, on) => {
+  const k = await pBoot($, on, { noFile: true })
+  const ui = await k.mount()
+  expect((await ui.find({ key: 'ex-0' }))?.props.label).toBe('Bir hatayı düzelt: …')
+  await ui.press({ key: 'ex-0' })
+  await ui.press({ key: 'ex-2' })
+  expect(k.log.sent).toEqual(['Bir hatayı düzelt:', 'Şu değişikliği incelet:'])
+  expect(k.log.fills).toEqual([])
+  await ui.unmount()
+})
+
+test('hardening A3 (terminal): `s` in the detail view and the example keys still fill the box as before, and send nothing', async ($, on) => {
+  const k = await pBoot($, on, { surface: 'terminal', status: ASK_STATUS })
+  const ui = await k.mount()
+  await ui.press({ key: 'detail-t1' })
+  await ui.press({ key: 'detail-ask' })
+  expect(k.log.fills).toEqual(['Seçim\nkutusu  taşması hakkında: '])
+  expect(k.log.sent).toEqual([])
+  await ui.unmount()
+})
+
+test('hardening A3 (terminal): an example key fills the box with the example as written, and sends nothing', async ($, on) => {
+  const k = await pBoot($, on, { surface: 'terminal', noFile: true })
+  const ui = await k.mount()
+  await ui.press({ key: 'ex-0' })
+  expect(k.log.fills).toEqual(['Bir hatayı düzelt: '])
+  expect(k.log.sent).toEqual([])
+  await ui.unmount()
+})
+
+// Group B: decision-line safety. Sources: criteria 5-7 of the hardening brief; decision-buttons QA r1 LOW 1 (id `): `), qa-fixes QA
+// (generated `t1` vs written `t1`), decision-buttons QA r1 follow-ups (CRLF, picked state at start). The made-up id form `#<position>`
+// is the Developer's choice (the brief only says it holds a character outside the set, e.g. `#2`).
+const IDRE = /^[\p{L}\p{N}._-]{1,64}$/u
+
+test('hardening B5 (parser): a written id counts only if it is 1-64 letters, digits . _ -; anything else, or a repeat, is not written', async () => {
+  const s = parseStatus(
+    JSON.stringify({
+      v: 1,
+      decisions: [
+        { id: 'a', text: 'A', options: ['x'] },
+        { id: 'a): b', text: 'B', options: ['y'] },
+        { id: 'a', text: 'tekrar', options: ['z'] },
+        { id: 'Şu-1_ü.2', text: 'U', options: [] },
+        { id: 'x'.repeat(65), text: 'uzun', options: [] },
+        { id: 'x'.repeat(64), text: 'sınır', options: [] },
+        { id: 'a b', text: 'boşluklu', options: [] },
+        { text: 'kimliksiz', options: [] },
+      ],
+    }),
+  )
+  const ids = s.decisions.map(d => d.id)
+  // Written ones stay (64 characters is the longest); the rest are made up as `#<position>`: a repeat, `): `, 65 characters, a space, none.
+  expect(ids).toEqual(['a', '#2', '#3', 'Şu-1_ü.2', '#5', 'x'.repeat(64), '#7', '#8'])
+  for (const id of ids) expect(IDRE.test(id) || id.startsWith('#')).toBe(true)
+
+  const t = parseStatus(
+    JSON.stringify({
+      v: 1,
+      decisions: [{ id: 'd1', kind: 'Takıldı', text: 'Ne?', task: 't1', options: [] }],
+      tasks: [
+        { title: 'Kimliksiz', stage: 'build' },
+        { id: 't1', title: 'Yazılı', stage: 'build' },
+        { id: 't1', title: 'Tekrar', stage: 'build' },
+        { id: 'a): b', title: 'Bozuk', stage: 'build' },
+      ],
+    }),
+  )
+  expect(t.tasks.map(x => x.generatedId === true)).toEqual([true, false, true, true])
+  expect(t.tasks.map(x => x.id)).toEqual(['#1', 't1', '#3', '#4'])
+  // The decision links to the written t1 only.
+  expect(t.tasks.map(x => x.state)).toEqual(['waiting', 'blocked', 'waiting', 'waiting'])
+  expect(decisionTask(t.decisions[0]!, t.tasks)).toEqual({ kind: 'Takıldı · Yazılı', blocked: true })
+})
+
+test('hardening B5 (parser): the id rule is tested on the raw text: an id with a control character is not written, though stripping would leave a valid one', async () => {
+  const s = parseStatus(
+    JSON.stringify({
+      v: 1,
+      decisions: ['d1\r', 'd\u001b2', 'd\u00003', 'd\u007f4', 'd\u009b5', 'd6'].map(id => ({ id, text: 'T', options: [] })),
+      tasks: ['t1\r', 't\u001b2', 'ok.3'].map(id => ({ id, title: 'G', stage: 'build' })),
+    }),
+  )
+  expect(s.decisions.map(d => d.id)).toEqual(['#1', '#2', '#3', '#4', '#5', 'd6'])
+  expect(s.tasks.map(t => [t.id, t.generatedId === true])).toEqual([['#1', true], ['#2', true], ['ok.3', false]])
+})
+
+test('hardening B5 (parser): a decision that names a made-up task id (`#1`) does not link to it', async () => {
+  const s = parseStatus(
+    JSON.stringify({
+      v: 1,
+      decisions: [{ id: 'd1', kind: 'Takıldı · Developer', text: 'Ne?', task: '#1', options: [] }],
+      tasks: [{ title: 'Kimliksiz', stage: 'build', roles: [{ name: 'Developer', state: 'yazıyor', status: 'running' }] }],
+    }),
+  )
+  expect(s.tasks[0]).toMatchObject({ id: '#1', generatedId: true, state: 'running' })
+  expect(decisionTask(s.decisions[0]!, s.tasks)).toEqual({ kind: 'Takıldı · Developer', blocked: false })
+})
+
+test('hardening B5 (terminal): an id with `): ` next to `a` — each card writes and finds only its own line', async ($, on) => {
+  const odd = JSON.stringify({ v: 1, decisions: [{ id: 'a', text: 'A?', options: ['X', 'Y'] }, { id: 'a): b', text: 'B?', options: ['P', 'Q'] }] })
+  const k = await kBoot($, on, odd)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await pressKey(ui, k.echo, 'd-a-0')
+  expect(k.box.text).toBe('Karar (a): X')
+  await pressKey(ui, k.echo, 'd-#2-0')
+  expect(k.box.text).toBe('Karar (a): X\nKarar (#2): P')
+  await pressKey(ui, k.echo, 'd-a-1')
+  expect(k.box.text).toBe('Karar (a): Y\nKarar (#2): P')
+  const root = await drawnOf(ui)
+  const card = (key: string) => nodesOf(root).find(n => n.props?.key === key) as Node
+  expect(textNode(card('d-a'), /^✓ seçildi: Y/)).toBeDefined()
+  expect(textNode(card('d-#2'), /^✓ seçildi: P/)).toBeDefined()
+  await ui.unmount()
+})
+
+test('hardening B5 (pane): an id-less task before a written t1 — every key is unique and "Ayrıntı" opens the written t1', async ($, on) => {
+  const text = JSON.stringify({ v: 1, tasks: [{ title: 'Kimliksiz', stage: 'build' }, { id: 't1', title: 'Kimlikli', stage: 'review' }] })
+  await boot($, on, text)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    const keys = nodesOf(await drawnOf(ui)).flatMap(n => (n.props?.key === undefined ? [] : [String(n.props.key)]))
+    expect(keys.filter((k, i) => keys.indexOf(k) !== i)).toEqual([])
+    await ui.press({ key: 'detail-t1' })
+    const root = await drawnOf(ui)
+    expect(textNode(root, /^Kimlikli$/)).toBeDefined()
+    expect(textNode(root, /^Kimliksiz$/)).toBeUndefined()
+    await ui.press({ key: 'detail-back' })
+    await ui.unmount()
+  }
+})
+
+test('hardening B6: a Karar row ending in \\r is picked; replacing it keeps every other row (their \\r too) and its own \\r', async () => {
+  // Expected values by hand: CRLF rows split on \n leave a \r at the end of each row but the last.
+  expect(kararLines('önce\r\nKarar (d1): A\r\nKarar (d2): B\r\nsonra')).toEqual(['Karar (d1): A', 'Karar (d2): B'])
+  const d = { id: 'd1', text: 't', options: ['A', 'B'] }
+  expect(pickedAt(kararLines('Karar (d1): B\r\n'), d)).toBe(1)
+  expect(withKarar('önce\r\nKarar (d1): A\r\nsonra\r\n', 'd1', 'B')).toBe('önce\r\nKarar (d1): B\r\nsonra\r\n')
+  expect(withKarar('önce\r\nKarar (d1): A\nsonra\r\n', 'd1', 'B')).toBe('önce\r\nKarar (d1): B\nsonra\r\n') // the replaced row had no \r: none is added
+  expect(withKarar('önce\r\n', 'd1', 'B')).toBe('önce\r\nKarar (d1): B')
+})
+
+test('hardening B6 (terminal): a CRLF box shows the picked option at once and a press keeps the other rows byte for byte', async ($, on) => {
+  const k = await kBoot($, on, TERM, { boxText: 'önce\r\nKarar (d1): Durumları gör\r\nsonra' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(textNode(await drawnOf(ui), /^✓ seçildi: Durumları gör/)).toBeDefined()
+  await pressKey(ui, k.echo, 'd-d1-1')
+  expect(k.box.text).toBe('önce\r\nKarar (d1): Sonra\r\nsonra')
+  await ui.unmount()
+})
+
+test('hardening B7 (terminal): Karar lines already in the box when the session starts show picked without any edit', async ($, on) => {
+  const k = await kBoot($, on, TERM, { boxText: 'Karar (d1): Sonra\nyarım' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(textNode(await drawnOf(ui), /^✓ seçildi: Sonra · Enter ile gider$/)).toBeDefined()
+  expect(k.log.fills).toEqual([])
+  await ui.unmount()
+})
+
+test('hardening B7: a failing prompt.read does not break session.start (the pane still draws, nothing is picked); the desktop never reads the box', async ($, on) => {
+  const k = await kBoot($, on, TERM, { readFails: true })
+  expect(k.log.reads).toBeGreaterThan(0) // the read was tried at the start and failed
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ key: 'd-d1' })).toBeDefined()
+  expect(textNode(await drawnOf(ui), /^✓ seçildi/)).toBeUndefined()
+  await ui.unmount()
+})
+
+test('hardening B7 (desktop): starting reads nothing from the box', async ($, on) => {
+  const k = await kBoot($, on, TERM, { surface: 'desktop', boxText: 'Karar (d1): Sonra' })
+  expect(k.log.reads).toBe(0)
+})
+
+// Group C: small correctness. Sources: criteria 8-12 of the hardening brief; qa-fixes QA (lowercase blocking, U+0307); other-decisions QA r2
+// follow-ups (surrogate cut, control characters, own file ~4 MiB). Expected strings by hand.
+const SEVERITIES = [['blocking', 'a'], ['Blocking', 'b'], ['BLOCKING', 'c'], ['LOW', 'd']] as const
+test('hardening C8: a finding severity "blocking" in any letter case is drawn like BLOCKING (error colour, not dim), desktop and terminal', async ($, on) => {
+  const findings = SEVERITIES.map(([severity, origin], i) => ({ severity, origin, what: `w${i}` }))
+  await boot($, on, detailStatus({ rounds: [{ n: 1, verdict: 'NO-GO', findings }] }))
+  for (const surface of ['desktop', 'terminal'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await ui.press({ key: 'detail-t1' })
+    const root = await drawnOf(ui)
+    for (const [severity, origin] of SEVERITIES) {
+      const tag = textNode(root, new RegExp(`^${severity} · ${origin}$`)) as Node
+      expect([surface, severity, tag.props?.color]).toEqual([surface, severity, severity === 'LOW' ? undefined : 'error'])
+      expect([surface, severity, !!tag.props?.dimColor]).toEqual([surface, severity, severity === 'LOW' && surface === 'terminal'])
+    }
+    await ui.press({ key: 'detail-back' })
+    await ui.unmount()
+  }
+})
+
+test('hardening C9: isStuck and isPush also match a kind that carries U+0307 after lowercasing without Turkish rules, and NFD forms; what matched still matches', async () => {
+  const dotted = ['Taki̇ldi', 'TAKİLDİ'.toLowerCase(), 'TAKİLDİ'.normalize('NFD'), 'taki̇ldi · Developer', ' TAKİLDİ'.normalize('NFD')]
+  const before = ['Takıldı', 'Takildi', 'TAKILDI', 'TAKİLDİ', 'takildi · Developer', ' TAKİLDİ', 'takıldı']
+  for (const k of [...dotted, ...before]) expect([k, isStuck(k)]).toEqual([k, true])
+  for (const k of ['Bu takildi mı', 'Takilmis', 'Ürün kararı', '', undefined]) expect([k, isStuck(k)]).toEqual([k, false])
+  const push = ['Push onayı', 'push onayi', 'PUSH ONAYI', 'PUSH ONAYİ', 'PUSH ONAYİ'.toLowerCase(), 'PUSH ONAYİ'.normalize('NFD'), 'Push onayi̇ · main']
+  for (const k of push) expect([k, isPush(k)]).toEqual([k, true])
+  for (const k of ['Push', 'Önce push onayı', 'Ürün kararı', undefined]) expect([k, isPush(k)]).toEqual([k, false])
+})
+
+test('hardening C10 (parser): every cap on a status text counts code points and never cuts a surrogate pair', async () => {
+  // n - 1 letters then two emoji: n + 1 code points, so a cut to n code points keeps the first emoji whole (a cut by code unit would split it).
+  const over = (n: number) => 'a'.repeat(n - 1) + '😀😀'
+  const kept = (n: number) => 'a'.repeat(n - 1) + '😀'
+  const s = parseStatus(
+    detailStatus({
+      wait: over(120),
+      session: { name: over(60) },
+      rounds: [{ n: 1, verdict: over(12), candidate: over(64), note: over(400), findings: [{ severity: over(20), origin: over(20), what: over(300), where: over(200) }] }],
+      evidence: [{ label: over(60), path: over(300) }],
+    }),
+  )
+  const t = s.tasks[0]!
+  const r = t.rounds![0]!
+  const f = r.findings[0]!
+  expect([t.wait, t.session?.name]).toEqual([kept(120), kept(60)])
+  expect([r.verdict, r.candidate, r.note]).toEqual([kept(12), kept(64), kept(400)])
+  expect([f.severity, f.origin, f.what, f.where]).toEqual([kept(20), kept(20), kept(300), kept(200)])
+  expect([t.evidence![0]!.label, t.evidence![0]!.path]).toEqual([kept(60), kept(300)])
+})
+
+test('hardening C10 (other sessions): `cut` counts code points, keeps its …, and never leaves a lone surrogate', async () => {
+  const e = { name: 'p--aaaaaaaa.json', kind: 'file', size: 10, mtimeMs: NOW, isLink: false }
+  // n + 1 code points: the first n - 1 are kept (n - 2 letters and one whole emoji), then …
+  const over = (n: number) => 'a'.repeat(n - 2) + '😀😀😀'
+  const kept = (n: number) => 'a'.repeat(n - 2) + '😀…'
+  const o = otherSession(e, parseStatus(JSON.stringify({ v: 1, decisions: [{ id: 'd', kind: over(120), text: over(400), options: [over(60)] }] })))!
+  expect([o.decisions[0]!.kind, o.decisions[0]!.text, o.decisions[0]!.options[0]]).toEqual([kept(120), kept(400), kept(60)])
+  // 120 emoji are 120 code points (240 code units): not cut.
+  const fits = otherSession(e, parseStatus(JSON.stringify({ v: 1, decisions: [{ id: 'd', kind: '😀'.repeat(120), text: 'x', options: [] }] })))!
+  expect(fits.decisions[0]!.kind).toBe('😀'.repeat(120))
+})
+
+test('hardening C10 (pane): a candidate shortened to 7 characters (card, detail, round) never splits an emoji, desktop and terminal', async ($, on) => {
+  const sha = '😀'.repeat(8)
+  await boot($, on, detailStatus({ candidate: sha, rounds: [{ n: 1, verdict: 'GO', candidate: sha, findings: [] }] }))
+  const seven = '😀'.repeat(7)
+  for (const surface of ['desktop', 'terminal'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    const list = await drawnOf(ui)
+    expect(textNode(list, new RegExp(`^aday ${seven}$`))).toBeDefined()
+    await ui.press({ key: 'detail-t1' })
+    const detail = await drawnOf(ui)
+    expect(strings(detail).some(x => x.includes(seven))).toBe(true)
+    for (const root of [list, detail]) expect(strings(root).filter(x => /\p{Cs}/u.test(x))).toEqual([])
+    await ui.press({ key: 'detail-back' })
+    await ui.unmount()
+  }
+})
+
+// Every string a drawn tree holds: text children and string props (labels, keys, colours).
+const strings = (n: Node | string): string[] =>
+  typeof n === 'string' ? [n] : [...Object.values(n.props ?? {}).filter((v): v is string => typeof v === 'string'), ...(n.children ?? []).flatMap(strings)]
+const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/
+
+test('hardening C11: C0 controls but tab and line feed, DEL and C1 controls are removed from every kept string, so an escape sequence never reaches the pane', async ($, on) => {
+  const x = (v: string) => `${v}\u001b[2J\u009b[2J\u007f\u0000`
+  const file = JSON.stringify({
+    v: 1,
+    lead: x('Lead'),
+    decisions: [{ id: 'd1', kind: x('Tür'), text: x('Soru'), meta: x('meta'), options: [x('Evet'), x('Hayır')] }],
+    tasks: [
+      {
+        id: 't1',
+        title: x('Başlık'),
+        branch: x('dal'),
+        wait: x('bekle'),
+        stage: 'review',
+        roles: [{ name: x('Rol'), state: x('durum'), status: 'running' }],
+        rounds: [{ n: 1, verdict: x('GO'), note: x('not'), findings: [{ severity: x('LOW'), origin: x('kök'), what: x('bulgu'), where: x('yer') }] }],
+        evidence: [{ label: x('etiket'), path: x('/yol') }],
+      },
+    ],
+  })
+  const s = parseStatus(file)
+  // Removed, not replaced by a space; tab and line feed stay.
+  expect(s.tasks[0]?.title).toBe('Başlık[2J[2J')
+  expect(s.decisions[0]?.options).toEqual(['Evet[2J[2J', 'Hayır[2J[2J'])
+  expect(parseStatus(JSON.stringify({ v: 1, tasks: [{ id: 't', title: 'a\tb\nc', stage: 'build' }] })).tasks[0]?.title).toBe('a\tb\nc')
+  await boot($, on, file)
+  for (const surface of ['desktop', 'terminal'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    const list = await drawnOf(ui)
+    await ui.press({ key: 'detail-t1' })
+    const detail = await drawnOf(ui)
+    for (const root of [list, detail]) expect([surface, strings(root).filter(v => CONTROL.test(v))]).toEqual([surface, []])
+    expect(textNode(detail, /^Başlık\[2J\[2J$/)).toBeDefined()
+    await ui.press({ key: 'detail-back' })
+    await ui.unmount()
+  }
+})
+
+test('hardening C11 (other sessions): the same strip applies to another session\'s file before it is drawn', async ($, on) => {
+  const file = JSON.stringify({ v: 1, decisions: [{ id: 'd', kind: 'Tür\u001b[2J', text: 'Soru\u001b[2J', options: ['Evet\u001b[2J'] }] })
+  await bootOthers($, on, 'terminal', [entry('x--bbbbbbbb.json')], { 'x--bbbbbbbb.json': file })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'others-toggle' })
+  const root = await drawnOf(ui)
+  expect(strings(root).filter(v => CONTROL.test(v))).toEqual([])
+  expect(textIn(root, 'Soru[2J')).toBe(true)
+  await ui.unmount()
+})
+
+// Own status file too big. Source: criterion 12 of the hardening brief (cap 1 MiB, the example line, last good view kept, poll goes on).
+const BIG_GOOD = JSON.stringify({ v: 1, tasks: [{ id: 't1', title: 'İyi görev', stage: 'build' }] })
+const sBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], surface: 'desktop' | 'terminal' = 'desktop', more?: (on: Parameters<TestBody>[1]) => void) => {
+  const disk = { text: BIG_GOOD, mtime: 1, size: 100, reads: 0 }
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.close', () => ({ value: undefined }))
+  on('env.get', () => ({ value: '/Users/x' }))
+  on('fs.exists', () => ({ value: true }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: disk.size, mtimeMs: disk.mtime, isLink: false } }))
+  on('fs.read', () => {
+    disk.reads++
+    return { value: disk.text }
+  })
+  more?.(on)
+  const clock = mock.clock(on)
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/Users/x/Projeler/shop', surface, isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface })
+  const change = async (text: string, size: number) => {
+    Object.assign(disk, { text, size, mtime: disk.mtime + 1 })
+    await clock.advance(500)
+  }
+  return { disk, ui, change, clock }
+}
+
+for (const surface of ['desktop', 'terminal'] as const) {
+  test(`hardening C12 (${surface}): a file over 1 MiB is not read, one short Turkish line says size and limit, the last good view stays, and the poll recovers`, async ($, on) => {
+    const k = await sBoot($, on, surface)
+    const base = k.disk.reads // the reads the start made
+    expect(base).toBeGreaterThan(0)
+    expect(await k.ui.find({ key: 'detail-t1' })).toBeDefined()
+    await k.change('X'.repeat(10), 1300 * 1024)
+    expect(k.disk.reads).toBe(base) // not read
+    const line = await k.ui.find({ type: 'Text', text: /^Durum dosyası çok büyük/ })
+    expect(line?.text).toBe('Durum dosyası çok büyük: 1300 KiB (en çok 1024 KiB)')
+    expect(await k.ui.find({ key: 'detail-t1' })).toBeDefined() // the last good view
+    await k.clock.advance(5000) // the poll goes on, and reads nothing while the file stays too big
+    expect(k.disk.reads).toBe(base)
+    // Exactly 1 MiB is within the cap and is read; the line goes.
+    await k.change(BIG_GOOD.replace('İyi', 'Küçük'), 1024 * 1024)
+    expect(k.disk.reads).toBe(base + 1)
+    expect(await k.ui.find({ type: 'Text', text: /^Durum dosyası çok büyük/ })).toBeUndefined()
+    expect(await k.ui.find({ key: 'detail-t1' })).toBeDefined()
+    await k.ui.unmount()
+  })
+}
+
+test('hardening C12: a file under the cap whose view does not fit the state gets a short Turkish line, never the engine\'s message; the next good file recovers', async ($, on) => {
+  const k = await sBoot($, on)
+  // The stat says 900 KiB (under the cap) but the text read is 5 MiB, so the engine itself refuses the view (its state value limit is 4 MiB).
+  await k.change(JSON.stringify({ v: 1, decisions: [{ id: 'd1', text: 'Y'.repeat(5 * 1024 * 1024), options: [] }] }), 900 * 1024)
+  const lines = (await k.ui.findAll({ type: 'Text', text: /^Durum dosyası/ })).map(n => n.text)
+  expect(lines.length).toBe(1)
+  expect(lines[0]).not.toMatch(/\$\.state|4194304|characters|limit/i)
+  expect(lines[0]!.length).toBeLessThan(80)
+  expect(await k.ui.find({ type: 'Text', text: /İyi görev/ })).toBeDefined() // the last good view
+  await k.change(BIG_GOOD.replace('İyi', 'Yeni'), 100)
+  expect(await k.ui.findAll({ type: 'Text', text: /^Durum dosyası/ })).toEqual([])
+  expect(await k.ui.find({ type: 'Text', text: /Yeni görev/ })).toBeDefined()
+  await k.ui.unmount()
+})
+
+// Group D: reopen follow-ups. Sources: criteria 14-16 of the hardening brief (reload keeps the banner and the pending line; an unreadable
+// status still carries one line; the header date uses the instant in local time), tasks/reopen/qa (lead-r1-adjudication.md). The test
+// harness runs in the machine's own time zone (Europe/Istanbul here; the engine ignores TZ set outside), so dates are built from local parts.
+test('hardening D14: a hot reload while the reopen banner is up keeps the banner and the pending reopen line', async ($, on) => {
+  const r = await rBoot($, on)
+  const ui = await r.mount()
+  expect(await bannerOf(ui)).toBeDefined()
+  await r.start() // the same process again: atoms and store kept, as a hot reload leaves them
+  expect((await bannerOf(ui))?.text).toMatch(BANNER)
+  const line = await r.prompt()
+  expect(line).toHaveLength(1)
+  expect(line[0]).toContain('14 Kas 22:10')
+  expect(await r.prompt()).toEqual([])
+  await ui.unmount()
+})
+
+test('hardening D14: a /clear after the reopen still ends the banner and the line', async ($, on) => {
+  const r = await rBoot($, on)
+  await r.clear(ID_NEW)
+  expect(await r.prompt()).toEqual([])
+  const ui = await r.mount()
+  expect(await bannerOf(ui)).toBeUndefined()
+  await ui.unmount()
+})
+
+test('hardening D15: an unreadable status file at the first prompt still carries one reopen line that says so and asks for "Geri dönüş"', async ($, on) => {
+  const r = await rBoot($, on, { status: '{ bozuk' })
+  const first = await r.prompt()
+  expect(first).toHaveLength(1)
+  expect(first[0]).toContain(R_PREFIX)
+  expect(first[0]).toContain('okunamadı')
+  expect(first[0]).toContain('Geri dönüş')
+  expect(first[0]).not.toMatch(/son yazımı|Çalışıyor görünen/)
+  expect(await r.prompt()).toEqual([]) // once only
+})
+
+test('hardening D15: a missing status file at the first prompt carries the same line', async ($, on) => {
+  const r = await rBoot($, on, { exists: false })
+  const first = await r.prompt()
+  expect(first).toHaveLength(1)
+  expect(first[0]).toContain('okunamadı')
+  expect(first[0]).toContain('Geri dönüş')
+})
+
+test('hardening D15: an unreadable file the Lead rewrote since the reopen sends no line', async ($, on) => {
+  const r = await rBoot($, on, { status: '{ bozuk' })
+  await r.rewrite('{ hâlâ bozuk')
+  expect(await r.prompt()).toEqual([])
+})
+
+// stamp: the written instant, the shown time and the day difference both in local time. The harness runs in the host's zone, so every
+// expected value is built from local parts, and the written offsets are built at run time as the local offset shifted by whole hours: the
+// digits written then differ from the local time in every zone, and only reading the instant gives the local day and clock.
+const isoAt = (ms: number, offsetMin: number, form: 'colon' | 'plain' | 'hours') => {
+  const d = new Date(ms + offsetMin * 60_000) // its UTC parts are the clock of that offset
+  const p2 = (n: number) => String(n).padStart(2, '0')
+  const sign = offsetMin < 0 ? '-' : '+'
+  const h = p2(Math.floor(Math.abs(offsetMin) / 60))
+  const m = p2(Math.abs(offsetMin) % 60)
+  const off = form === 'colon' ? `${sign}${h}:${m}` : form === 'plain' ? `${sign}${h}${m}` : `${sign}${h}`
+  return `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}T${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}:00${off}`
+}
+test('hardening D16: the header date uses the written instant in local time, in any host zone; a time without an offset counts as local', async () => {
+  const now = new Date(2026, 10, 19, 10, 0).getTime()
+  const evening = new Date(2026, 10, 18, 23, 30).getTime() // 18 Nov 23:30 local
+  const local = -new Date(evening).getTimezoneOffset() // the host's offset in minutes
+  for (const shift of [120, -180, 300]) {
+    for (const form of ['colon', 'plain', 'hours'] as const) {
+      if (form === 'hours' && (local + shift) % 60 !== 0) continue // "+05" cannot spell a half-hour offset
+      const iso = isoAt(evening, local + shift, form) // whole hours from the host's offset: the digits are not the local clock
+      expect([iso, stamp(iso, now)]).toEqual([iso, { text: '18 Kas 23:30', days: 1 }])
+    }
+  }
+  // A Z time: the instant too (in UTC itself it is also the local clock).
+  expect(stamp(new Date(evening).toISOString(), now)).toEqual({ text: '18 Kas 23:30', days: 1 })
+  // The same evening written in an offset whose digits fall on today: the local day is yesterday's.
+  const lateIso = isoAt(evening, local + 120, 'colon')
+  expect(lateIso.slice(0, 10)).toBe('2026-11-19')
+  expect(stamp(lateIso, now).days).toBe(1)
+  // No offset: local as written.
+  expect(stamp('2026-11-18T23:30:00', now)).toEqual({ text: '18 Kas 23:30', days: 1 })
+  expect(stamp('2026-11-19T08:05:00', now)).toEqual({ text: '08:05', days: 0 })
+  // Just after midnight: yesterday's evening is one day back whatever the offset it is written in.
+  const midnight = new Date(2026, 10, 19, 0, 10).getTime()
+  const late = new Date(2026, 10, 18, 23, 50).getTime()
+  expect(stamp(isoAt(late, local - 180, 'colon'), midnight)).toEqual({ text: '18 Kas 23:50', days: 1 })
+  // The brief's example, for a local +03:00 (this Mac); only checked in that zone.
+  if (local === 180) expect(stamp('2026-11-18T23:30:00+00:00', now)).toEqual({ text: '02:30', days: 0 })
+  expect(stamp(undefined, now)).toEqual({ text: undefined, days: 0 })
+})
+
+// Group E: the terminal decision card has one caption row from the start. Source: criterion 18 of the hardening brief (text, same rows
+// before and after a press); the other rows' texts are the ones the earlier terminal tests above pin.
+const CAPTION = '1-9 ile seç · kutuna yazılır'
+test('hardening E18 (terminal): a decision card with options says "1-9 ile seç · kutuna yazılır" until a press, and a press replaces that row, never adds one', async ($, on) => {
+  const k = await kBoot($, on)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const card = async (key = 'd-d1') => nodesOf(await drawnOf(ui)).find(n => n.props?.key === key) as Node
+  const rows = async (key = 'd-d1') => (await card(key)).children?.length
+  const before = await rows()
+  expect((await card()).children?.map(c => (typeof c === 'string' ? c : textOf(c)))).toContain(CAPTION)
+  await pressKey(ui, k.echo, 'd-d1-1')
+  expect(await rows()).toBe(before)
+  expect(textNode(await card(), /^✓ seçildi: Sonra · Enter ile gider$/)).toBeDefined()
+  expect(textNode(await card(), new RegExp(`^${CAPTION}$`))).toBeUndefined()
+  // Taking the line out of the box brings the caption back, still the same number of rows.
+  await k.type(0, k.box.text.length, '')
+  expect(await rows()).toBe(before)
+  expect(textNode(await card(), new RegExp(`^${CAPTION}$`))).toBeDefined()
+  await ui.unmount()
+})
+
+test('hardening E18 (terminal): a press that goes through the queue, and its delivery, keep the card at the same number of rows', async ($, on) => {
+  const k = await kBoot($, on, TERM, { isFilled: false })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const rows = async () => ((nodesOf(await drawnOf(ui)).find(n => n.props?.key === 'd-d2') as Node).children ?? []).length
+  const before = await rows()
+  await ui.press({ key: 'd-d2-0' }) // the box refuses the fill: the press is submitted at once
+  expect(k.log.sent).toEqual(['Karar (d2): Evet'])
+  expect(await rows()).toBe(before)
+  expect(textNode(await drawnOf(ui), /^Gönderildi: Evet$/)).toBeDefined()
+  await ui.unmount()
+})
+
+test('hardening E18 (terminal): a decision without options has no caption row', async ($, on) => {
+  await kBoot($, on, JSON.stringify({ v: 1, decisions: [{ id: 'd9', text: 'Yalnız bilgi', options: [] }] }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(textNode(await drawnOf(ui), new RegExp(`^${CAPTION}$`))).toBeUndefined()
+  await ui.unmount()
+})
+
+// Group F: test gaps the QA reports named. Each test below fails on the mutant its title names (mutants.log holds the runs).
+// Sources: decision-buttons QA r1 LOW 2 and 3 (F19, F20), desktop-karar QA r2 LOW 1 and 2 (F21), reopen QA LOW (F22), other-decisions
+// QA r2 LOW 1 (F23), clear-continuity (F24).
+const DECORATED = { text: 'KÖK', cursor: 1, decorations: [{ start: 0, end: 1, bold: true }] }
+
+test('hardening F19: prompt.edit returns exactly what next(e) returned (text, cursor, decorations of another hook), on the untouched-line path', async ($, on) => {
+  const k = await kBoot($, on, TERM, { edit: () => DECORATED })
+  expect(await k.rawEdit({ origin: { kind: 'composer' }, text: 'abc', cursor: 3, start: 3, end: 3, inputText: 'd' })).toEqual(DECORATED)
+})
+
+test('hardening F19: the same on the changed-decision-line path (the atom is synced, the answer is still next(e)\'s)', async ($, on) => {
+  const k = await kBoot($, on, TERM, { boxText: 'Karar (d1): Sonra', edit: () => ({ text: 'Karar (d1): Sonrax', cursor: 2, decorations: DECORATED.decorations }) })
+  const r = await k.rawEdit({ origin: { kind: 'composer' }, text: 'Karar (d1): Sonra', cursor: 17, start: 17, end: 17, inputText: 'x' })
+  expect(r).toEqual({ text: 'Karar (d1): Sonrax', cursor: 2, decorations: DECORATED.decorations })
+})
+
+test('hardening F19: a rejection of next(e) reaches the caller (the hook never swallows it)', async ($, on) => {
+  const k = await kBoot($, on, TERM, {
+    edit: () => {
+      throw new Error('core refused')
+    },
+  })
+  let failed = false
+  await k.rawEdit({ origin: { kind: 'composer' }, text: 'a', cursor: 1, start: 1, end: 1, inputText: 'b' }).catch(() => (failed = true))
+  expect(failed).toBe(true)
+})
+
+test('hardening F20 (terminal): a press appends below the owner\'s text and keeps its leading and trailing whitespace', async ($, on) => {
+  const k = await kBoot($, on, TERM, { boxText: '  \tönce yaz  ' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await pressKey(ui, k.echo, 'd-d1-0')
+  expect(k.box.text).toBe('  \tönce yaz  \nKarar (d1): Durumları gör')
+  expect(k.log.fills).toEqual([{ text: '\nKarar (d1): Durumları gör', mode: 'append' }]) // only the new line goes in; nothing the owner typed is re-written
+  await ui.unmount()
+  expect(withKarar('  a  ', 'd1', 'X')).toBe('  a  \nKarar (d1): X')
+  expect(withKarar('a\n  ', 'd1', 'X')).toBe('a\n  \nKarar (d1): X')
+  expect(withKarar('\n\nx', 'd1', 'X')).toBe('\n\nx\nKarar (d1): X')
+})
+
+test('hardening F21 (a): a failed delivery gives back only its own press: another decision\'s "Gönderildi" stays', async ($, on) => {
+  const k = await pBoot($, on)
+  const ui = await k.mount()
+  await k.start('turn-1')
+  await ui.press({ key: 'd-d1-0' })
+  expect((await k.tool()).context).toEqual([`${HEAD}\nKarar (d1): Durumları gör`]) // d1 delivered
+  await k.end('turn-1')
+  k.gate.submit = 'throws'
+  await ui.press({ key: 'd-d2-0' }) // idle: submitted at once, and the submit fails
+  const root = await drawnOf(ui)
+  expect(textNode(root, /^Gönderildi: Durumları gör$/)).toBeDefined() // d1's mark stays
+  expect(textNode(nodesOf(root).find(n => n.props?.key === 'd-d2') as Node, /^Sırada/)).toBeDefined() // d2 is back in the queue
+  expect((await ui.find({ key: 'd-d1' }))?.props.borderColor).toBe('success')
+  await ui.unmount()
+})
+
+test('hardening F21 (b): on the terminal a failed re-press of a delivered decision is requeued and shown "Sırada"; its earlier mark is gone, so a desktop press of the same decision is accepted (kills: rollback keeps the mark)', async ($, on) => {
+  const k = await pBoot($, on, { surface: 'terminal', isFilled: false })
+  const ui = await k.mount()
+  await ui.press({ key: 'd-d1-0' }) // box refuses the fill, idle: submitted
+  expect(k.log.sent).toEqual(['Karar (d1): Durumları gör'])
+  expect(textNode(await drawnOf(ui), /^Gönderildi: Durumları gör$/)).toBeDefined()
+  k.gate.submit = 'throws'
+  await ui.press({ key: 'd-d1-1' }) // the same decision again: allowed on the terminal; its submit fails
+  const root = await drawnOf(ui)
+  expect(textNode(root, /^Sırada/)).toBeDefined()
+  expect(textNode(root, /^Gönderildi/)).toBeUndefined()
+  // The desktop ignores a press of a decision whose mark stands. After the failed re-press the mark is gone: this press is taken and replaces the queued one.
+  k.gate.submit = 'ok'
+  const desk = await k.mount('desktop')
+  await desk.press({ key: 'd-d1-0' })
+  expect(k.log.sent).toEqual(['Karar (d1): Durumları gör', 'Karar (d1): Durumları gör'])
+  expect(textNode(await drawnOf(ui), /^Gönderildi: Durumları gör$/)).toBeDefined()
+  await desk.unmount()
+  await ui.unmount()
+})
+
+test('hardening F21 (b2): a failed submit never puts back a press that a newer press of the same decision replaced meanwhile', async ($, on) => {
+  const k = await pBoot($, on, { surface: 'terminal', isFilled: false })
+  const ui = await k.mount()
+  await k.start('turn-1')
+  await ui.press({ key: 'd-d1-0' }) // queued behind the running turn
+  k.gate.submit = 'hold'
+  await k.end('turn-1') // the turn ends: the press is submitted, and the submit stays in flight
+  await k.start('turn-2')
+  await ui.press({ key: 'd-d1-1' }) // the newer answer, queued behind the new turn
+  k.held.settle?.(true) // the first submit now fails
+  await k.settle()
+  const got = (await k.tool()).context
+  expect(got).toEqual([`${HEAD}\nKarar (d1): Sonra`]) // only the newer one
+  await ui.unmount()
+})
+
+test('hardening F22: a command neither carries the reopen line nor consumes it', async ($, on) => {
+  const r = await rBoot($, on)
+  const cmd = await r.prompt({ command: { name: 'help', args: '' } })
+  expect(cmd).toEqual([])
+  expect(await r.prompt()).toHaveLength(1) // the first real prompt still owes it
+})
+
+test('hardening F22: a rejecting ui.open at session.attach is caught and next(e) still runs (kills: the hook drops next(e); the engine runs a throwing hook fail-open, so removing the .catch alone is not observable here)', async ($, on) => {
+  const r = await rBoot($, on)
+  r.log.openFails = true
+  const before = r.log.attached
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+  expect(r.log.opens).toBeGreaterThan(1) // asked again, and the open was refused ({ deny }: the call rejects)
+  expect(r.log.attached).toBe(before + 1) // the engine's own attach ran
+})
+
+test('hardening F22: team mode off with a store record shows no banner and sends no reopen line', async ($, on) => {
+  const r = await rBoot($, on, { recordOff: true })
+  const ui = await r.mount()
+  expect(await bannerOf(ui)).toBeUndefined()
+  expect(await r.prompt()).toEqual([])
+  await ui.unmount()
+})
+
+// A mounted session whose status folder lists other sessions' files from a fake that the test changes, polled by a mock clock.
+test('hardening F23: a file that leaves the listing and comes back with the same size and mtime is read again (the seen cache is pruned)', async ($, on) => {
+  const reads: string[] = []
+  const state = { listing: [entry('p--aaaaaaaa.json', { size: 120, mtimeMs: NOW - 60_000 })] }
+  const file = decisionsOnly(1)
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.close', () => ({ value: undefined }))
+  on('env.get', () => ({ value: '/Users/x' }))
+  on('fs.exists', () => ({ value: false }))
+  on('fs.list', () => ({ value: state.listing }))
+  on('fs.read', (_, e) => {
+    reads.push(e.path)
+    return { value: file }
+  })
+  const clock = mock.clock(on, { now: NOW })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.append', (_, e, next) => next(e))
+  await $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'desktop', isInteractive: true })
+  expect(reads).toHaveLength(1)
+  await clock.advance(500)
+  expect(reads).toHaveLength(1) // unchanged: from the cache
+  state.listing = []
+  await clock.advance(500) // gone from the listing: forgotten
+  state.listing = [entry('p--aaaaaaaa.json', { size: 120, mtimeMs: NOW - 60_000 })]
+  await clock.advance(500)
+  expect(reads).toHaveLength(2) // back with the same size and mtime: read again
+})
+
+// Round 2 (R1): the overflow line is for a real overflow of the status write only. Source: criterion 12 and QA r1 Neon finding 1 (probes PROBE_4, 4b).
+const FRESH = BIG_GOOD.replace('İyi', 'Yeni')
+test('hardening C12 / R1: a failing outbox update after a good status write keeps the new view and shows no overflow line', async ($, on) => {
+  const deny = { outboxOnce: false }
+  const k = await sBoot($, on, 'desktop', on2 =>
+    on2('state.set', (_, e, next) => {
+      if (e.key === 'outbox' && deny.outboxOnce) {
+        deny.outboxOnce = false
+        return { deny: 'transient outbox failure' } as never
+      }
+      return next(e)
+    }),
+  )
+  deny.outboxOnce = true
+  await k.change(FRESH, 100)
+  expect(await k.ui.find({ type: 'Text', text: /Yeni görev/ })).toBeDefined() // the good write is not reverted
+  expect(await k.ui.find({ type: 'Text', text: /^Durum dosyası/ })).toBeUndefined()
+  await k.ui.unmount()
+})
+
+test('hardening C12 / R1: a status write that fails for another reason than size keeps the last view and does not claim an overflow', async ($, on) => {
+  const deny = { statusOnce: false }
+  const k = await sBoot($, on, 'desktop', on2 =>
+    on2('state.set', (_, e, next) => {
+      if (e.key === 'status' && deny.statusOnce) {
+        deny.statusOnce = false
+        return { deny: 'policy denied' } as never
+      }
+      return next(e)
+    }),
+  )
+  deny.statusOnce = true
+  await k.change(FRESH, 100)
+  const lines = (await k.ui.findAll({ type: 'Text', text: /^Durum/ })).map(n => n.text)
+  expect(lines).toHaveLength(1)
+  expect(lines[0]).not.toMatch(/sığmıyor|4 MiB/)
+  expect(await k.ui.find({ type: 'Text', text: /İyi görev/ })).toBeDefined()
+  await k.ui.unmount()
+})
+
+// Round 2 (R6): the session.end timer alone. A stalled poll (its period never answers) and a hand-held `clock.after` isolate it; the mock clock
+// cannot, as it also answers `clock.every`. Source: QA r1 Neon finding 6 (probe PROBE_2); mutant: "session.end carry removed".
+test('hardening F24 / R6: with the poll stalled, the session.end timer (500 ms) alone carries the record to the new id after /clear', async ($, on) => {
+  let sid = ID_OLD
+  let now = CLEAR_NOW
+  const store = new Map<string, unknown>()
+  const atoms = new Map<string, { value: unknown; version: number }>()
+  const slot = (e: { plugin: string; key: string }) => `${e.plugin}/${e.key}`
+  let carried!: () => void
+  const done = new Promise<void>(res => (carried = res))
+  on('store.get', (_, e) => ({ value: store.get(e.key) }))
+  on('store.set', (_, e) => {
+    store.set(e.key, JSON.parse(JSON.stringify(e.value)))
+    if (e.key === `session:${ID_NEW}`) carried()
+    return { value: undefined }
+  })
+  on('store.delete', () => ({ value: undefined }))
+  on('store.keys', () => ({ value: [...store.keys()] }))
+  on('state.get', (_, e) => ({ value: { value: atoms.get(slot(e))?.value, version: atoms.get(slot(e))?.version ?? 0 } }))
+  on('state.set', (_, e) => {
+    const version = atoms.get(slot(e))?.version ?? 0
+    if (e.ifVersion !== undefined && e.ifVersion !== version) return { value: { isSet: false, version } }
+    atoms.set(slot(e), { value: e.value, version: version + 1 })
+    return { value: { isSet: true, version: version + 1 } }
+  })
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true as const } }))
+  on('ui.close', () => ({ value: undefined }))
+  on('env.get', () => ({ value: '/Users/x' }))
+  on('session.id', () => ({ value: sid }))
+  on('fs.exists', () => ({ value: true }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: 1, isLink: false } }))
+  on('fs.read', () => ({ value: '{"v":1}' }))
+  on('fs.list', () => ({ value: [] }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.end', (_, e) => ({ sessionId: e.sessionId }))
+  on('session.append', (_, e, next) => next(e))
+  const afters: { ms: number; fire: () => void }[] = []
+  on('clock.now', () => ({ value: now }))
+  on('clock.every', () => new Promise<never>(() => undefined)) // the poll never ticks
+  on('clock.after', (_, e) => new Promise<{ value: undefined }>(res => afters.push({ ms: e.ms, fire: () => res({ value: undefined }) })))
+  await $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'desktop', isInteractive: true })
+  const foot = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
+  await foot.press({ key: 'team-mode' }) // team mode on: the session has a record
+  await foot.unmount()
+  await $.session.end({ reason: 'clear', sessionId: ID_OLD, resume: { id: ID_OLD } })
+  sid = ID_NEW
+  atoms.clear()
+  expect(afters.map(a => a.ms)).toEqual([500]) // the plugin asked for one look after 500 ms
+  now += 500
+  afters[0]!.fire()
+  await done
+  expect(store.get(`session:${ID_NEW}`)).toEqual(rec(OLD, SWITCH, { announced: OLD }, CLEAR_NOW + 500))
+})
+
+// Round 2 (R9): the reopen line is claimed in one atomic update, so two prompts at once cannot both carry it.
+test('hardening R9: two prompts submitted at the same time carry the reopen line once', async ($, on) => {
+  const r = await rBoot($, on)
+  const send = (text: string) => $.prompt.submit({ wait: false, origin: { kind: 'composer' }, text } as never)
+  await Promise.all([send('bir'), send('iki'), send('üç')])
+  expect(r.log.contexts.flatMap(c => c ?? []).filter(c => c.startsWith(R_PREFIX))).toHaveLength(1)
+})
+
+// Round 3 (S1): one raw-string id rule for every id the parser reads: the decision id, the task id and a decision's `task` link. A `task` value
+// that fails the rule links to nothing. Source: QA r2 (Opus) and the Lead's adjudication: `task: "t1\r"` must not link to `t1` (it did not on base).
+test('hardening S1: a decision whose `task` fails the id rule (control character, space, too long, not a string) links to no task', async () => {
+  const link = (task: unknown) => {
+    const s = parseStatus(
+      JSON.stringify({
+        v: 1,
+        decisions: [{ id: 'd1', kind: 'Takıldı · Developer', text: 'Ne?', task, options: [] }],
+        tasks: [{ id: 't1', title: 'Yazılı', stage: 'build', roles: [{ name: 'Developer', state: 'yazıyor', status: 'running' }] }],
+      }),
+    )
+    return { state: s.tasks[0]?.state, linked: decisionTask(s.decisions[0]!, s.tasks), task: s.decisions[0]?.task }
+  }
+  // The written id links, as before.
+  expect(link('t1')).toEqual({ state: 'blocked', linked: { kind: 'Takıldı · Developer · Yazılı', blocked: true }, task: 't1' })
+  for (const bad of ['t1\r', 't\u001b1', 't1\u007f', 't\u00001', ' t1', 't1 ', 'x'.repeat(65), '#1', 5, null]) {
+    expect([bad, link(bad)]).toEqual([bad, { state: 'running', linked: { kind: 'Takıldı · Developer', blocked: false }, task: undefined }])
+  }
+})
+
+test('hardening S1: decisionTask never links a decision to a made-up task id, even one built by hand', async () => {
+  const made = { id: '#1', generatedId: true as const, title: 'Kimliksiz', stage: 0, state: 'running' as const, roles: [] }
+  expect(decisionTask({ id: 'd1', kind: 'K', text: 't', task: '#1', options: [] }, [made])).toEqual({ kind: 'K', blocked: false })
+})
+
+// Round 3 (S2): an offset counts only with hours 00-23 and minutes 00-59; any other reads the time as local, like no offset (base did the same).
+test('hardening S2: an out-of-range offset is ignored (the written clock is read as local); the widest valid ones still count', async () => {
+  const now = new Date(2026, 10, 19, 10, 0).getTime()
+  const digits = { text: '18 Kas 23:30', days: 1 }
+  for (const off of ['+99:99', '-99:99', '+24:00', '+05:60', '+99', '+2400', '-24', '+00:99']) {
+    expect([off, stamp(`2026-11-18T23:30:00${off}`, now)]).toEqual([off, digits])
+  }
+  const evening = new Date(2026, 10, 18, 23, 30).getTime()
+  const local = -new Date(evening).getTimezoneOffset()
+  for (const shift of [-local + 23 * 60 + 59, -local - 23 * 60 - 59]) {
+    // The widest valid offsets: the written digits are the instant's clock in that offset, so the local day and clock come back.
+    const iso = isoAt(evening, local + shift, 'colon')
+    expect([iso, stamp(iso, now)]).toEqual([iso, digits])
+  }
 })

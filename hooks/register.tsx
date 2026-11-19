@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Decision, DirEntry, Mode, Other, Outbox, Press, RoleStatus, SessionRecord, StatusView, Task, TaskState } from '../types'
-import { ANNOUNCE, ASK_WHERE, KARAR, OPEN_ROW, STAGE_LABELS, baseName, countStates, decisionTask, detailScroll, expandHome, isInside, isPush, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, reopenLine, stamp, stopped, trimSlash, withKarar } from './status'
+import type { Decision, DirEntry, Mode, Other, Outbox, Press, Reopen, RoleStatus, SessionRecord, Status, StatusView, Task, TaskState } from '../types'
+import { ANNOUNCE, ASK_WHERE, KARAR, OPEN_ROW, STAGE_LABELS, baseName, clip, countStates, decisionTask, detailScroll, expandHome, flat, isBlocking, isInside, isPush, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, reopenLine, stamp, stopped, trimSlash, withKarar } from './status'
 import { AMBER, BAD, CLAY, MUTED, OK, TRACK, dotSvg, meterSvg, stagesSvg } from './svg'
 import { QUEUED, QUEUED_PUSH, TBOX, hk, termBanner, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termTasks, termUsage } from './terminal'
 
@@ -32,6 +32,9 @@ const karar = atom({ plugin: 'agent-team', key: 'karar' } as const, [] as string
 // when the decision leaves the file). `said`: lines without a decision (Pause, Devam) submitted as the owner, until the next status read.
 // One atom, so every change (a press, a delivery, a give-back) is one atomic update.
 const outbox = atom({ plugin: 'agent-team', key: 'outbox' } as const, { queue: [], sent: [], said: [] } as Outbox, { shape: 'outbox-2' })
+// A resumed session in team mode: when it started (the pane warns while the status file is older), and whether its first prompt still owes the
+// Lead the reopen line. since 0: not reopened (a new session, /clear). An atom: a hot reload keeps it, /clear resets it.
+const reopened = atom({ plugin: 'agent-team', key: 'reopen' } as const, { since: 0, line: false } as Reopen, { shape: 'reopen-1' })
 
 // Raw colors that read on a light and a dark pane alike (a theme key has no card fill).
 const CARD = {
@@ -190,27 +193,49 @@ const announce = ($: EngineInterface, file: string) =>
 // (file deleted, task removed), so the same id coming back does not reopen it by itself.
 async function setView($: EngineInterface, view: StatusView) {
   await update($, status, () => view)
+  await tidy($, view)
+}
+
+async function tidy($: EngineInterface, view: StatusView) {
   const ids = view.data?.decisions.map(d => d.id) ?? []
   await update($, outbox, s => ({ ...s, sent: s.sent.filter(([id]) => ids.includes(id)), said: [] }))
   const open = await read($, detail)
   if (open && !view.data?.tasks.some(t => t.id === open)) await update($, detail, () => null)
 }
 
+// The own file is read only up to this size: the pane's state holds the parsed view (4 MiB at most), and a file this big is not a status.
+const MAX_KIB = 1024
+const STATE_MAX = 4_194_304
 async function refresh($: EngineInterface, file: string) {
   const prev = await read($, status)
   if (!(await $.fs.exists(file))) {
     if (prev.file !== file || prev.data || prev.error) await setView($, { file, mtime: 0, data: null, error: null })
     return
   }
-  const { mtimeMs } = await $.fs.stat(file)
+  const { mtimeMs, size } = await $.fs.stat(file)
   if (prev.file === file && prev.mtime === mtimeMs) return
+  // Every failure keeps the last good view and shows one Turkish line; the next change of the file tries again.
+  const fail = (error: string) => setView($, { file, mtime: mtimeMs, data: prev.data, error })
+  if (size > MAX_KIB * 1024) return fail(`Durum dosyası çok büyük: ${Math.ceil(size / 1024)} KiB (en çok ${MAX_KIB} KiB)`)
+  let data: Status
   try {
     const text = await $.fs.read(file)
-    await setView($, { file, mtime: mtimeMs, data: parseStatus(typeof text === 'string' ? text : ''), error: null })
+    data = parseStatus(typeof text === 'string' ? text : '')
   } catch (err) {
-    const error = err instanceof Error ? err.message : String(err)
-    await setView($, { file, mtime: mtimeMs, data: prev.data, error })
+    return fail(`Durum dosyası okunamadı: ${err instanceof Error ? err.message : String(err)}`)
   }
+  const view: StatusView = { file, mtime: mtimeMs, data, error: null }
+  try {
+    await update($, status, () => view)
+  } catch (err) {
+    // Only a view over the state limit (the engine counts the characters of the JSON value) says so; any other refusal says what it was.
+    await fail(
+      JSON.stringify(view).length > STATE_MAX ? "Durum dosyası pane'in durum sınırına sığmıyor (en çok 4 MiB)" : `Durum dosyası pane'e yazılamadı: ${err instanceof Error ? err.message : String(err)}`,
+    )
+    return
+  }
+  // The new view is written: a failure of what follows (the outbox, the open detail) is not the view's, and never takes it back.
+  await tidy($, view)
 }
 
 // The other files of the status folder (see otherFiles): untrusted data, read-only; what fails to list, read or parse is skipped.
@@ -267,17 +292,19 @@ async function sweep($: EngineInterface) {
 // `followed` is what session.start settled on: the status folder, the file it reads, the last session id seen.
 const followed = { dir: '', file: '', last: '' }
 
-// A resumed session (a store record, empty atoms) in team mode: when it started (the pane warns while the status file is older), and
-// whether its first prompt still owes the Lead the reopen line. since 0: not reopened (a new session, a reload, /clear).
-const reopen = { since: 0, line: false }
-
 // The reopen line, once: the first prompt of any kind (commands excepted) takes it, unless the Lead already rewrote the file.
 async function takeReopen($: EngineInterface) {
-  if (!reopen.line) return undefined
-  reopen.line = false
   try {
+    if (!(await read($, reopened)).line) return undefined // nearly every prompt: nothing is written
+    // Claimed in one update: of two prompts at once, only the one that sees `line` set takes it.
+    let since = -1
+    await update($, reopened, s => {
+      since = s.line ? s.since : -1
+      return s.line ? { ...s, line: false } : s
+    })
+    if (since < 0) return undefined
     const { data, mtime } = await read($, status)
-    return data && mtime < reopen.since ? reopenLine(data, await $.clock.now()) : undefined
+    return mtime < since ? reopenLine(data, await $.clock.now()) : undefined
   } catch {
     return undefined
   }
@@ -291,7 +318,7 @@ async function follow($: EngineInterface) {
     const id = String(await $.session.id().catch(() => ''))
     if (!id || id === was) return
     followed.last = id
-    Object.assign(reopen, { since: 0, line: false }) // /clear: the owner cleared, nothing was reopened
+    await update($, reopened, () => ({ since: 0, line: false })) // /clear: the owner cleared, nothing was reopened
     // The path comes back first, record or none: a session that never was a team session has no record, and a /team
     // before the next poll must not read the reset (empty) path.
     await refresh($, file)
@@ -349,8 +376,11 @@ export const register: Register = (on, options) => {
       const to: Mode | undefined = isInside(e.cwd, parseFolders(options.teamFolders, home)) ? { isOn: true, source: 'folder' } : rec?.mode.isOn ? rec.mode : undefined
       if (to) await update($, mode, () => (m = to))
     }
-    reopen.since = m.isOn && !held && rec ? await $.clock.now().catch(() => 0) : 0
-    reopen.line = reopen.since > 0
+    // A reload (the atom holds the file) leaves the reopen state as it is.
+    if (m.isOn && !held && rec) {
+      const since = await $.clock.now().catch(() => 0)
+      await update($, reopened, () => ({ since, line: since > 0 }))
+    }
     let announced = rec?.announced
     if (m.isOn) {
       void $.ui.open(PANE_OPEN).catch(() => undefined) // not placed (a narrow terminal, no surface yet): session.attach asks again
@@ -362,6 +392,9 @@ export const register: Register = (on, options) => {
       if (m.isOn || rec) await save($, sid, { file, mode: m, announced })
       await sweep($)
     } catch {} // a store that fails must not stop the start
+
+    // Karar lines already in the box (a session started or the plugin reloaded with a draft) show picked; the desktop's box is the app's own.
+    if (e.surface === 'terminal') await $.prompt.read().then(box => syncKarar($, box.text)).catch(() => undefined)
 
     const seen: Seen = new Map()
     // Independent: one failing stops neither the other nor the clock.
@@ -378,7 +411,8 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // /clear ends the old session and the new id shows a moment later: look soon, not only at the next poll, so a quit right after still leaves a record.
+  // /clear ends the old session and the new id shows a moment later: look once after 500 ms, so a quit right after still leaves a record. The 500 ms poll looks
+  // as often, so while it ticks this is a second path; with the poll stalled it is the only one (tested alone: the F24 / R6 test).
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') $.clock.after(SOON_MS, () => follow($))
     return next(e)
@@ -499,7 +533,8 @@ export const register: Register = (on, options) => {
     const view = await read($, status)
     const { file, error } = view
     // A reopened session whose file was not written since the start: its running roles are drawn stopped until the Lead writes again.
-    const cut = reopen.since > 0 && view.data && view.mtime < reopen.since ? stopped(view.data) : undefined
+    const since = (await read($, reopened)).since
+    const cut = since > 0 && view.data && view.mtime < since ? stopped(view.data) : undefined
     const data = cut?.data ?? view.data
     const now = await $.clock.now().catch(() => NaN)
     const lines = await read($, karar)
@@ -517,7 +552,7 @@ export const register: Register = (on, options) => {
     const openId = await read($, detail)
     const open = openId ? data?.tasks.find(t => t.id === openId) : undefined
 
-    const errorLine = error && <Text color="error" size="caption">Durum dosyası okunamadı: {error}</Text>
+    const errorLine = error && <Text color="error" size="caption">{error}</Text>
 
     const decisionCard = (d: Decision) => {
       const { kind, blocked } = decisionTask(d, data?.tasks ?? [])
@@ -647,7 +682,7 @@ export const register: Register = (on, options) => {
         )}
         {t.candidate && (
           <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="sm">
-            <Text size="caption" mono dimColor>aday {t.candidate.slice(0, 7)}</Text>
+            <Text size="caption" mono dimColor>aday {clip(t.candidate, 7)}</Text>
             <Box flexDirection="row" gap="xs">
               {!!t.blocking && (
                 <Box key={`chip-blocking-${t.id}`} backgroundColor={CHIP_BLOCKING} paddingX="xs">
@@ -666,6 +701,7 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
+    const asked = (t: Task) => flat(`${t.title} ne durumda?`)
     const detailView = (t: Task) => {
       const last = t.rounds?.at(-1)
       return (
@@ -679,7 +715,7 @@ export const register: Register = (on, options) => {
               {reason(t)}
             </Box>
             {t.branch && <Text size="caption" mono dimColor wrap="truncate-end">{t.branch}</Text>}
-            {t.candidate && <Text size="caption" mono dimColor>{t.candidate.slice(0, 7)}</Text>}
+            {t.candidate && <Text size="caption" mono dimColor>{clip(t.candidate, 7)}</Text>}
             {last && <Text size="caption" dimColor>{`${last.verdict} · ${last.n} tur`}</Text>}
           </Box>
           {t.rounds && (
@@ -689,13 +725,13 @@ export const register: Register = (on, options) => {
                 <Box key={`round-${i}`} {...card}>
                   <Box flexDirection="row" justifyContent="space-between" gap="sm">
                     <Text weight="semibold" color={r.verdict === 'GO' ? 'success' : r.verdict.startsWith('NO') ? 'error' : undefined}>{`Tur ${r.n} · ${r.verdict}`}</Text>
-                    {r.candidate && <Text size="caption" mono dimColor>{r.candidate.slice(0, 7)}</Text>}
+                    {r.candidate && <Text size="caption" mono dimColor>{clip(r.candidate, 7)}</Text>}
                   </Box>
                   {r.findings.map((f, j) => {
                     const tag = [f.severity, f.origin].filter(Boolean).join(' · ')
                     return (
                     <Box key={`round-${i}-f-${j}`} flexDirection="column">
-                      {!!tag && <Text size="caption" weight="medium" color={f.severity === 'BLOCKING' ? 'error' : undefined}>{tag}</Text>}
+                      {!!tag && <Text size="caption" weight="medium" color={isBlocking(f) ? 'error' : undefined}>{tag}</Text>}
                       <Text>{f.what}</Text>
                       {f.where && <Text size="caption" mono dimColor>{f.where}</Text>}
                     </Box>
@@ -718,7 +754,8 @@ export const register: Register = (on, options) => {
               ))}
             </Box>
           )}
-          <Button key="detail-ask" label="Lead'e sor" {...key('s')} onPress={() => void $.prompt.fill({ text: `${t.title} hakkında: `, mode: 'replace' })} />
+          {/* The composer is the app's own here (a fill is a draft the owner never sees): the question is a press, one line. */}
+          <Button key="detail-ask" label={labelled("Lead'e sor", asked(t))} onPress={() => void press($, running, { line: asked(t) })} />
         </Box>
       )
     }
@@ -831,7 +868,7 @@ export const register: Register = (on, options) => {
             {m.isOn ? (
               <Box flexDirection="column" gap="xs">
                 {EXAMPLES.map((x, i) => (
-                  <Button key={`ex-${i}`} label={`${x}…`} {...key(String(i + 1))} onPress={() => void $.prompt.fill({ text: x, mode: 'replace' })} />
+                  <Button key={`ex-${i}`} label={`${x}…`} {...key(String(i + 1))} onPress={() => void (term ? $.prompt.fill({ text: x, mode: 'replace' }) : press($, running, { line: x.trimEnd() }))} />
                 ))}
               </Box>
             ) : (

@@ -41,7 +41,7 @@ Mod açılınca pane da açılır. `/team-pane` de pane'i açar.
 Oturum başka gün yeniden açılınca pane eski görev ve kararlarla gelir, durmuş olabilecek rolleri durmuş çizer ve **Nerede kaldık?** düğmesi Lead'den özet ister.
 
 **Terminalde kısayollar.** Pane odaktayken: `1`-`9` karar seçenekleri, `a c d e f g h i j k m n o` görev
-ayrıntıları (sırayla), `p` pause/devam, ayrıntıda `b` geri ve `s` Lead'e sor, alt satırda `t` pane'i açar;
+ayrıntıları (sırayla), `p` pause/devam, ayrıntıda `b` geri ve `s` Lead'e sor, `r` nerede kaldık (yalnız yeniden açılış uyarısı açıkken), alt satırda `t` pane'i açar;
 `esc` odağı sohbete döndürür. Alt satır `◉ agent team` (açık) ya da `○ agent team` (kapalı) der.
 
 **Pane ne gösterir.** Lead'in yazdığı durum dosyasını canlı gösterir:
@@ -87,8 +87,8 @@ gösterir.
 
 ## Durum dosyası
 
-Lead, pane'in okuduğu durumu `<evidenceRoot>/status/<proje>--<oturum kimliğinin ilk 8 karakteri>.json` dosyasına (yolu plugin verir) yazar; böylece aynı klasördeki oturumlar birbirinin durumunu ezmez. Eski `<proje>.json` dosyaları artık okunmaz. Pane dosyayı 3
-saniyede bir kontrol eder. Biçim: [`skills/agent-team/references/status.md`](skills/agent-team/references/status.md).
+Lead, pane'in okuduğu durumu `<evidenceRoot>/status/<proje>--<oturum kimliğinin ilk 8 karakteri>.json` dosyasına (yolu plugin verir) yazar; böylece aynı klasördeki oturumlar birbirinin durumunu ezmez. Eski `<proje>.json` dosyaları artık okunmaz. Pane dosyayı yarım
+saniyede bir (500 ms) kontrol eder. Biçim: [`skills/agent-team/references/status.md`](skills/agent-team/references/status.md).
 
 ## Geliştirme
 

@@ -1,7 +1,7 @@
 import type { EngineInterface } from 'claude-code'
 
 import type { Decision, Other, Outbox, Role, RoleStatus, Task, TaskState } from '../types'
-import { STAGE_LABELS, decisionTask, pickedAt } from './status'
+import { STAGE_LABELS, clip, decisionTask, isBlocking, pickedAt } from './status'
 
 // The terminal drawing of the pane and the footer (approved design "Terminal arayüzü · şimdi ve öneri"):
 // text and theme colors only, no card fill, no Svg; state is a glyph, never a color alone; every press has a key.
@@ -98,6 +98,8 @@ export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], 
           {at >= 0 && <Text color="success">{`✓ seçildi: ${d.options[at]} · Enter ile gider`}</Text>}
           {at < 0 && queued && <Text dimColor>{queued.push ? QUEUED_PUSH : QUEUED}</Text>}
           {at < 0 && !queued && sentTo !== undefined && <Text dimColor>{`Gönderildi: ${sentTo}`}</Text>}
+          {/* One caption row from the start, so a press changes its text and never the card's height. */}
+          {at < 0 && !queued && sentTo === undefined && d.options.length > 0 && <Text dimColor>1-9 ile seç · kutuna yazılır</Text>}
         </Box>
         )
       })}
@@ -168,7 +170,7 @@ export function termTasks(ui: UI, tasks: Task[], n: { running: number; blocked: 
         <Text dimColor>{`${tasks.length} görev`}</Text>
       </Box>
       {tasks.map((t, ti) => {
-        const tur = [t.round !== undefined && `Tur ${t.round}`, t.candidate && `aday ${t.candidate.slice(0, 7)}`].filter(Boolean).join(' · ')
+        const tur = [t.round !== undefined && `Tur ${t.round}`, t.candidate && `aday ${clip(t.candidate, 7)}`].filter(Boolean).join(' · ')
         return (
           <Box key={`t-${t.id}`} {...ROUND} borderColor={t.state === 'blocked' ? 'error' : ROUND.borderColor}>
             <Button key={`detail-${t.id}`} label={t.title} onPress={() => open(t.id)} {...(keys[ti] ? hk(keys[ti]) : { plain: true as const })}>
@@ -191,7 +193,7 @@ export function termTasks(ui: UI, tasks: Task[], n: { running: number; blocked: 
 export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void) {
   const { Box, Button, Text } = ui
   const head = (s: string) => <Text weight="bold">{s}</Text>
-  const where = [t.branch, t.candidate && `aday ${t.candidate.slice(0, 7)}`].filter(Boolean).join(' · ')
+  const where = [t.branch, t.candidate && `aday ${clip(t.candidate, 7)}`].filter(Boolean).join(' · ')
   return (
     <Box flexDirection="column" gap={1}>
       <Box flexDirection="row" justifyContent="space-between" gap={2}>
@@ -217,13 +219,13 @@ export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void) {
           t.rounds.map((r, i) => (
             <Box key={`round-${i}`} {...ROUND}>
               <Text weight="bold" color={r.verdict === 'GO' ? 'success' : r.verdict.startsWith('NO') ? 'error' : undefined}>
-                {['Tur ' + r.n, r.verdict, r.candidate?.slice(0, 7)].filter(Boolean).join(' · ')}
+                {['Tur ' + r.n, r.verdict, r.candidate && clip(r.candidate, 7)].filter(Boolean).join(' · ')}
               </Text>
               {r.findings.map((f, j) => {
                 const tag = [f.severity, f.origin].filter(Boolean).join(' · ')
                 return (
                 <Box key={`round-${i}-f-${j}`} flexDirection="column">
-                  {!!tag && <Text color={f.severity === 'BLOCKING' ? 'error' : undefined} dimColor={f.severity !== 'BLOCKING'}>{tag}</Text>}
+                  {!!tag && <Text color={isBlocking(f) ? 'error' : undefined} dimColor={!isBlocking(f)}>{tag}</Text>}
                   <Text>{f.what}</Text>
                   {f.where && <Text dimColor>{f.where}</Text>}
                 </Box>
