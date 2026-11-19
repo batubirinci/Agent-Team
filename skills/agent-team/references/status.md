@@ -84,10 +84,11 @@ Fields:
 - `limits`: the usage view's percentages as last read; leave out when not read this session.
 - `decisions`: open owner decisions only; remove one as soon as it is answered. `options` are the
   button labels, the first drawn as the main action; on the terminal a press writes
-  the line `Karar (<id>): <option>` into the owner's message box and the owner sends it with Enter; on the desktop a press is sent
-  as the owner's message at once and reaches you when your current turn ends. Either way answers arrive as one or more
-  such lines: remove each answered decision from the file. A push approval is `kind: "Push onayı"` with
-  `options: ["Onayla", "Reddet"]` and the branch and short SHA in `meta`.
+  the line `Karar (<id>): <option>` into the owner's message box and the owner sends it with Enter; on the desktop a press goes
+  to you at your next finished tool step. Answers arrive in an owner message or in an `[Agent Team pane]` reminder on a tool
+  result, as one or more such lines: remove each answered decision from the file. Use `kind: "Push onayı"` for every approval of
+  an irreversible outward action (push, PR, remote merge, deletion), with `options: ["Onayla", "Reddet"]` and, for a push,
+  the branch and short SHA in `meta`: such an answer is always the owner's own message, never a reminder.
 - `tasks`: every task not yet reported (Flow 5). Write each task's `id`: a task without one still
   draws (the pane makes up an id), but no decision can link to it. `stage` is one of `spec`, `build`, `review`,
   `revise`, `report`. `round` is the review round (omit before the first review). `candidate` is
