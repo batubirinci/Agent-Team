@@ -4195,6 +4195,7 @@ test('hardening D16: the header date uses the written instant in local time, in 
   const local = -new Date(evening).getTimezoneOffset() // the host's offset in minutes
   for (const shift of [120, -180, 300]) {
     for (const form of ['colon', 'plain', 'hours'] as const) {
+      if (form === 'hours' && (local + shift) % 60 !== 0) continue // "+05" cannot spell a half-hour offset
       const iso = isoAt(evening, local + shift, form) // whole hours from the host's offset: the digits are not the local clock
       expect([iso, stamp(iso, now)]).toEqual([iso, { text: '18 Kas 23:30', days: 1 }])
     }
