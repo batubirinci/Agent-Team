@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { decisionTask, detailScroll, isInside, isPush, isStuck, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseStatus, pickedAt, stamp, summary, withKarar } from '../hooks/status'
+import { bandSegments, decisionTask, detailScroll, isInside, isPush, isStuck, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseStatus, pickedAt, spinnerWord, stamp, summary, withKarar } from '../hooks/status'
 import { CLAY, MUTED, STUCK, TRACK, dotSvg, meterSvg, stagesSvg } from '../hooks/svg'
 
 const fills = (svg: string) => [...svg.matchAll(/<rect [^>]*fill="([^"]+)"/g)].map(m => m[1])
@@ -1372,7 +1372,7 @@ test('terminal empty pane: no raw color, mode off offers pane-team-on on o, mode
   expect(fill).toEqual(['Yeni özellik ekle: '])
 })
 
-test('terminal footer: plain team-mode label that shows the state in words, pane on t, engine labels dim; desktop footer unchanged', async ($, on) => {
+test('terminal footer: plain team-mode label that shows the state in words, pane without a key (criterion 22), engine labels dim; desktop footer unchanged', async ($, on) => {
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.close', () => ({ value: undefined }))
   on('session.append', (_, e, next) => next(e))
@@ -1380,7 +1380,7 @@ test('terminal footer: plain team-mode label that shows the state in words, pane
   const offRoot = await drawnOf(off)
   expect(buttons(offRoot).map(b => [b.props?.key, b.props?.label, b.props?.hotkey, b.props?.plain])).toEqual([
     ['team-mode', '○ agent team', undefined, true],
-    ['team-pane-open', 'pane', 't', true],
+    ['team-pane-open', 'pane', undefined, true], // was 't': a hotkey never works from the footer (criterion 22)
   ])
   expect(textNode(offRoot, /^İzinleri atla$/)?.props?.dimColor).toBe(true)
   expect(RAW_COLOR.test(JSON.stringify(nodesOf(offRoot).map(n => n.props)))).toBe(false)
@@ -4545,4 +4545,464 @@ test('hardening S2: an out-of-range offset is ignored (the written clock is read
     const iso = isoAt(evening, local + shift, 'colon')
     expect([iso, stamp(iso, now)]).toEqual([iso, digits])
   }
+})
+
+// ---- terminal T2 + T3: the band above the prompt, the spinner word, the glyph tick (criteria 1-43 of tasks/terminal/t23-criteria.md) ----
+// Expected values: the criteria file (`c<n>` below), the fit table of criterion 15 counted by hand (1 cell per character), the harness fixture
+// basic.json (2 decisions, 2 running tasks, running roles "QA · GPT-6 Astra" then "Developer · Sonnet 5.5"), and the owner's text of 2026-11-19
+// (owner-decisions.md). Never read back from the implementation.
+const tRole = (name: string, state: string, status: string) => ({ name, state, status })
+const tFile = (o: { decisions?: number; running?: number; blocked?: number } = {}) =>
+  JSON.stringify({
+    v: 1,
+    updatedAt: '2026-11-19T16:00:00+03:00',
+    lead: 'Opus 5.5',
+    decisions: Array.from({ length: o.decisions ?? 0 }, (_, i) => ({ id: `d${i + 1}`, text: `Soru ${i + 1}`, options: ['Evet'] })),
+    tasks: [
+      ...Array.from({ length: o.running ?? 0 }, (_, i) => ({ id: `r${i + 1}`, title: `Koşan ${i + 1}`, stage: 'build', roles: [tRole('Developer · Sonnet 5.5', 'yazıyor', 'running')] })),
+      ...Array.from({ length: o.blocked ?? 0 }, (_, i) => ({ id: `b${i + 1}`, title: `Takılan ${i + 1}`, stage: 'build', roles: [tRole('QA 2', 'başlatılamadı', 'blocked')] })),
+      { id: 'dn', title: 'Biten', stage: 'report', roles: [tRole('Analyst', 'bitti', 'done')] },
+    ],
+  })
+const T_BASIC = JSON.stringify({
+  v: 1,
+  decisions: [
+    { id: 'd1', kind: 'Ürün kararı', text: 'Hangisi sayılsın?', task: 't1', options: ['Durumları gör', 'Sonra'] },
+    { id: 'd2', kind: 'Push onayı', text: "main'e gitsin mi?", task: 't2', options: ['Onayla', 'Reddet'] },
+  ],
+  tasks: [
+    { id: 't1', title: 'Seçim kutusu taşması', stage: 'review', roles: [tRole('Developer · Sonnet 5.5', 'teslim etti', 'done'), tRole('QA · GPT-6 Astra', 'inceliyor', 'running'), tRole('QA 2 · canlı kontrol', 'sırada', 'waiting')] },
+    { id: 't2', title: 'Terminal özeti', stage: 'build', roles: [tRole('Developer · Sonnet 5.5', 'yazıyor', 'running')] },
+    { id: 't3', title: 'Bekleyen iş', stage: 'spec', wait: 'sırada', roles: [tRole('Analyst · Fable 5.2', 'sırada', 'waiting')] },
+  ],
+})
+
+// A terminal session (team mode: pass FOLDERS) with a fake pane list: `st.placed` is what $.ui.panes() says, a test flips it like the owner
+// closing the pane or the terminal crossing 110 columns; an asked open (focus) places it (types:18154-18157). One poll per advance(500).
+// One boot per test: the hooks and the atoms are the test's.
+const tBoot = async (
+  $: Parameters<TestBody>[0],
+  on: Parameters<TestBody>[1],
+  o: { surface?: 'desktop' | 'terminal'; status?: string; placed?: boolean; reopen?: boolean; others?: number; noFile?: boolean } = {},
+) => {
+  const disk = { text: o.status ?? T_BASIC, mtime: R_OLD_MTIME }
+  const st = { placed: o.placed ?? false }
+  const log = {
+    opened: [] as { id: string; title?: string; columns?: number; focus?: true }[],
+    sets: [] as string[],
+    gets: [] as string[],
+    submits: [] as { text: string; context?: readonly string[] }[],
+    rows: [] as string[],
+  }
+  const OTHER = 'ops--5e6f7a8b.json'
+  const clock = mock.clock(on, { now: R_NOW })
+  mock.store(on, o.reopen ? { [KEY_OLD]: rec(OLD, SWITCH, { announced: OLD }) } : {})
+  on('session.id', () => ({ value: ID_OLD }))
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('ui.open', (_, e) => {
+    log.opened.push(e as never)
+    if (e.focus) st.placed = true
+    return { value: st.placed ? { isPlaced: true as const } : { isPlaced: false as const, reason: 'narrow' } }
+  })
+  on('ui.close', () => ({ value: undefined }))
+  on('ui.panes', () => ({ value: [{ id: 'agent-team', title: 'Agent Team', isShown: st.placed, isFocused: false, isPlaced: st.placed }] }))
+  on('env.get', () => ({ value: '/Users/x' }))
+  on('fs.exists', () => ({ value: !o.noFile }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: disk.mtime, isLink: false } }))
+  on('fs.list', () => ({ value: o.others ? [{ name: OTHER, kind: 'file' as const, size: 1000, mtimeMs: R_NOW - 60_000, isLink: false }] : [] }))
+  on('fs.read', (_, e) => ({ value: e.path.endsWith(OTHER) ? tFile({ decisions: o.others }) : disk.text }))
+  on('state.get', (_, e, next) => {
+    log.gets.push(e.key)
+    return next(e)
+  })
+  on('state.set', (_, e, next) => {
+    log.sets.push(e.key)
+    return next(e)
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.append', (_, e, next) => {
+    const block = e.message.content[0]
+    log.rows.push(block && 'text' in block ? String(block.text) : '')
+    return next(e)
+  })
+  on('prompt.submit', (_, e) => {
+    log.submits.push({ text: e.text, context: e.context })
+    return { text: e.text }
+  })
+  // Beneath the plugin: what `next(e)` draws. A hidden band shows "engine"; a Spinner shows the word it was handed.
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>{'word' in e.props ? e.props.word : 'engine'}</Text>
+  })
+  await $.session.start({ cwd: '/Users/x/Projeler/shop', surface: o.surface ?? 'terminal', isInteractive: true })
+  const band = (props: { hasSurvey?: boolean; bodyColumns?: number } = {}, surface: 'terminal' | 'desktop' = 'terminal') =>
+    $.ui.mount({ ...BAND, surface, props: { ...BAND.props, ...props } })
+  const spinner = (props: { message?: string | null } = {}, surface: 'terminal' | 'desktop' | 'vscode' = 'terminal') =>
+    $.ui.mount({ plugin: 'agent-team', component: 'Spinner', surface, props: { word: 'Sautéing', message: null, suffix: '…', mode: 'thinking', ...props } })
+  const pane = () => $.ui.mount({ ...PANE, surface: 'terminal' })
+  const footer = () => $.ui.mount({ ...FOOTER, surface: 'terminal' })
+  const change = async (text: string) => {
+    disk.text = text
+    disk.mtime = Math.max(disk.mtime, R_NOW) + 1000 // after the reopen: the Lead wrote again
+    await clock.advance(POLL)
+  }
+  return { disk, st, log, clock, band, spinner, pane, footer, change }
+}
+type TMounted = Awaited<ReturnType<Awaited<ReturnType<typeof tBoot>>['band']>>
+const bandHidden = async (ui: TMounted) => {
+  expect(await ui.find({ key: 'band-pane' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'engine' })).toBeDefined() // next(e) ran: the engine's own (empty) band
+}
+// The drawn band as the terminal reads it: the segments, two spaces, "<hotkey>: <label>" (c9, c16).
+const bandRow = (root: Node) => {
+  const text = nodesOf(root).find(n => n.type === 'Text')
+  const b = buttons(root)[0]
+  return [text ? textOf(text) : '', b ? `${b.props?.hotkey}: ${b.props?.label}` : ''].filter(Boolean).join('  ')
+}
+const rowOfSegs = (segs: readonly { text: string }[] | null) => [(segs ?? []).map(s => s.text).join(' · '), 't: pane'].filter(Boolean).join('  ')
+const kinds = (segs: readonly { kind: string }[] | null) => segs?.map(s => s.kind)
+
+test('c2, c3, c7 (band hidden): team mode off', async ($, on) => {
+  const k = await tBoot($, on) // the file holds decisions and running roles, the pane is not placed
+  await bandHidden(await k.band())
+})
+
+test('c2, c3 (band hidden): the pane is placed (dock; an inline seat answers the same isPlaced)', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { placed: true })
+  await bandHidden(await k.band())
+})
+
+test('c2, c4 (band hidden): no status file', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { noFile: true })
+  await bandHidden(await k.band())
+})
+
+test('c1, c2, c4, c5 (band hidden): nothing to say, a survey, the desktop surface; the same session shows it otherwise', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on)
+  expect(await (await k.band()).find({ key: 'band-pane' })).toBeDefined() // the control
+  await bandHidden(await k.band({ hasSurvey: true }))
+  await bandHidden(await k.band({}, 'desktop'))
+  await k.change(tFile()) // a finished task only: no decision, nothing running, nothing blocked
+  await bandHidden(await k.band())
+})
+
+for (const [name, status, row, extra] of [
+  ['decisions', tFile({ decisions: 3 }), '◆ 3 karar  t: pane', {}],
+  ['running', tFile({ running: 2 }), '◐ 2 çalışıyor  t: pane', {}],
+  ['blocked', tFile({ blocked: 1 }), '✗ 1 takıldı  t: pane', {}],
+  ['stale reopen', tFile(), '! yeniden açıldı  t: pane', { reopen: true }],
+] as const)
+  test(`c4, c9 (band shown): ${name} alone shows the band`, FOLDERS, async ($, on) => {
+    const k = await tBoot($, on, { status, ...extra })
+    expect(bandRow(await drawnOf(await k.band()))).toBe(row)
+  })
+
+test("c8 (others): another session's decisions alone never show the band", FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { status: tFile(), others: 2 })
+  await bandHidden(await k.band())
+})
+
+test('c9-c12 (row text and colors): counts from the file, a glyph and a color per segment, the others last, the ◐ does not turn', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { status: tFile({ decisions: 2, running: 3, blocked: 1 }), others: 4 })
+  const root = await drawnOf(await k.band())
+  expect(bandRow(root)).toBe('◆ 2 karar · ◐ 3 çalışıyor · ✗ 1 takıldı · ◇ 4 diğer  t: pane')
+  const part = (re: RegExp) => textNode(root, re)?.props
+  expect(part(/^◆ 2 karar$/)).toMatchObject({ color: 'claude', weight: 'bold' })
+  expect(part(/^◐ 3 çalışıyor$/)?.color).toBe('claude')
+  expect(part(/^◐ 3 çalışıyor$/)?.weight).toBeUndefined() // not bold, and no frame
+  expect(part(/^✗ 1 takıldı$/)).toMatchObject({ color: 'error', weight: 'bold' })
+  expect(part(/^◇ 4 diğer$/)?.color).toBe('warning')
+})
+
+test('c11, c14 (stale reopen): "! yeniden açıldı" first in warning; the cut roles are not counted as running', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { status: tFile({ decisions: 1, running: 2 }), reopen: true })
+  const root = await drawnOf(await k.band())
+  expect(bandRow(root)).toBe('! yeniden açıldı · ◆ 1 karar  t: pane')
+  expect(textNode(root, /^! yeniden açıldı$/)?.props?.color).toBe('warning')
+  await k.change(tFile({ decisions: 1, running: 2 })) // the Lead wrote again: no stale segment, the roles run
+  expect(bandRow(await drawnOf(await k.band()))).toBe('◆ 1 karar · ◐ 2 çalışıyor  t: pane')
+})
+
+test('c13 (fit reads e.props.bodyColumns): 64 cells whole, 63 drops "◇ 12 diğer"', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { status: tFile({ decisions: 12, running: 12, blocked: 12 }), others: 12 })
+  expect(bandRow(await drawnOf(await k.band({ bodyColumns: 64 })))).toBe('◆ 12 karar · ◐ 12 çalışıyor · ✗ 12 takıldı · ◇ 12 diğer  t: pane')
+  expect(bandRow(await drawnOf(await k.band({ bodyColumns: 63 })))).toBe('◆ 12 karar · ◐ 12 çalışıyor · ✗ 12 takıldı  t: pane')
+})
+
+test('c13-c15 (fit, pure): the hand-counted rows of the criteria table, the cut order, the floor at 34', async () => {
+  const cells = (segs: readonly { text: string }[] | null) => Array.from(rowOfSegs(segs)).length
+  const n = (over: object) => ({ stale: false, decisions: 0, running: 0, blocked: 0, others: 0, ...over })
+  expect(cells(bandSegments(n({ decisions: 2, running: 3, blocked: 1 }), 75))).toBe(48)
+  expect(rowOfSegs(bandSegments(n({ decisions: 2, running: 3, blocked: 1 }), 75))).toBe('◆ 2 karar · ◐ 3 çalışıyor · ✗ 1 takıldı  t: pane')
+  const all = n({ stale: true, decisions: 12, running: 12, blocked: 12 })
+  expect(rowOfSegs(bandSegments(all, 75))).toBe('! yeniden açıldı · ◆ 12 karar · ◐ 12 çalışıyor · ✗ 12 takıldı  t: pane')
+  expect(cells(bandSegments(all, 75))).toBe(70)
+  const five = { ...all, others: 12 }
+  expect(cells(bandSegments(five, 83))).toBe(83)
+  expect(kinds(bandSegments(five, 83))).toEqual(['stale', 'karar', 'running', 'blocked', 'others'])
+  expect(kinds(bandSegments(five, 75))).toEqual(['stale', 'karar', 'running', 'blocked']) // "◇ 12 diğer" dropped, 70 left
+  // Cut order: ◇ diğer (83 -> 70), ◐ çalışıyor (70 -> 53), ! yeniden açıldı (53 -> 34); never ◆ karar, ✗ takıldı.
+  expect(kinds(bandSegments(five, 69))).toEqual(['stale', 'karar', 'blocked'])
+  expect(kinds(bandSegments(five, 52))).toEqual(['karar', 'blocked'])
+  expect(cells(bandSegments(five, 34))).toBe(34) // the floor: whole down to 34
+  expect(kinds(bandSegments(five, 34))).toEqual(['karar', 'blocked'])
+  // Below the floor: "t: pane" plus what still fits, ✗ first.
+  expect(kinds(bandSegments(five, 33))).toEqual(['blocked'])
+  expect(kinds(bandSegments(five, 18))).toEqual([])
+  // Nothing to say (c4): only others, or nothing, is no band.
+  expect(bandSegments(n({ others: 5 }), 80)).toBeNull()
+  expect(bandSegments(n({}), 80)).toBeNull()
+  expect(kinds(bandSegments(n({ stale: true }), 80))).toEqual(['stale'])
+})
+
+test('c16-c20 (band Button): one Button band-pane, plain, hotkey t, label pane, no digit hotkey; a press asks for the pane with focus and the band goes', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on)
+  const ui = await k.band()
+  const root = await drawnOf(ui)
+  expect(buttons(root).map(b => [b.props?.key, b.props?.label, b.props?.hotkey, b.props?.plain])).toEqual([['band-pane', 'pane', 't', true]])
+  expect(buttons(root).some(b => /^\d$/.test(String(b.props?.hotkey)))).toBe(false) // a digit would press it from an empty prompt
+  k.log.opened.length = 0
+  await ui.press({ key: 'band-pane' })
+  expect(k.log.opened).toEqual([{ id: 'agent-team', title: 'Agent Team', columns: 48, focus: true }])
+  expect(k.st.placed).toBe(true)
+  await k.clock.advance(POLL)
+  await bandHidden(ui) // never both
+})
+
+test('c6 (appears and goes by itself): the pane closed or placed, a status change, team mode switched: within one poll, no key', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { placed: true })
+  const ui = await k.band()
+  await bandHidden(ui)
+  k.st.placed = false // closed by hand, or the terminal went under 110 columns
+  await k.clock.advance(POLL)
+  expect(bandRow(await drawnOf(ui))).toBe('◆ 2 karar · ◐ 2 çalışıyor  t: pane')
+  await k.change(tFile({ blocked: 1 }))
+  expect(bandRow(await drawnOf(ui))).toBe('✗ 1 takıldı  t: pane')
+  k.st.placed = true
+  await k.clock.advance(POLL)
+  await bandHidden(ui)
+  k.st.placed = false
+  await k.clock.advance(POLL)
+  const foot = await k.footer()
+  await foot.press({ key: 'team-mode' }) // team mode off (c7)
+  await bandHidden(ui)
+  await foot.press({ key: 'team-mode' })
+  expect(await ui.find({ key: 'band-pane' })).toBeDefined()
+})
+
+test('c22 (footer): a click on pane opens it; the Button has no hotkey', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on)
+  const foot = await k.footer()
+  expect((await foot.find({ key: 'team-pane-open' }))?.props).toMatchObject({ label: 'pane', plain: true })
+  expect((await foot.find({ key: 'team-pane-open' }))?.props.hotkey).toBeUndefined()
+  k.log.opened.length = 0
+  await foot.press({ key: 'team-pane-open' })
+  expect(k.log.opened.map(o => o.id)).toEqual(['agent-team'])
+})
+
+test('c24: no terminal pane text or key promises a "t" outside the band', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { placed: true })
+  const root = await drawnOf(await k.pane())
+  expect(buttons(root).map(b => b.props?.hotkey)).not.toContain('t')
+  expect(textNode(root, /\bt pane\b|\bt: pane\b/)).toBeUndefined()
+})
+
+const tRun = (name: string, state: string) => ({ id: name, title: name, stage: 'build', roles: [tRole(name, state, 'running')] })
+const spin = (tasks: object[]) => spinnerWord(parseStatus(JSON.stringify({ v: 1, tasks })))
+
+test('c27, c28 (spinner word, pure): first running role in file order, name up to " · ", state, +n, 40 cells; empty state is the short name', async () => {
+  expect(spinnerWord(parseStatus(T_BASIC))).toBe('QA · inceliyor +1') // the criteria read "QA · inceliyor +1…" with the engine's ellipsis
+  expect(spin([tRun('QA · GPT-6 Astra', 'inceliyor')])).toBe('QA · inceliyor')
+  expect(spin([tRun('QA 2 · canlı kontrol', 'başladı')])).toBe('QA 2 · başladı')
+  expect(spin([tRun('QA 2 · canlı kontrol', '')])).toBe('QA 2')
+  // Order: tasks first, then roles inside one task.
+  expect(spin([{ id: 'a', title: 'a', stage: 'build', roles: [tRole('Done', 'x', 'done')] }, tRun('B', 'ikinci'), tRun('A', 'üçüncü')])).toBe('B · ikinci +1')
+  expect(spin([{ id: 'a', title: 'a', stage: 'build', roles: [tRole('One', 'bir', 'running'), tRole('Two', 'iki', 'running'), tRole('Three', 'üç', 'running')] }])).toBe('One · bir +2')
+  expect(spin([tRun('Developer', 'x'.repeat(60))])).toBe(`Developer · ${'x'.repeat(28)}`) // 12 + 28 = 40
+  expect(spin([{ id: 'a', title: 'a', stage: 'build', roles: [tRole('Done', 'x', 'done')] }])).toBeUndefined()
+  expect(spinnerWord(null)).toBeUndefined()
+})
+
+test("c25, c26, c29 (spinner hook): the word only, on the terminal; the engine's word stays in every other case", FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { placed: true })
+  const word = async (ui: Awaited<ReturnType<typeof k.spinner>>) => (await ui.find({ type: 'Text' }))?.text
+  expect(await word(await k.spinner())).toBe('QA · inceliyor +1')
+  expect(await word(await k.spinner({ message: 'Bekleniyor' }))).toBe('Sautéing') // a state overrides the word
+  expect(await word(await k.spinner({}, 'desktop'))).toBe('Sautéing')
+  expect(await word(await k.spinner({}, 'vscode'))).toBe('Sautéing')
+  await k.change(tFile({ decisions: 1 })) // no role running
+  expect(await word(await k.spinner())).toBe('Sautéing')
+})
+
+test("c29 (spinner hook, team mode off): the engine's word stays", async ($, on) => {
+  const off = await tBoot($, on, { placed: true })
+  expect((await (await off.spinner()).find({ type: 'Text' }))?.text).toBe('Sautéing')
+})
+
+test("c29 (spinner hook, no file): the engine's word stays", FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { noFile: true })
+  expect((await (await k.spinner()).find({ type: 'Text' }))?.text).toBe('Sautéing')
+})
+
+test("c29 (spinner hook, stale reopen): the running roles are drawn stopped, the engine's word stays", FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { reopen: true })
+  expect((await (await k.spinner()).find({ type: 'Text' }))?.text).toBe('Sautéing')
+})
+
+const glyphs = (root: Node) => nodesOf(root).filter(n => n.type === 'Text' && /^[◐◓◑◒]$/.test(textOf(n))).map(textOf)
+const tickCount = (k: { log: { sets: string[]; gets: string[] } }) => ({ sets: k.log.sets.filter(x => x === 'tick').length, gets: k.log.gets.filter(x => x === 'tick').length })
+
+test('c32, c38 (glyph tick): ◐◓◑◒ once per 1000 ms on every running role row, list and detail; the task line and the header never turn', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { placed: true })
+  const ui = await k.pane()
+  const frame = async () => glyphs(await drawnOf(ui))
+  expect(await frame()).toEqual(['◐', '◐']) // basic.json: QA (t1) and Developer (t2) run
+  await k.clock.advance(1000)
+  expect(await frame()).toEqual(['◓', '◓'])
+  await k.clock.advance(999)
+  expect(await frame()).toEqual(['◓', '◓']) // 999 ms after a change: no change
+  await k.clock.advance(1) // t = 2000
+  expect(await frame()).toEqual(['◑', '◑'])
+  await k.clock.advance(1000)
+  expect(await frame()).toEqual(['◒', '◒'])
+  await k.clock.advance(1000)
+  expect(await frame()).toEqual(['◐', '◐'])
+  // The task line "◐ çalışıyor" and the header are the same at every frame.
+  const fixed = async () => JSON.stringify(nodesOf(await drawnOf(ui)).filter(n => n.type === 'Text' && /^(◐ çalışıyor|AGENT TEAM)/.test(textOf(n))))
+  const before = await fixed()
+  await k.clock.advance(1000)
+  expect(await fixed()).toBe(before)
+  await ui.press({ key: 'detail-t1' }) // the detail's role row turns with the list's
+  expect(await frame()).toEqual(['◓'])
+  await k.clock.advance(1000)
+  expect(await frame()).toEqual(['◑'])
+})
+
+test('c34, c38 (the tick stops): no running role drawn, nothing is written, the tree and the Pane reads stay as they were', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { placed: true })
+  const ui = await k.pane()
+  await k.clock.advance(2000)
+  expect(tickCount(k).sets).toBe(2) // the control: it was turning
+  await k.change(tFile({ decisions: 1 })) // no running role
+  await k.clock.advance(1000)
+  const tree = JSON.stringify(await drawnOf(ui))
+  const stopped = tickCount(k)
+  await k.clock.advance(5000)
+  expect(JSON.stringify(await drawnOf(ui))).toBe(tree)
+  expect(tickCount(k)).toEqual(stopped) // no tick write, no Pane run (only the Pane reads "tick")
+  await k.change(T_BASIC) // a role runs again: it turns again
+  await k.clock.advance(1500)
+  expect(tickCount(k).sets).toBeGreaterThan(stopped.sets)
+  // The pane not placed: it stops too, after at most the one tick already due when the poll saw it.
+  const mid = tickCount(k).sets
+  k.st.placed = false
+  await k.clock.advance(POLL + 3000)
+  const unplaced = tickCount(k).sets
+  expect(unplaced - mid).toBeLessThanOrEqual(1)
+  await k.clock.advance(5000)
+  expect(tickCount(k).sets).toBe(unplaced)
+})
+
+test('c33 (only the Pane turns): the band, the footer and the spinner never read the tick; the Pane does', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { placed: true })
+  const g0 = tickCount(k)
+  await k.clock.advance(5000) // nothing mounted: the tick's own writes
+  const idle = tickCount(k)
+  await k.band()
+  await k.footer()
+  await k.spinner()
+  await k.clock.advance(5000)
+  const withOthers = tickCount(k)
+  expect([withOthers.sets - idle.sets, withOthers.gets - idle.gets]).toEqual([idle.sets - g0.sets, idle.gets - g0.gets])
+  await k.pane()
+  await k.clock.advance(5000)
+  expect(tickCount(k).gets - withOthers.gets).toBeGreaterThan(withOthers.gets - idle.gets) // the control: a mounted Pane reads it
+})
+
+test('c35 (desktop): no tick, no state write per second, the desktop pane does not read the tick', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { surface: 'desktop', placed: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  k.log.sets.length = 0
+  k.log.gets.length = 0
+  await k.clock.advance(5000)
+  expect(tickCount(k)).toEqual({ sets: 0, gets: 0 })
+  expect(k.log.sets).toEqual([])
+  await ui.unmount()
+})
+
+test('c36 (quiet): a placed terminal pane with no running role and an unchanged file writes no atom in 5 s', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { placed: true, status: tFile({ blocked: 1 }) })
+  await k.pane()
+  k.log.sets.length = 0
+  await k.clock.advance(5000)
+  expect(k.log.sets).toEqual([])
+})
+
+// ---- T1 findings (Lead's scope addition 2026-11-19; evidence: qa-t1/qa2-report.md findings 1 and 2, qa-t1/captures/s3-1-pause-pressed) ----
+const shapeOf = (n: Node | string): string => (typeof n === 'string' ? '' : `${n.type}${n.props?.flexWrap ? '~wrap' : ''}[${(n.children ?? []).map(shapeOf).join(',')}]`)
+
+test('T1-1 (terminal header): two fixed rows, title + Pause button, then the dim sub line cut to one row; no wrapping row, so no blank rows from the gap, whatever the note or the day', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { placed: true })
+  const ui = await k.pane()
+  const head = async () => (await drawnOf(ui)).children?.[0] as Node
+  const before = await head()
+  expect(shapeOf(before)).not.toContain('~wrap') // a wrapping row with gap={2} adds blank rows between its wrapped lines
+  expect(before.children?.length).toBe(2)
+  const [top, sub] = before.children as Node[]
+  expect(top?.type).toBe('Box')
+  expect(sub?.props?.wrap).toBe('truncate-end') // the sub line (lead, time, day, "mod kapalı") is one row at any width
+  await ui.press({ key: 'pause' }) // "Pause · gönderildi": the longest note
+  await k.clock.advance(0)
+  const after = await head()
+  expect(shapeOf(after)).toBe(shapeOf(before)) // the same rows with a note as without
+  // The first row holds the title and the button in the narrowest body, 46 cells (a 48 dock minus the pane's padding); the sub line is the second row.
+  for (const h of [before, after]) {
+    const [t] = h.children as Node[]
+    const title = textOf(nodesOf(t as Node).find(n => n.type === 'Text') as Node)
+    const b = buttons(t as Node)[0]
+    expect(Array.from(title).length + 2 + Array.from(`${b?.props?.hotkey}: ${b?.props?.label}`).length).toBeLessThanOrEqual(46)
+  }
+  expect(buttons(after).map(b => b.props?.label)).toEqual(['Pause · gönderildi'])
+})
+
+test('T1-1 (terminal header, reopened): the sub line keeps its text and the header stays at two rows', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { placed: true, reopen: true, status: tFile({ decisions: 1 }) })
+  const root = await drawnOf(await k.pane())
+  const head = root.children?.[0] as Node
+  expect(shapeOf(head)).not.toContain('~wrap')
+  expect(head.children?.length).toBe(2)
+  expect(textNode(head, /^Lead · Opus 5\.5 · \d\d:\d\d$/)).toBeDefined() // the text is kept: the lead and the written time
+})
+
+test('T1-2 (a plugin submit carries the context): Nerede kaldık? as the first prompt after a reopen, then Pause: each prompt has the Lead line once, the reopen line once in all', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { placed: true, reopen: true })
+  const ui = await k.pane()
+  const lead = (c: readonly string[]) => c.filter(x => x.includes("Sen Lead'sin")).length
+  const reopen = (c: readonly string[]) => c.filter(x => x.includes('[Agent Team · yeniden açılış]')).length
+  // What reaches the model with a submit: the hook's context (empty here: the plugin's own hook is skipped for its own call) plus the row queued first.
+  const carried = (i: number) => [...k.log.rows, ...k.log.submits.slice(0, i + 1).flatMap(s => s.context ?? [])]
+  await ui.press({ key: 'reopen-ask' })
+  await k.clock.advance(0)
+  expect(k.log.submits.map(s => s.text)).toEqual(['Nerede kaldık?'])
+  expect([lead(carried(0)), reopen(carried(0))]).toEqual([1, 1])
+  await ui.press({ key: 'pause' })
+  await k.clock.advance(0)
+  expect(k.log.submits.map(s => s.text)).toEqual(['Nerede kaldık?', 'Pause'])
+  expect([lead(carried(1)), reopen(carried(1))]).toEqual([2, 1]) // the Pause has its Lead line, the reopen line was spent
+  // A typed prompt after that: the Lead line, no reopen line again.
+  await $.prompt.submit({ wait: false, origin: { kind: 'composer' }, text: 'merhaba' })
+  const typed = k.log.submits.at(-1)?.context ?? []
+  expect([lead(typed), reopen(typed)]).toEqual([1, 0])
+})
+
+test('T1-2 (team mode off): a plugin submit carries nothing', async ($, on) => {
+  const k = await tBoot($, on, { placed: true })
+  const foot = await k.footer()
+  await foot.press({ key: 'team-mode' })
+  await foot.press({ key: 'team-mode' }) // on, then off again
+  k.log.rows.length = 0
+  const ui = await k.pane()
+  await ui.press({ key: 'pause' })
+  await k.clock.advance(0)
+  expect(k.log.rows.filter(r => r.includes("Sen Lead'sin") || r.includes('yeniden açılış'))).toEqual([])
 })

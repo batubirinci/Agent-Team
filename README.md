@@ -41,8 +41,9 @@ Mod açılınca pane da açılır. `/team-pane` de pane'i açar.
 Oturum başka gün yeniden açılınca pane eski görev ve kararlarla gelir, durmuş olabilecek rolleri durmuş çizer ve **Nerede kaldık?** düğmesi Lead'den özet ister.
 
 **Terminalde kısayollar.** Pane odaktayken: `1`-`9` karar seçenekleri, `a c d e f g h i j k m n o` görev
-ayrıntıları (sırayla), `p` pause/devam, ayrıntıda `b` geri ve `s` Lead'e sor, `r` nerede kaldık (yalnız yeniden açılış uyarısı açıkken), alt satırda `t` pane'i açar;
-`esc` odağı sohbete döndürür. Alt satır `◉ agent team` (açık) ya da `○ agent team` (kapalı) der.
+ayrıntıları (sırayla), `p` pause/devam, ayrıntıda `b` geri ve `s` Lead'e sor, `r` nerede kaldık (yalnız yeniden açılış uyarısı açıkken);
+`esc` odağı sohbete döndürür. Alt satır `◉ agent team` (açık) ya da `○ agent team` (kapalı) der; yanındaki `pane`ye tıklamak pane'i açar.
+Pane çizilmiyorken (dar terminal, kapatılmış) prompt üstünde tek satırlık bir şerit bu oturumun `◆ n karar · ◐ n çalışıyor · ✗ n takıldı` sayılarını gösterir (söyleyecek bir şey yoksa şerit yoktur); `ctrl+x tab`'tan sonra `t` pane'i açar. `/team-pane` de açar.
 
 **Pane ne gösterir.** Lead'in yazdığı durum dosyasını canlı gösterir:
 
@@ -56,7 +57,7 @@ ayrıntıları (sırayla), `p` pause/devam, ayrıntıda `b` geri ve `s` Lead'e s
 - **Kullanım çubukları:** 5 saatlik ve haftalık kullanım yüzdeleri.
 - **Pause:** Lead'e `Pause` mesajı gönderir; duraklatılmışken düğme **Devam** olur.
 
-Pane durum dosyasını yarım saniyede bir okur; masaüstünde çalışan rolün noktası yanıp söner, çalışan görevin geçerli aşamasında bir ışık şeridi gezinir ve kartların üstüne gelince vurgu çıkar (terminalde hareket yoktur).
+Pane durum dosyasını yarım saniyede bir okur; masaüstünde çalışan rolün noktası yanıp söner, çalışan görevin geçerli aşamasında bir ışık şeridi gezinir ve kartların üstüne gelince vurgu çıkar (terminalde iki hareket var: Lead turu sürerken motorun bekleme satırı çalışan rolü söyler, `QA · inceliyor`; pane'de çalışan rolün `◐`si saniyede bir `◐◓◑◒` döner).
 
 Hangi alanın neyi çizdiği [`skills/agent-team/references/status.md`](skills/agent-team/references/status.md)
 içinde.

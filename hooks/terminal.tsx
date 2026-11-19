@@ -1,6 +1,6 @@
 import type { EngineInterface } from 'claude-code'
 
-import type { Decision, Other, Outbox, Role, RoleStatus, Task, TaskState } from '../types'
+import type { BandSeg, Decision, Other, Outbox, Role, RoleStatus, Task, TaskState } from '../types'
 import { STAGE_LABELS, clip, decisionTask, isBlocking, pickedAt } from './status'
 
 // The terminal drawing of the pane and the footer (approved design "Terminal arayüzü · şimdi ve öneri"):
@@ -16,6 +16,8 @@ export const hk = (key: string) => ({ plain: true, hotkey: key }) as const
 // Not b l p s t (back, pause, ask, pane are the pane's own); "o" last, as pane-team-on takes it.
 const TASK_KEYS = 'acdefghijkmno'
 
+// A running role's glyph turns through these once per second (the `tick` atom); every other glyph is still.
+export const FRAMES = ['◐', '◓', '◑', '◒']
 const GLYPH: Record<RoleStatus, [string, string]> = {
   running: ['◐', 'claude'],
   done: ['✓', 'success'],
@@ -32,17 +34,41 @@ export function bar(pct: number) {
   return { fill: '█'.repeat(full) + (part ? ' ▏▎▍▌▋▊▉'[part] : ''), rest: '░'.repeat(10 - full - (part ? 1 : 0)) }
 }
 
-// `note`: what follows the Pause / Devam label ("sırada", "gönderildi", or nothing).
+// Two fixed rows: the title with the Pause / Devam button, then the dim sub line cut to one row, so a note ("sırada", "gönderildi") or the reopen day
+// never wraps the header (a wrapping row's gap would add blank rows). `note`: what follows the label ("sırada", "gönderildi", or nothing).
 export function termHeader({ Box, Button, Text }: UI, sub: string, paused: boolean | undefined, note: string, say: (t: string) => void) {
   return (
-    <Box flexDirection="row" flexWrap="wrap" alignItems="center" gap={2}>
-      <Text color="claude" weight="bold">AGENT TEAM</Text>
-      <Text dimColor>{sub}</Text>
-      {paused === undefined ? null : paused ? (
-        <Button key="resume" label={note ? `Devam · ${note}` : 'Devam'} onPress={() => say('Devam et')} {...hk('p')} />
-      ) : (
-        <Button key="pause" label={note ? `Pause · ${note}` : 'Pause'} onPress={() => say('Pause')} {...hk('p')} />
+    <Box flexDirection="column">
+      <Box flexDirection="row" alignItems="center" gap={2}>
+        <Text color="claude" weight="bold">AGENT TEAM</Text>
+        {paused === undefined ? null : paused ? (
+          <Button key="resume" label={note ? `Devam · ${note}` : 'Devam'} onPress={() => say('Devam et')} {...hk('p')} />
+        ) : (
+          <Button key="pause" label={note ? `Pause · ${note}` : 'Pause'} onPress={() => say('Pause')} {...hk('p')} />
+        )}
+      </Box>
+      <Text dimColor wrap="truncate-end">{sub}</Text>
+    </Box>
+  )
+}
+
+// The band above the prompt (pane not drawn): the segments from `bandSegments`, two spaces, the one Button (key t, only after ctrl+x tab; never a digit).
+const BAND_COLOR: Record<BandSeg['kind'], [string, boolean]> = {
+  stale: ['warning', false],
+  karar: ['claude', true],
+  running: ['claude', false],
+  blocked: ['error', true],
+  others: ['warning', false],
+}
+export function termBand({ Box, Button, Text }: UI, segs: readonly BandSeg[], open: () => void) {
+  return (
+    <Box flexDirection="row" gap={2}>
+      {segs.length > 0 && (
+        <Text>
+          {segs.map((s, i) => [i ? ' · ' : '', <Text color={BAND_COLOR[s.kind][0]} weight={BAND_COLOR[s.kind][1] ? 'bold' : undefined}>{s.text}</Text>])}
+        </Text>
       )}
+      <Button key="band-pane" label="pane" onPress={open} {...hk('t')} />
     </Box>
   )
 }
@@ -132,11 +158,11 @@ const stateLine = ({ Text }: UI, t: Task) => (
 
 const stageName = ({ Text }: UI, t: Task) => <Text dimColor>{`${STAGE_LABELS[t.stage]} · ${t.stage + 1}/5`}</Text>
 
-const roleRows = ({ Box, Text }: UI, id: string, roles: Role[]) =>
+const roleRows = ({ Box, Text }: UI, id: string, roles: Role[], frame: number) =>
   roles.map((r, i) => (
     <Box key={`${id}-r-${i}`} flexDirection="column">
       <Box flexDirection="row" gap={1}>
-        <Text color={GLYPH[r.status][1]}>{GLYPH[r.status][0]}</Text>
+        <Text color={GLYPH[r.status][1]}>{r.status === 'running' ? FRAMES[frame] ?? GLYPH.running[0] : GLYPH[r.status][0]}</Text>
         <Text>{r.name}</Text>
       </Box>
       {r.state && (
@@ -156,7 +182,7 @@ const counts = ({ Text }: UI, t: Task) =>
   )
 
 // hasOn: pane-team-on is drawn and owns "o", so no task takes it.
-export function termTasks(ui: UI, tasks: Task[], n: { running: number; blocked: number; waiting: number }, hasOn: boolean, open: (id: string) => void) {
+export function termTasks(ui: UI, tasks: Task[], n: { running: number; blocked: number; waiting: number }, hasOn: boolean, open: (id: string) => void, frame = 0) {
   const { Box, Button, Text } = ui
   const keys = hasOn ? TASK_KEYS.slice(0, -1) : TASK_KEYS
   return (
@@ -180,7 +206,7 @@ export function termTasks(ui: UI, tasks: Task[], n: { running: number; blocked: 
             {tur && <Text dimColor>{tur}</Text>}
             {stageLine(ui, t)}
             {stageName(ui, t)}
-            {roleRows(ui, `t-${t.id}`, t.roles)}
+            {roleRows(ui, `t-${t.id}`, t.roles, frame)}
             {counts(ui, t)}
           </Box>
         )
@@ -190,7 +216,7 @@ export function termTasks(ui: UI, tasks: Task[], n: { running: number; blocked: 
 }
 
 // The detail: back/ask on one row, a summary box, ROLLER, TURLAR (newest first, a box each), KANIT.
-export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void) {
+export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void, frame = 0) {
   const { Box, Button, Text } = ui
   const head = (s: string) => <Text weight="bold">{s}</Text>
   const where = [t.branch, t.candidate && `aday ${clip(t.candidate, 7)}`].filter(Boolean).join(' · ')
@@ -210,7 +236,7 @@ export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void) {
       {t.roles.length > 0 && (
         <Box flexDirection="column">
           {head('ROLLER')}
-          {roleRows(ui, 'detail', t.roles)}
+          {roleRows(ui, 'detail', t.roles, frame)}
         </Box>
       )}
       <Box flexDirection="column">
@@ -326,7 +352,7 @@ export function termFooter({ Box, Button, Text }: UI, isOn: boolean, modes: read
   return (
     <Box flexDirection="row" alignItems="center" gap={2}>
       <Button key="team-mode" plain label={isOn ? '◉ agent team' : '○ agent team'} onPress={toggle} />
-      <Button key="team-pane-open" label="pane" onPress={openPane} {...hk('t')} />
+      <Button key="team-pane-open" plain label="pane" onPress={openPane} />
       {modes.length > 0 && <Text dimColor>{modes.join(' & ')}</Text>}
     </Box>
   )

@@ -2,14 +2,15 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Decision, DirEntry, Mode, Other, Outbox, Press, Reopen, RoleStatus, SessionRecord, Status, StatusView, Task, TaskState } from '../types'
-import { ANNOUNCE, ASK_WHERE, KARAR, OPEN_ROW, STAGE_LABELS, baseName, clip, countStates, decisionTask, detailScroll, expandHome, flat, isBlocking, isInside, isPush, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, reopenLine, stamp, stopped, trimSlash, withKarar } from './status'
+import { ANNOUNCE, ASK_WHERE, KARAR, OPEN_ROW, STAGE_LABELS, bandSegments, baseName, clip, countStates, decisionTask, detailScroll, expandHome, flat, isBlocking, isInside, isPush, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, reopenLine, runningRoles, spinnerWord, stamp, stopped, trimSlash, withKarar } from './status'
 import { AMBER, BAD, CLAY, MUTED, OK, TRACK, dotSvg, meterSvg, stagesSvg } from './svg'
-import { QUEUED, QUEUED_PUSH, TBOX, hk, termBanner, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termTasks, termUsage } from './terminal'
+import { FRAMES, QUEUED, QUEUED_PUSH, TBOX, hk, termBand, termBanner, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termTasks, termUsage } from './terminal'
 
 const PANE = 'agent-team'
 const PANE_OPEN = { id: PANE, title: 'Agent Team', columns: 48 } as const
 const POLL_MS = 500
 const SOON_MS = 500
+const TICK_MS = 1000
 const KEEP_MS = 30 * 86_400_000
 
 // Change a tag when that value's fields change: it declines what an earlier version stored.
@@ -35,6 +36,10 @@ const outbox = atom({ plugin: 'agent-team', key: 'outbox' } as const, { queue: [
 // A resumed session in team mode: when it started (the pane warns while the status file is older), and whether its first prompt still owes the
 // Lead the reopen line. since 0: not reopened (a new session, /clear). An atom: a hot reload keeps it, /clear resets it.
 const reopened = atom({ plugin: 'agent-team', key: 'reopen' } as const, { since: 0, line: false } as Reopen, { shape: 'reopen-1' })
+// Whether this plugin's pane is placed (drawn) now, as $.ui.panes() says: written by the poll only when it changes, so the band above the prompt
+// shows and goes by itself (a pane closed, the terminal resized across the floor). The frame (0-3) of the running role's glyph in the terminal pane.
+const placed = atom({ plugin: 'agent-team', key: 'placed' } as const, false, { shape: 'placed-1' })
+const tick = atom({ plugin: 'agent-team', key: 'tick' } as const, 0, { shape: 'tick-1' })
 
 // Raw colors that read on a light and a dark pane alike (a theme key has no card fill).
 const CARD = {
@@ -90,6 +95,20 @@ const DOT: Record<RoleStatus, string> = {
   idle: 'inactive',
 }
 
+// The status as the pane draws it: a reopened session's file older than the start has its running roles drawn stopped (`cut`), until the Lead writes again.
+// The pane, the band, the spinner word and the tick all read this one answer.
+async function drawnStatus($: EngineInterface) {
+  const view = await read($, status)
+  const since = (await read($, reopened)).since
+  const cut = since > 0 && view.data && view.mtime < since ? stopped(view.data) : undefined
+  return { view, cut, data: cut?.data ?? view.data }
+}
+
+async function syncPlaced($: EngineInterface) {
+  const now = (await $.ui.panes()).some(p => p.id === PANE && p.isPlaced)
+  if ((await read($, placed)) !== now) await update($, placed, () => now)
+}
+
 const leadText = (file: string) =>
   [
     "Bu oturum bir Agent Team oturumu (agent-team plugin'i). Sen Lead'sin:",
@@ -135,11 +154,25 @@ const giveBack = ($: EngineInterface, got: Press[]) =>
   }))
 
 // Submits everything pending as the owner. Resolves when done; never throws.
+// The engine skips this plugin's own prompt.submit hook for its own `$.prompt.submit` (types: the calling hook alone is skipped; measured: QA 2, a
+// submit with no context), and a submit takes no context. So the lines a typed prompt carries (the Lead role, the pending reopen line) queue first as
+// one hidden user row, the reminder a `session.append` is. Team mode only, as the hook; never throws.
+async function contextRow($: EngineInterface) {
+  try {
+    if (!(await read($, mode)).isOn) return
+    await follow($)
+    const line = await takeReopen($)
+    const text = [leadText((await read($, status)).file), ...(line ? [line] : [])].join('\n')
+    await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+  } catch {}
+}
+
 async function submitOut($: EngineInterface) {
   try {
     const got = await take($, false)
     if (!got.length) return
     let entered = false
+    await contextRow($)
     try {
       entered = !(await $.prompt.submit({ text: got.map(g => g.line).join('\n'), asUser: true })).drop
     } catch {}
@@ -352,8 +385,26 @@ async function setMode($: EngineInterface, isOn: boolean) {
   else await $.ui.close({ id: PANE })
 }
 
+// The glyph tick: one 1 s timer while the terminal pane is placed, team mode is on and a role is drawn running. The poll starts and stops it; the timer
+// checks again before every write, so nothing is written after the last role stops. Nothing else reads `tick`: only the Pane redraws.
+// A (re)start of the session drops the old timer, so a hot reload or a new session never leaves two.
+let beat: ReturnType<EngineInterface['clock']['every']> | undefined
+const turning = async ($: EngineInterface) => (await read($, mode)).isOn && (await read($, placed)) && runningRoles((await drawnStatus($)).data).length > 0
+function stopBeat() {
+  beat?.cancel()
+  beat = undefined
+}
+async function syncTick($: EngineInterface) {
+  if (!(await turning($))) return stopBeat()
+  beat ??= $.clock.every(TICK_MS, async () => {
+    if (await turning($)) await update($, tick, n => (n + 1) % FRAMES.length)
+    else stopBeat()
+  })
+}
+
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
+    stopBeat()
     await $.command.register({ name: 'team', description: 'Agent Team modunu aç ya da kapat' })
     await $.command.register({ name: 'team-pane', description: "Agent Team pane'ini aç" })
 
@@ -398,7 +449,13 @@ export const register: Register = (on, options) => {
 
     const seen: Seen = new Map()
     // Independent: one failing stops neither the other nor the clock.
-    const poll = () => Promise.allSettled([follow($), refresh($, file), scanOthers($, dir, file, seen)])
+    const term = e.surface === 'terminal'
+    const poll = async () => {
+      const done = await Promise.allSettled([follow($), refresh($, file), scanOthers($, dir, file, seen)])
+      // Terminal only: whether the pane is placed (the band), and the glyph tick. Reads, and writes only a change.
+      if (term) await syncPlaced($).then(() => syncTick($)).catch(() => undefined)
+      return done
+    }
     await poll()
     $.clock.every(POLL_MS, poll)
 
@@ -423,7 +480,8 @@ export const register: Register = (on, options) => {
   // thread's system prompt does not change.
   on('prompt.submit', async ($, e, next) => {
     await follow($)
-    if (e.command || !(await read($, mode)).isOn) return next(e)
+    // Its own submit never runs this hook in the engine; the guard keeps the lines once should one ever do (submitOut queues them).
+    if (e.command || (e.origin?.kind === 'plugin' && e.origin.name === 'agent-team') || !(await read($, mode)).isOn) return next(e)
     const { file } = await read($, status)
     const line = await takeReopen($)
     const added = [...(e.isMeta ? [] : [leadText(file)]), ...(line ? [line] : [])]
@@ -515,6 +573,23 @@ export const register: Register = (on, options) => {
     )
   })
 
+  // While the pane is not drawn: one row above the prompt with this session's counts and a key (after ctrl+x tab) that opens the pane. Terminal only.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.surface !== 'terminal' || e.props.hasSurvey || !(await read($, mode)).isOn || (await read($, placed))) return next(e)
+    const { cut, data } = await drawnStatus($)
+    const n = countStates(data?.tasks ?? [])
+    const total = (await read($, others)).reduce((t, o) => t + o.count, 0)
+    const segs = bandSegments({ stale: !!cut, decisions: data?.decisions.length ?? 0, running: n.running, blocked: n.blocked, others: total }, e.props.bodyColumns)
+    return segs ? termBand($.ui.resolve(e), segs, () => void $.ui.open({ ...PANE_OPEN, focus: true })) : next(e)
+  })
+
+  // The engine's spinner line names the running role during a Lead turn: only its word is rewritten, the engine keeps its mark, timer and color.
+  on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
+    if (e.surface !== 'terminal' || e.props.message !== null || !(await read($, mode)).isOn) return next(e)
+    const word = spinnerWord((await drawnStatus($)).data)
+    return next(word ? { ...e, props: { ...e.props, word } } : e)
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const ui = $.ui.resolve(e)
     const { Box, Button, Text } = ui
@@ -530,12 +605,10 @@ export const register: Register = (on, options) => {
     const other = await read($, others)
     const otherOpen = await read($, othersOpen)
     const otherTotal = other.reduce((n, o) => n + o.count, 0)
-    const view = await read($, status)
+    const { view, cut, data } = await drawnStatus($)
     const { file, error } = view
-    // A reopened session whose file was not written since the start: its running roles are drawn stopped until the Lead writes again.
-    const since = (await read($, reopened)).since
-    const cut = since > 0 && view.data && view.mtime < since ? stopped(view.data) : undefined
-    const data = cut?.data ?? view.data
+    // The glyph of a running role turns on the terminal only; the desktop never reads the tick.
+    const frame = term ? await read($, tick) : 0
     const now = await $.clock.now().catch(() => NaN)
     const lines = await read($, karar)
     const out = await read($, outbox)
@@ -769,6 +842,7 @@ export const register: Register = (on, options) => {
             open,
             () => void show(null, open.id),
             () => void $.prompt.fill({ text: `${open.title} hakkında: `, mode: 'replace' }),
+            frame,
           )}
         </Box>
       )
@@ -919,7 +993,7 @@ export const register: Register = (on, options) => {
 
         {term && data && data.decisions.length > 0 && termDecisions(ui, data.decisions, data.tasks, (d, o) => void pick($, running, d, o, true), lines, out)}
 
-        {term && data && data.tasks.length > 0 && termTasks(ui, data.tasks, n, showOn, id => void show(id))}
+        {term && data && data.tasks.length > 0 && termTasks(ui, data.tasks, n, showOn, id => void show(id), frame)}
 
         {term && data && termHint(ui, otherTotal > 0, !!reopenText)}
 
