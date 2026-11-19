@@ -2391,7 +2391,7 @@ test('criterion 2: a line break in an id or option becomes a space; regex charac
 
 // A fake prompt box under a mounted session: the box is the single truth, `fill` edits it, and the engine's `prompt.change`
 // (origin plugin, after a plugin's fill) is raised by `echo`, as the d.ts says it is; `type` is the owner typing (`prompt.edit`).
-const kBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], text = TERM, o: { isFilled?: boolean; boxText?: string; throws?: boolean; atomFails?: boolean; readFails?: boolean; surface?: 'terminal' | 'desktop' } = {}) => {
+const kBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], text = TERM, o: { isFilled?: boolean; boxText?: string; throws?: boolean; atomFails?: boolean; readFails?: boolean; surface?: 'terminal' | 'desktop'; edit?: (e: { text: string; start: number; end: number; inputText: string }) => unknown } = {}) => {
   const box = { text: o.boxText ?? '', cursor: 0 }
   const log = { reads: 0, sent: [] as string[], fills: [] as { text: string; mode?: string }[], sets: [] as string[], gets: [] as string[] }
   let file = text
@@ -2437,7 +2437,7 @@ const kBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], te
     return { isFilled: true }
   })
   on('prompt.change', (_, e) => ({ text: e.text }))
-  on('prompt.edit', (_, e) => ({ text: e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end), cursor: e.start + e.inputText.length }))
+  on('prompt.edit', (_, e) => (o.edit ? o.edit(e) : { text: e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end), cursor: e.start + e.inputText.length }) as never)
   const start = () => $.session.start({ cwd: '/Users/x/Projeler/shop', surface: o.surface ?? 'terminal', isInteractive: true })
   await start()
   // The test engine's `$.prompt` has `edit` and `change` at run time, but the d.ts (EventCalls) does not list them.
@@ -2464,7 +2464,7 @@ const kBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], te
     mtime += 1
     return start()
   }
-  return { box, log, gate, echo, type, send, rewrite }
+  return { box, log, gate, echo, type, send, rewrite, rawEdit: ev.edit }
 }
 const pressKey = async (ui: { press: (a: { key: string }) => Promise<unknown> }, echo: () => Promise<unknown>, key: string) => {
   await ui.press({ key })
@@ -2777,7 +2777,8 @@ type CtxResult = { context?: readonly string[]; result?: unknown; deny?: string;
 
 const pBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o: { surface?: 'desktop' | 'terminal'; isFilled?: boolean; teamOn?: boolean; status?: string; noFile?: boolean } = {}) => {
   const log = { sent: [] as string[], asUser: [] as (boolean | undefined)[], fills: [] as string[], sets: [] as string[] }
-  const gate = { submit: 'ok' as 'ok' | 'throws' | 'drop' }
+  const gate = { submit: 'ok' as 'ok' | 'throws' | 'drop' | 'hold' }
+  const held = { settle: undefined as undefined | ((fail: boolean) => void) }
   const core = { result: { result: 'ok', text: 'ok' } as unknown }
   const box = { text: '', cursor: 0 }
   on('command.register', (_, e) => ({ value: { command: e.name } }))
@@ -2795,9 +2796,11 @@ const pBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o:
     return next(e)
   })
   on('prompt.read', () => ({ value: { text: box.text, cursor: box.cursor } }))
-  on('prompt.submit', (_, e) => {
+  on('prompt.submit', async (_, e) => {
     if (gate.submit === 'throws') throw new Error('no session')
     if (gate.submit === 'drop') return { drop: 'refused' }
+    // 'hold': the submit stays in flight until the test settles it (held.settle(true) rejects it).
+    if (gate.submit === 'hold') await new Promise<void>((res, rej) => (held.settle = fail => (fail ? rej(new Error('no session')) : res())))
     log.sent.push(e.text)
     log.asUser.push((e.origin as { asUser?: boolean } | undefined)?.asUser)
     return { text: e.text }
@@ -2827,7 +2830,7 @@ const pBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o:
   }
   const tool = async (agentId?: string) => (await $.tool.call({ tool: 'Bash', command: 'ls', ...(agentId ? { agentId } : {}) } as never)) as CtxResult
   const mount = async (surface: 'desktop' | 'terminal' = o.surface ?? 'desktop') => $.ui.mount({ ...PANE, surface })
-  return { log, gate, core, box, settle, start, end, tool, mount }
+  return { log, gate, held, core, box, settle, start, end, tool, mount }
 }
 
 test('criterion 1 (analyst 1, P3): no turn running, Pause submits at once as the owner; tool.call results stay untouched', async ($, on) => {
@@ -3492,12 +3495,12 @@ const R_TASK = { id: 't1', title: 'Seçim kutusu taşması', stage: 'build', rol
 const reopenStatus = (tasks: unknown[] = [R_TASK], updatedAt = '2026-11-14T22:10:00+03:00') => JSON.stringify({ v: 1, updatedAt, lead: 'Opus 5.5', tasks })
 const BANNER = /^Oturum yeniden açıldı · durum 5 gün önceki · çalışıyor görünen 1 rol durmuş olabilir$/
 
-const rBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o: { status?: string; record?: boolean; surface?: 'desktop' | 'terminal'; placed?: boolean; exists?: boolean } = {}) => {
+const rBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o: { status?: string; record?: boolean; surface?: 'desktop' | 'terminal'; placed?: boolean; exists?: boolean; recordOff?: boolean } = {}) => {
   const disk = { text: o.status ?? reopenStatus(), mtime: R_OLD_MTIME }
-  const log = { sent: [] as string[], contexts: [] as (readonly string[] | undefined)[], opens: 0 }
+  const log = { sent: [] as string[], contexts: [] as (readonly string[] | undefined)[], opens: 0, openFails: false, attached: 0 }
   const state = { id: ID_OLD }
   const clock = mock.clock(on, { now: R_NOW })
-  const store = new Map<string, unknown>(o.record === false ? [] : [[KEY_OLD, rec(OLD, SWITCH, { announced: OLD })]])
+  const store = new Map<string, unknown>(o.record === false ? [] : [[KEY_OLD, rec(OLD, o.recordOff ? OFF : SWITCH, { announced: OLD })]])
   on('store.get', (_, e) => ({ value: store.get(e.key) }))
   on('store.set', (_, e) => {
     store.set(e.key, JSON.parse(JSON.stringify(e.value)))
@@ -3517,6 +3520,7 @@ const rBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o:
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('ui.open', () => {
     log.opens++
+    if (log.openFails) throw new Error('no surface')
     return { value: o.placed === false ? { isPlaced: false as const, reason: 'no surface' } : { isPlaced: true as const } }
   })
   on('ui.close', () => ({ value: undefined }))
@@ -3526,7 +3530,10 @@ const rBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o:
   on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: disk.mtime, isLink: false } }))
   on('fs.read', () => ({ value: disk.text }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('session.attach', (_, e) => ({ clientId: e.clientId }))
+  on('session.attach', (_, e) => {
+    log.attached++
+    return { clientId: e.clientId }
+  })
   on('session.append', (_, e, next) => next(e))
   on('prompt.submit', (_, e) => {
     log.sent.push(e.text)
@@ -4192,4 +4199,146 @@ test('hardening E18 (terminal): a decision without options has no caption row', 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(textNode(await drawnOf(ui), new RegExp(`^${CAPTION}$`))).toBeUndefined()
   await ui.unmount()
+})
+
+// Group F: test gaps the QA reports named. Each test below fails on the mutant its title names (mutants.log holds the runs).
+// Sources: decision-buttons QA r1 LOW 2 and 3 (F19, F20), desktop-karar QA r2 LOW 1 and 2 (F21), reopen QA LOW (F22), other-decisions
+// QA r2 LOW 1 (F23), clear-continuity (F24).
+const DECORATED = { text: 'KÖK', cursor: 1, decorations: [{ start: 0, end: 1, bold: true }] }
+
+test('hardening F19: prompt.edit returns exactly what next(e) returned (text, cursor, decorations of another hook), on the untouched-line path', async ($, on) => {
+  const k = await kBoot($, on, TERM, { edit: () => DECORATED })
+  expect(await k.rawEdit({ origin: { kind: 'composer' }, text: 'abc', cursor: 3, start: 3, end: 3, inputText: 'd' })).toEqual(DECORATED)
+})
+
+test('hardening F19: the same on the changed-decision-line path (the atom is synced, the answer is still next(e)\'s)', async ($, on) => {
+  const k = await kBoot($, on, TERM, { boxText: 'Karar (d1): Sonra', edit: () => ({ text: 'Karar (d1): Sonrax', cursor: 2, decorations: DECORATED.decorations }) })
+  const r = await k.rawEdit({ origin: { kind: 'composer' }, text: 'Karar (d1): Sonra', cursor: 17, start: 17, end: 17, inputText: 'x' })
+  expect(r).toEqual({ text: 'Karar (d1): Sonrax', cursor: 2, decorations: DECORATED.decorations })
+})
+
+test('hardening F19: a rejection of next(e) reaches the caller (the hook never swallows it)', async ($, on) => {
+  const k = await kBoot($, on, TERM, {
+    edit: () => {
+      throw new Error('core refused')
+    },
+  })
+  let failed = false
+  await k.rawEdit({ origin: { kind: 'composer' }, text: 'a', cursor: 1, start: 1, end: 1, inputText: 'b' }).catch(() => (failed = true))
+  expect(failed).toBe(true)
+})
+
+test('hardening F20 (terminal): a press appends below the owner\'s text and keeps its leading and trailing whitespace', async ($, on) => {
+  const k = await kBoot($, on, TERM, { boxText: '  \tönce yaz  ' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await pressKey(ui, k.echo, 'd-d1-0')
+  expect(k.box.text).toBe('  \tönce yaz  \nKarar (d1): Durumları gör')
+  expect(k.log.fills).toEqual([{ text: '\nKarar (d1): Durumları gör', mode: 'append' }]) // only the new line goes in; nothing the owner typed is re-written
+  await ui.unmount()
+  expect(withKarar('  a  ', 'd1', 'X')).toBe('  a  \nKarar (d1): X')
+  expect(withKarar('a\n  ', 'd1', 'X')).toBe('a\n  \nKarar (d1): X')
+  expect(withKarar('\n\nx', 'd1', 'X')).toBe('\n\nx\nKarar (d1): X')
+})
+
+test('hardening F21 (a): a failed delivery gives back only its own press: another decision\'s "Gönderildi" stays', async ($, on) => {
+  const k = await pBoot($, on)
+  const ui = await k.mount()
+  await k.start('turn-1')
+  await ui.press({ key: 'd-d1-0' })
+  expect((await k.tool()).context).toEqual([`${HEAD}\nKarar (d1): Durumları gör`]) // d1 delivered
+  await k.end('turn-1')
+  k.gate.submit = 'throws'
+  await ui.press({ key: 'd-d2-0' }) // idle: submitted at once, and the submit fails
+  const root = await drawnOf(ui)
+  expect(textNode(root, /^Gönderildi: Durumları gör$/)).toBeDefined() // d1's mark stays
+  expect(textNode(nodesOf(root).find(n => n.props?.key === 'd-d2') as Node, /^Sırada/)).toBeDefined() // d2 is back in the queue
+  expect((await ui.find({ key: 'd-d1' }))?.props.borderColor).toBe('success')
+  await ui.unmount()
+})
+
+test('hardening F21 (b): on the terminal a failed re-press of a delivered decision is requeued and shown "Sırada" (its earlier mark is gone, the press is the newer answer); its delivery shows "Gönderildi" with the new option', async ($, on) => {
+  const k = await pBoot($, on, { surface: 'terminal', isFilled: false })
+  const ui = await k.mount()
+  await ui.press({ key: 'd-d1-0' }) // box refuses the fill, idle: submitted
+  expect(k.log.sent).toEqual(['Karar (d1): Durumları gör'])
+  expect(textNode(await drawnOf(ui), /^Gönderildi: Durumları gör$/)).toBeDefined()
+  k.gate.submit = 'throws'
+  await ui.press({ key: 'd-d1-1' }) // the same decision again: allowed on the terminal; its submit fails
+  const root = await drawnOf(ui)
+  expect(textNode(root, /^Sırada/)).toBeDefined()
+  expect(textNode(root, /^Gönderildi/)).toBeUndefined()
+  k.gate.submit = 'ok'
+  await ui.press({ key: 'd-d2-0' }) // the next press submits both, in press order
+  expect(k.log.sent).toEqual(['Karar (d1): Durumları gör', 'Karar (d1): Sonra\nKarar (d2): Evet'])
+  expect(textNode(await drawnOf(ui), /^Gönderildi: Sonra$/)).toBeDefined()
+  await ui.unmount()
+})
+
+test('hardening F21 (b2): a failed submit never puts back a press that a newer press of the same decision replaced meanwhile', async ($, on) => {
+  const k = await pBoot($, on, { surface: 'terminal', isFilled: false })
+  const ui = await k.mount()
+  await k.start('turn-1')
+  await ui.press({ key: 'd-d1-0' }) // queued behind the running turn
+  k.gate.submit = 'hold'
+  await k.end('turn-1') // the turn ends: the press is submitted, and the submit stays in flight
+  await k.start('turn-2')
+  await ui.press({ key: 'd-d1-1' }) // the newer answer, queued behind the new turn
+  k.held.settle?.(true) // the first submit now fails
+  await k.settle()
+  const got = (await k.tool()).context
+  expect(got).toEqual([`${HEAD}\nKarar (d1): Sonra`]) // only the newer one
+  await ui.unmount()
+})
+
+test('hardening F22: a command neither carries the reopen line nor consumes it', async ($, on) => {
+  const r = await rBoot($, on)
+  const cmd = await r.prompt({ command: { name: 'help', args: '' } })
+  expect(cmd).toEqual([])
+  expect(await r.prompt()).toHaveLength(1) // the first real prompt still owes it
+})
+
+test('hardening F22: ui.open throwing at session.attach does not escape the hook, and next(e) still runs', async ($, on) => {
+  const r = await rBoot($, on)
+  r.log.openFails = true
+  const before = r.log.attached
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+  expect(r.log.opens).toBeGreaterThan(1) // asked again, and it threw
+  expect(r.log.attached).toBe(before + 1) // the engine's own attach ran
+})
+
+test('hardening F22: team mode off with a store record shows no banner and sends no reopen line', async ($, on) => {
+  const r = await rBoot($, on, { recordOff: true })
+  const ui = await r.mount()
+  expect(await bannerOf(ui)).toBeUndefined()
+  expect(await r.prompt()).toEqual([])
+  await ui.unmount()
+})
+
+// A mounted session whose status folder lists other sessions' files from a fake that the test changes, polled by a mock clock.
+test('hardening F23: a file that leaves the listing and comes back with the same size and mtime is read again (the seen cache is pruned)', async ($, on) => {
+  const reads: string[] = []
+  const state = { listing: [entry('p--aaaaaaaa.json', { size: 120, mtimeMs: NOW - 60_000 })] }
+  const file = decisionsOnly(1)
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.close', () => ({ value: undefined }))
+  on('env.get', () => ({ value: '/Users/x' }))
+  on('fs.exists', () => ({ value: false }))
+  on('fs.list', () => ({ value: state.listing }))
+  on('fs.read', (_, e) => {
+    reads.push(e.path)
+    return { value: file }
+  })
+  const clock = mock.clock(on, { now: NOW })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.append', (_, e, next) => next(e))
+  await $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'desktop', isInteractive: true })
+  expect(reads).toHaveLength(1)
+  await clock.advance(500)
+  expect(reads).toHaveLength(1) // unchanged: from the cache
+  state.listing = []
+  await clock.advance(500) // gone from the listing: forgotten
+  state.listing = [entry('p--aaaaaaaa.json', { size: 120, mtimeMs: NOW - 60_000 })]
+  await clock.advance(500)
+  expect(reads).toHaveLength(2) // back with the same size and mtime: read again
 })
