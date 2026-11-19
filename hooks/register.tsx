@@ -2,13 +2,13 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Decision, DirEntry, Mode, Other, Outbox, Press, RoleStatus, SessionRecord, StatusView, Task, TaskState } from '../types'
-import { ANNOUNCE, KARAR, OPEN_ROW, STAGE_LABELS, baseName, clockOf, countStates, decisionTask, expandHome, isInside, isPush, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, trimSlash, withKarar } from './status'
-import { AMBER, BAD, CLAY, MUTED, OK, dotSvg, meterSvg, stagesSvg } from './svg'
+import { ANNOUNCE, KARAR, OPEN_ROW, STAGE_LABELS, baseName, clockOf, countStates, decisionTask, detailScroll, expandHome, isInside, isPush, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, trimSlash, withKarar } from './status'
+import { AMBER, BAD, CLAY, MUTED, OK, TRACK, dotSvg, meterSvg, stagesSvg } from './svg'
 import { QUEUED, QUEUED_PUSH, TBOX, hk, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termTasks, termUsage } from './terminal'
 
 const PANE = 'agent-team'
 const PANE_OPEN = { id: PANE, title: 'Agent Team', columns: 48 } as const
-const POLL_MS = 3000
+const POLL_MS = 500
 const SOON_MS = 500
 const KEEP_MS = 30 * 86_400_000
 
@@ -29,8 +29,9 @@ const othersOpen = atom({ plugin: 'agent-team', key: 'othersOpen' } as const, fa
 // The decision lines now in the owner's prompt box (kararLines of the draft): on the terminal a button writes one and the box shows it picked.
 const karar = atom({ plugin: 'agent-team', key: 'karar' } as const, [] as string[], { shape: 'karar-1' })
 // Pane presses on their way to the Lead (`queue`, in press order) and the decisions whose line was delivered (`sent`: [id, option]; dropped
-// when the decision leaves the file). One atom, so every change (a press, a delivery, a give-back) is one atomic update.
-const outbox = atom({ plugin: 'agent-team', key: 'outbox' } as const, { queue: [], sent: [] } as Outbox, { shape: 'outbox-1' })
+// when the decision leaves the file). `said`: lines without a decision (Pause, Devam) submitted as the owner, until the next status read.
+// One atom, so every change (a press, a delivery, a give-back) is one atomic update.
+const outbox = atom({ plugin: 'agent-team', key: 'outbox' } as const, { queue: [], sent: [], said: [] } as Outbox, { shape: 'outbox-2' })
 
 // Raw colors that read on a light and a dark pane alike (a theme key has no card fill).
 const CARD = {
@@ -116,7 +117,8 @@ async function take($: EngineInterface, ctx: boolean) {
   let got: Press[] = []
   await update($, outbox, s => {
     got = ctx ? s.queue.filter(q => !q.push) : s.queue
-    return got.length ? { queue: ctx ? s.queue.filter(q => q.push) : [], sent: mark(s.sent, got) } : s
+    const said = ctx ? s.said : [...s.said, ...got.filter(g => g.id === undefined).map(g => g.line)]
+    return got.length ? { queue: ctx ? s.queue.filter(q => q.push) : [], sent: mark(s.sent, got), said } : s
   })
   return got
 }
@@ -126,6 +128,7 @@ const giveBack = ($: EngineInterface, got: Press[]) =>
   update($, outbox, s => ({
     queue: [...got.filter(g => g.id === undefined || !s.queue.some(q => q.id === g.id)), ...s.queue],
     sent: s.sent.filter(([id]) => !got.some(g => g.id === id)),
+    said: s.said.filter(l => !got.some(g => g.id === undefined && g.line === l)),
   }))
 
 // Submits everything pending as the owner. Resolves when done; never throws.
@@ -188,7 +191,7 @@ const announce = ($: EngineInterface, file: string) =>
 async function setView($: EngineInterface, view: StatusView) {
   await update($, status, () => view)
   const ids = view.data?.decisions.map(d => d.id) ?? []
-  await update($, outbox, s => ({ ...s, sent: s.sent.filter(([id]) => ids.includes(id)) }))
+  await update($, outbox, s => ({ ...s, sent: s.sent.filter(([id]) => ids.includes(id)), said: [] }))
   const open = await read($, detail)
   if (open && !view.data?.tasks.some(t => t.id === open)) await update($, detail, () => null)
 }
@@ -459,8 +462,8 @@ export const register: Register = (on, options) => {
     // On the terminal every Button is plain with its key; a card is a single-line box in a theme color.
     const key = (k: string) => (term ? hk(k) : {})
     const card = term ? TBOX : CARD
-    const dot = (hex: string, themeKey: string, alt: string) =>
-      Svg ? <Svg source={dotSvg(hex)} alt={alt} width={8} height={8} /> : <Text color={themeKey}>●</Text>
+    const dot = (hex: string, themeKey: string, alt: string, pulse = false) =>
+      Svg ? <Svg source={dotSvg(hex, pulse)} alt={alt} width={8} height={8} /> : <Text color={themeKey}>●</Text>
     const m = await read($, mode)
     const other = await read($, others)
     const otherOpen = await read($, othersOpen)
@@ -468,7 +471,16 @@ export const register: Register = (on, options) => {
     const { file, data, error } = await read($, status)
     const lines = await read($, karar)
     const out = await read($, outbox)
-    const waiting = (line: string) => out.queue.some(q => q.line === line)
+    // What a Pause / Devam button adds to its label: queued behind a running turn, or already submitted as the owner (until the file changes).
+    const note = (line: string) => (out.queue.some(q => q.line === line) ? 'sırada' : out.said.includes(line) ? 'gönderildi' : '')
+    const labelled = (label: string, line: string) => (note(line) ? `${label} · ${note(line)}` : label)
+    // A detail opens at its top; back lands on the card that was left. Desktop only: the terminal stays as it is.
+    const show = async (id: string | null, from?: string) => {
+      await update($, detail, () => id)
+      if (!term) await $.ui.scroll(detailScroll(PANE, id, from)).catch(() => undefined)
+    }
+    // The hover of a pressable card (the surface applies it, no hook runs); a card with its own edge (blocked, sent) lights its fill only.
+    const hover = (edge: string) => (term ? undefined : { ...(edge === CARD.borderColor && { borderColor: 'rgba(128,128,128,0.55)' }), backgroundColor: 'rgba(128,128,128,0.16)' })
     const openId = await read($, detail)
     const open = openId ? data?.tasks.find(t => t.id === openId) : undefined
 
@@ -480,8 +492,9 @@ export const register: Register = (on, options) => {
       const queued = out.queue.find(q => q.id === d.id)
       const sentTo = queued ? undefined : out.sent.find(([id]) => id === d.id)?.[1]
       const at = sentTo === undefined ? -1 : d.options.indexOf(sentTo)
+      const edge = sentTo !== undefined ? 'success' : blocked ? BLOCKED_EDGE : CARD.borderColor
       return (
-      <Box key={`d-${d.id}`} {...CARD} borderColor={sentTo !== undefined ? 'success' : blocked ? BLOCKED_EDGE : CARD.borderColor}>
+      <Box key={`d-${d.id}`} {...CARD} borderColor={edge} hover={hover(edge)}>
         <Box flexDirection="column">
           {kind && <Text size="caption" weight="medium" color={blocked ? BLOCKED_INK : 'claude'}>{kind}</Text>}
           <Text>{d.text}</Text>
@@ -499,8 +512,12 @@ export const register: Register = (on, options) => {
             ))}
           </Box>
         )}
-        {queued && <Text size="caption" dimColor>{queued.push ? QUEUED_PUSH : QUEUED}</Text>}
-        {sentTo !== undefined && <Text size="caption" color="success">{`Gönderildi: ${sentTo}`}</Text>}
+        {/* Always one caption row, so a press changes its text and never the card's height. */}
+        {sentTo !== undefined ? (
+          <Text size="caption" color="success">{`Gönderildi: ${sentTo}`}</Text>
+        ) : (
+          (queued || d.options.length > 0) && <Text size="caption" dimColor>{queued ? (queued.push ? QUEUED_PUSH : QUEUED) : "Bir seçeneğe bas · Lead'e gider"}</Text>
+        )}
       </Box>
       )
     }
@@ -558,7 +575,7 @@ export const register: Register = (on, options) => {
       t.reason && <Text size="caption" color={t.state === 'blocked' ? BLOCKED_INK : undefined} dimColor={t.state !== 'blocked'}>{t.reason}</Text>
 
     const taskCard = (t: Task) => (
-      <Box key={`t-${t.id}`} {...CARD} borderColor={t.state === 'blocked' ? BLOCKED_EDGE : CARD.borderColor}>
+      <Box key={`t-${t.id}`} {...CARD} borderColor={t.state === 'blocked' ? BLOCKED_EDGE : CARD.borderColor} hover={hover(t.state === 'blocked' ? BLOCKED_EDGE : CARD.borderColor)}>
         <Box flexDirection="column">
           <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="sm">
             <Text weight="semibold" wrap="truncate-end">{t.title}</Text>
@@ -572,7 +589,7 @@ export const register: Register = (on, options) => {
         </Box>
         <Box flexDirection="column">
           {Svg ? (
-            <Svg source={stagesSvg(t.stage, 5, t.state === 'blocked')} alt={`${STAGE_LABELS[t.stage]}, 5 aşamanın ${t.stage + 1}.`} />
+            <Svg source={stagesSvg(t.stage, 5, t.state === 'blocked', t.state === 'running')} alt={`${STAGE_LABELS[t.stage]}, 5 aşamanın ${t.stage + 1}.`} />
           ) : (
             <Text size="caption">
               {STAGE_LABELS.map((_, i) => (
@@ -587,7 +604,7 @@ export const register: Register = (on, options) => {
             {t.roles.map((r, i) => (
               <Box key={`t-${t.id}-r-${i}`} flexDirection="row" justifyContent="space-between" alignItems="center" gap="sm">
                 <Box flexDirection="row" alignItems="center" gap="xs">
-                  {dot(DOT_HEX[r.status], DOT[r.status], DOT_ALT[r.status])}
+                  {dot(DOT_HEX[r.status], DOT[r.status], DOT_ALT[r.status], r.status === 'running')}
                   <Text wrap="truncate-end">{r.name}</Text>
                 </Box>
                 <Text size="caption" color={r.status === 'blocked' ? 'error' : undefined} dimColor={r.status !== 'blocked'}>{r.state}</Text>
@@ -612,7 +629,7 @@ export const register: Register = (on, options) => {
             </Box>
           </Box>
         )}
-        <Button key={`detail-${t.id}`} label="Ayrıntı ›" onPress={() => void update($, detail, () => t.id)} />
+        <Button key={`detail-${t.id}`} label="Ayrıntı ›" hover={{ color: 'claude' }} onPress={() => void show(t.id)} />
       </Box>
     )
 
@@ -620,7 +637,7 @@ export const register: Register = (on, options) => {
       const last = t.rounds?.at(-1)
       return (
         <Box flexDirection="column" gap="md" padding="sm">
-          <Button key="detail-back" label="‹ Görevler" {...key('b')} onPress={() => void update($, detail, () => null)} />
+          <Button key="detail-back" label="‹ Görevler" {...key('b')} onPress={() => void show(null, t.id)} />
           {errorLine}
           <Box flexDirection="column">
             <Text size="heading" weight="semibold">{t.title}</Text>
@@ -680,7 +697,7 @@ export const register: Register = (on, options) => {
           {termDetail(
             ui,
             open,
-            () => void update($, detail, () => null),
+            () => void show(null, open.id),
             () => void $.prompt.fill({ text: `${open.title} hakkında: `, mode: 'replace' }),
           )}
         </Box>
@@ -698,6 +715,28 @@ export const register: Register = (on, options) => {
     ).filter((u): u is readonly [typeof u[0], number] => u[1] !== undefined)
     const n = countStates(data?.tasks ?? [])
     const showOn = !!data && !m.isOn
+    // Before the first read (file not yet known: session start, /clear, a reload) two empty cards stand in, not the onboarding text.
+    const bar = (w: string) => <Box backgroundColor={TRACK} height={1} width={w} />
+    const placeholder = (
+      <Box flexDirection="column" gap="sm">
+        {[0, 1].map(i => (
+          <Box key={`ph-${i}`} {...CARD}>
+            {bar('55%')}
+            {bar('100%')}
+            {bar('35%')}
+          </Box>
+        ))}
+      </Box>
+    )
+    const placeholderTerm = (
+      <Box flexDirection="column">
+        {[0, 1].map(i => (
+          <Box key={`ph-${i}`}>
+            <Text dimColor>░░░░░░░░░░░░░░ ░░░░░░</Text>
+          </Box>
+        ))}
+      </Box>
+    )
 
     return (
       <Box flexDirection="column" gap="md" padding="sm">
@@ -706,7 +745,7 @@ export const register: Register = (on, options) => {
             ui,
             [data?.lead && `Lead · ${data.lead}`, updated && updated, !m.isOn && 'mod kapalı'].filter(Boolean).join(' · ') || 'Lead',
             data ? !!data.paused : undefined,
-            waiting('Pause') || waiting('Devam et'),
+            note(data?.paused ? 'Devam et' : 'Pause'),
             t => void press($, running, { line: t }),
           )
         ) : (
@@ -721,9 +760,9 @@ export const register: Register = (on, options) => {
           </Box>
           {data &&
             (data.paused ? (
-              <Button key="resume" label={waiting('Devam et') ? 'Devam · sırada' : 'Devam'} onPress={() => void press($, running, { line: 'Devam et' })} />
+              <Button key="resume" label={labelled('Devam', 'Devam et')} onPress={() => void press($, running, { line: 'Devam et' })} />
             ) : (
-              <Button key="pause" label={waiting('Pause') ? 'Pause · sırada' : 'Pause'} onPress={() => void press($, running, { line: 'Pause' })} />
+              <Button key="pause" label={labelled('Pause', 'Pause')} onPress={() => void press($, running, { line: 'Pause' })} />
             ))}
         </Box>
         )}
@@ -734,7 +773,9 @@ export const register: Register = (on, options) => {
 
         {errorLine}
 
-        {!data && !error && (
+        {file === '' && (term ? placeholderTerm : placeholder)}
+
+        {file !== '' && !data && !error && (
           <Box flexDirection="column" gap="md">
             <Box flexDirection="column" gap="xs">
               <Text size="heading" weight="semibold">{m.isOn ? 'Takım hazır' : 'Agent Team kapalı'}</Text>
@@ -798,7 +839,7 @@ export const register: Register = (on, options) => {
 
         {term && data && data.decisions.length > 0 && termDecisions(ui, data.decisions, data.tasks, (d, o) => void pick($, running, d, o, true), lines, out)}
 
-        {term && data && data.tasks.length > 0 && termTasks(ui, data.tasks, n, showOn, id => void update($, detail, () => id))}
+        {term && data && data.tasks.length > 0 && termTasks(ui, data.tasks, n, showOn, id => void show(id))}
 
         {term && data && termHint(ui, otherTotal > 0)}
 

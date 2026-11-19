@@ -55,6 +55,8 @@ ayrıntıları (sırayla), `p` pause/devam, ayrıntıda `b` geri ve `s` Lead'e s
 - **Kullanım çubukları:** 5 saatlik ve haftalık kullanım yüzdeleri.
 - **Pause:** Lead'e `Pause` mesajı gönderir; duraklatılmışken düğme **Devam** olur.
 
+Pane durum dosyasını yarım saniyede bir okur; masaüstünde çalışan rolün noktası yanıp söner, çalışan görevin geçerli aşamasında bir ışık şeridi gezinir ve kartların üstüne gelince vurgu çıkar (terminalde hareket yoktur).
+
 Hangi alanın neyi çizdiği [`skills/agent-team/references/status.md`](skills/agent-team/references/status.md)
 içinde.
 
