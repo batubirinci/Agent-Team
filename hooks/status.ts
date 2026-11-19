@@ -30,7 +30,7 @@ const num = (x: unknown): number | undefined =>
   typeof x === 'number' && Number.isFinite(x) && x >= 0 ? Math.round(x) : undefined
 const list = (x: unknown): Obj[] => (Array.isArray(x) ? x.filter(isObj) : [])
 
-// A kind as the two rules below read it: trimmed, lower case (Turkish rules), ı as i, and no U+0307 an İ lowered without Turkish rules, or in NFD, is i + U+0307).
+// A kind as the two rules below read it: trimmed, lower case (Turkish rules), ı as i, and no U+0307 (an İ lowered without Turkish rules, or in NFD, is i + U+0307).
 const kindOf = (kind?: string) => (kind ?? '').trim().toLocaleLowerCase('tr').replace(/ı/g, 'i').replace(/\u0307/g, '')
 
 // A decision kind that says the work is stuck ("Takıldı ...", any case, also "takildi"): one rule for the parser and the strip.

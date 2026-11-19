@@ -841,7 +841,7 @@ test('hardening F24: a quit after the first poll tick after /clear leaves the re
   await c.team()
   c.wipe(ID_NEW) // /clear with no session.end seen by the plugin (the id changes, the atoms reset)
   await c.clock.advance(POLL) // the first tick
-  await $.session.end({ reason: 'quit', sessionId: ID_NEW })
+  await $.session.end({ reason: 'prompt_input_exit', sessionId: ID_NEW, resume: { id: ID_NEW } })
   expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }, CLEAR_NOW + POLL))
 })
 
