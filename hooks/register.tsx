@@ -193,6 +193,10 @@ const announce = ($: EngineInterface, file: string) =>
 // (file deleted, task removed), so the same id coming back does not reopen it by itself.
 async function setView($: EngineInterface, view: StatusView) {
   await update($, status, () => view)
+  await tidy($, view)
+}
+
+async function tidy($: EngineInterface, view: StatusView) {
   const ids = view.data?.decisions.map(d => d.id) ?? []
   await update($, outbox, s => ({ ...s, sent: s.sent.filter(([id]) => ids.includes(id)), said: [] }))
   const open = await read($, detail)
@@ -201,6 +205,7 @@ async function setView($: EngineInterface, view: StatusView) {
 
 // The own file is read only up to this size: the pane's state holds the parsed view (4 MiB at most), and a file this big is not a status.
 const MAX_KIB = 1024
+const STATE_MAX = 4_194_304
 async function refresh($: EngineInterface, file: string) {
   const prev = await read($, status)
   if (!(await $.fs.exists(file))) {
@@ -219,11 +224,18 @@ async function refresh($: EngineInterface, file: string) {
   } catch (err) {
     return fail(`Durum dosyası okunamadı: ${err instanceof Error ? err.message : String(err)}`)
   }
+  const view: StatusView = { file, mtime: mtimeMs, data, error: null }
   try {
-    await setView($, { file, mtime: mtimeMs, data, error: null })
-  } catch {
-    await fail("Durum dosyası pane'in durum sınırına sığmıyor (en çok 4 MiB)")
+    await update($, status, () => view)
+  } catch (err) {
+    // Only a view over the state limit (the engine counts the characters of the JSON value) says so; any other refusal says what it was.
+    await fail(
+      JSON.stringify(view).length > STATE_MAX ? "Durum dosyası pane'in durum sınırına sığmıyor (en çok 4 MiB)" : `Durum dosyası pane'e yazılamadı: ${err instanceof Error ? err.message : String(err)}`,
+    )
+    return
   }
+  // The new view is written: a failure of what follows (the outbox, the open detail) is not the view's, and never takes it back.
+  await tidy($, view)
 }
 
 // The other files of the status folder (see otherFiles): untrusted data, read-only; what fails to list, read or parse is skipped.
@@ -283,9 +295,14 @@ const followed = { dir: '', file: '', last: '' }
 // The reopen line, once: the first prompt of any kind (commands excepted) takes it, unless the Lead already rewrote the file.
 async function takeReopen($: EngineInterface) {
   try {
-    const { since, line } = await read($, reopened)
-    if (!line) return undefined
-    await update($, reopened, s => ({ ...s, line: false }))
+    if (!(await read($, reopened)).line) return undefined // nearly every prompt: nothing is written
+    // Claimed in one update: of two prompts at once, only the one that sees `line` set takes it.
+    let since = -1
+    await update($, reopened, s => {
+      since = s.line ? s.since : -1
+      return s.line ? { ...s, line: false } : s
+    })
+    if (since < 0) return undefined
     const { data, mtime } = await read($, status)
     return mtime < since ? reopenLine(data, await $.clock.now()) : undefined
   } catch {
@@ -394,8 +411,8 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // /clear ends the old session and the new id shows a moment later. The 500 ms poll looks no later than this timer (same period), so today it is a second
-  // path, kept for a poll that does not tick in that window (not measured); removing it changes no test outcome.
+  // /clear ends the old session and the new id shows a moment later: look once after 500 ms, so a quit right after still leaves a record. The 500 ms poll looks
+  // as often, so while it ticks this is a second path; with the poll stalled it is the only one (tested alone: the F24 / R6 test).
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') $.clock.after(SOON_MS, () => follow($))
     return next(e)

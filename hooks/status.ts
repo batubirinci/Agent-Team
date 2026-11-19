@@ -22,9 +22,10 @@ const short = (x: unknown, n: number): string | undefined => {
 // A decision or task id counts as written only if it is 1-64 letters, digits . _ - and no earlier one in its list had it. A made-up id is
 // `#<position>`: `#` is outside that set, so it never equals a written one (and `): ` can never be inside one).
 const ID = /^[\p{L}\p{N}._-]{1,64}$/u
+// The raw text is tested, before any control character is stripped: `d1\r` is not the written id `d1`.
 const written = (x: unknown, taken: Set<string>) => {
-  const id = str(x)
-  return id && ID.test(id) && !taken.has(id) ? (taken.add(id), id) : undefined
+  const id = typeof x === 'string' ? x : ''
+  return ID.test(id) && !taken.has(id) ? (taken.add(id), id) : undefined
 }
 const num = (x: unknown): number | undefined =>
   typeof x === 'number' && Number.isFinite(x) && x >= 0 ? Math.round(x) : undefined
@@ -152,8 +153,11 @@ const MONTHS = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl',
 export function stamp(iso: string | undefined, now: number) {
   const m = iso?.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/)
   if (!m) return { text: undefined, days: 0 }
-  let w = /(?:Z|[+-]\d{2}(?::?\d{2})?)$/i.test(iso!) ? new Date(iso!) : new Date(NaN)
-  if (Number.isNaN(w.getTime())) w = new Date(+m[1]!, +m[2]! - 1, +m[3]!, +m[4]!, +m[5]!)
+  // "Z", "+03:00", "+0300" or "+03": the instant is the written clock minus the offset (parsed here: Date reads only "+03:00" forms).
+  const o = iso!.match(/(?:(Z)|([+-])(\d{2}):?(\d{2})?)$/i)
+  const w = o
+    ? new Date(Date.UTC(+m[1]!, +m[2]! - 1, +m[3]!, +m[4]!, +m[5]!) - (o[1] ? 0 : (o[2] === '-' ? -1 : 1) * (+o[3]! * 60 + +(o[4] ?? 0)) * 60_000))
+    : new Date(+m[1]!, +m[2]! - 1, +m[3]!, +m[4]!, +m[5]!)
   const t = Number.isFinite(now) ? new Date(now) : undefined
   const days = t ? Math.max(0, Math.round((Date.UTC(t.getFullYear(), t.getMonth(), t.getDate()) - Date.UTC(w.getFullYear(), w.getMonth(), w.getDate())) / 86_400_000)) : 0
   const clock = `${pad2(w.getHours())}:${pad2(w.getMinutes())}`

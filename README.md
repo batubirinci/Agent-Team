@@ -87,8 +87,8 @@ gösterir.
 
 ## Durum dosyası
 
-Lead, pane'in okuduğu durumu `<evidenceRoot>/status/<proje>--<oturum kimliğinin ilk 8 karakteri>.json` dosyasına (yolu plugin verir) yazar; böylece aynı klasördeki oturumlar birbirinin durumunu ezmez. Eski `<proje>.json` dosyaları artık okunmaz. Pane dosyayı 3
-saniyede bir kontrol eder. Biçim: [`skills/agent-team/references/status.md`](skills/agent-team/references/status.md).
+Lead, pane'in okuduğu durumu `<evidenceRoot>/status/<proje>--<oturum kimliğinin ilk 8 karakteri>.json` dosyasına (yolu plugin verir) yazar; böylece aynı klasördeki oturumlar birbirinin durumunu ezmez. Eski `<proje>.json` dosyaları artık okunmaz. Pane dosyayı yarım
+saniyede bir (500 ms) kontrol eder. Biçim: [`skills/agent-team/references/status.md`](skills/agent-team/references/status.md).
 
 ## Geliştirme
 

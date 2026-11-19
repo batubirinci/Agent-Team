@@ -827,8 +827,8 @@ test('round 3: /clear then a quit before the first poll still leaves a record un
   await $.session.end({ reason: 'clear', sessionId: ID_OLD, resume: { id: ID_OLD } })
   c.wipe(ID_NEW) // the id changes and the atoms reset after session.end
   await c.clock.advance(600)
-  // hardening F24: the poll is 500 ms now, so it fires no later than the session.end timer (500 ms): the mutant "session.end carry removed" survives
-  // this test (measured, mutants.log), so it pins the outcome, not which of the two carried it.
+  // hardening F24: the poll is 500 ms, so it fires no later than the session.end timer (500 ms): this test pins the outcome, not which of the two
+  // carried it. The timer alone is tested at the end of the file (F24 / R6).
   expect(c.recordOf(ID_NEW)).toEqual(rec(OLD, SWITCH, { announced: OLD }, CLEAR_NOW + 500))
   expect(c.modeNow()).toEqual(SWITCH)
 })
@@ -3534,7 +3534,7 @@ const rBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], o:
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('ui.open', () => {
     log.opens++
-    if (log.openFails) throw new Error('no surface') // the engine skips a throwing mock: a real rejection of ui.open (a pane another plugin holds, d.ts) cannot be simulated
+    if (log.openFails) return { deny: 'held by another plugin' } as never // a thrown error is skipped by the engine; a { deny } makes $.ui.open reject (d.ts: a pane another plugin holds)
     return { value: o.placed === false ? { isPlaced: false as const, reason: 'no surface' } : { isPlaced: true as const } }
   })
   on('ui.close', () => ({ value: undefined }))
@@ -3810,11 +3810,9 @@ test('hardening B5 (parser): a written id counts only if it is 1-64 letters, dig
     }),
   )
   const ids = s.decisions.map(d => d.id)
-  expect(ids[0]).toBe('a')
-  expect(ids[3]).toBe('Şu-1_ü.2')
-  expect(ids[5]).toBe('x'.repeat(64))
-  for (const i of [1, 2, 4, 6, 7]) expect(IDRE.test(ids[i] as string)).toBe(false) // not written: made up, with a character a written id cannot hold
-  expect(new Set(ids).size).toBe(ids.length)
+  // Written ones stay (64 characters is the longest); the rest are made up as `#<position>`: a repeat, `): `, 65 characters, a space, none.
+  expect(ids).toEqual(['a', '#2', '#3', 'Şu-1_ü.2', '#5', 'x'.repeat(64), '#7', '#8'])
+  for (const id of ids) expect(IDRE.test(id) || id.startsWith('#')).toBe(true)
 
   const t = parseStatus(
     JSON.stringify({
@@ -3829,11 +3827,34 @@ test('hardening B5 (parser): a written id counts only if it is 1-64 letters, dig
     }),
   )
   expect(t.tasks.map(x => x.generatedId === true)).toEqual([true, false, true, true])
-  expect(t.tasks[1]?.id).toBe('t1')
-  expect(new Set(t.tasks.map(x => x.id)).size).toBe(4)
+  expect(t.tasks.map(x => x.id)).toEqual(['#1', 't1', '#3', '#4'])
   // The decision links to the written t1 only.
   expect(t.tasks.map(x => x.state)).toEqual(['waiting', 'blocked', 'waiting', 'waiting'])
   expect(decisionTask(t.decisions[0]!, t.tasks)).toEqual({ kind: 'Takıldı · Yazılı', blocked: true })
+})
+
+test('hardening B5 (parser): the id rule is tested on the raw text: an id with a control character is not written, though stripping would leave a valid one', async () => {
+  const s = parseStatus(
+    JSON.stringify({
+      v: 1,
+      decisions: ['d1\r', 'd\u001b2', 'd\u00003', 'd\u007f4', 'd\u009b5', 'd6'].map(id => ({ id, text: 'T', options: [] })),
+      tasks: ['t1\r', 't\u001b2', 'ok.3'].map(id => ({ id, title: 'G', stage: 'build' })),
+    }),
+  )
+  expect(s.decisions.map(d => d.id)).toEqual(['#1', '#2', '#3', '#4', '#5', 'd6'])
+  expect(s.tasks.map(t => [t.id, t.generatedId === true])).toEqual([['#1', true], ['#2', true], ['ok.3', false]])
+})
+
+test('hardening B5 (parser): a decision that names a made-up task id (`#1`) does not link to it', async () => {
+  const s = parseStatus(
+    JSON.stringify({
+      v: 1,
+      decisions: [{ id: 'd1', kind: 'Takıldı · Developer', text: 'Ne?', task: '#1', options: [] }],
+      tasks: [{ title: 'Kimliksiz', stage: 'build', roles: [{ name: 'Developer', state: 'yazıyor', status: 'running' }] }],
+    }),
+  )
+  expect(s.tasks[0]).toMatchObject({ id: '#1', generatedId: true, state: 'running' })
+  expect(decisionTask(s.decisions[0]!, s.tasks)).toEqual({ kind: 'Takıldı · Developer', blocked: false })
 })
 
 test('hardening B5 (terminal): an id with `): ` next to `a` — each card writes and finds only its own line', async ($, on) => {
@@ -4045,7 +4066,7 @@ test('hardening C11 (other sessions): the same strip applies to another session\
 
 // Own status file too big. Source: criterion 12 of the hardening brief (cap 1 MiB, the example line, last good view kept, poll goes on).
 const BIG_GOOD = JSON.stringify({ v: 1, tasks: [{ id: 't1', title: 'İyi görev', stage: 'build' }] })
-const sBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], surface: 'desktop' | 'terminal' = 'desktop') => {
+const sBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], surface: 'desktop' | 'terminal' = 'desktop', more?: (on: Parameters<TestBody>[1]) => void) => {
   const disk = { text: BIG_GOOD, mtime: 1, size: 100, reads: 0 }
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -4057,6 +4078,7 @@ const sBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], su
     disk.reads++
     return { value: disk.text }
   })
+  more?.(on)
   const clock = mock.clock(on)
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   await $.session.start({ cwd: '/Users/x/Projeler/shop', surface, isInteractive: true })
@@ -4155,23 +4177,43 @@ test('hardening D15: an unreadable file the Lead rewrote since the reopen sends 
   expect(await r.prompt()).toEqual([])
 })
 
-// stamp: the written instant, the shown time and the day difference both in local time.
-const clockOfLocal = (d: Date) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-test('hardening D16: the header date uses the written instant in local time; a time without an offset counts as local', async () => {
+// stamp: the written instant, the shown time and the day difference both in local time. The harness runs in the host's zone, so every
+// expected value is built from local parts, and the written offsets are built at run time as the local offset shifted by whole hours: the
+// digits written then differ from the local time in every zone, and only reading the instant gives the local day and clock.
+const isoAt = (ms: number, offsetMin: number, form: 'colon' | 'plain' | 'hours') => {
+  const d = new Date(ms + offsetMin * 60_000) // its UTC parts are the clock of that offset
+  const p2 = (n: number) => String(n).padStart(2, '0')
+  const sign = offsetMin < 0 ? '-' : '+'
+  const h = p2(Math.floor(Math.abs(offsetMin) / 60))
+  const m = p2(Math.abs(offsetMin) % 60)
+  const off = form === 'colon' ? `${sign}${h}:${m}` : form === 'plain' ? `${sign}${h}${m}` : `${sign}${h}`
+  return `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}T${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}:00${off}`
+}
+test('hardening D16: the header date uses the written instant in local time, in any host zone; a time without an offset counts as local', async () => {
   const now = new Date(2026, 10, 19, 10, 0).getTime()
-  // Written 18 Nov 23:30 local, spelled as an instant (Z): the digits in it are not the local time unless the zone is UTC.
-  expect(stamp(new Date(2026, 10, 18, 23, 30).toISOString(), now)).toEqual({ text: '18 Kas 23:30', days: 1 })
+  const evening = new Date(2026, 10, 18, 23, 30).getTime() // 18 Nov 23:30 local
+  const local = -new Date(evening).getTimezoneOffset() // the host's offset in minutes
+  for (const shift of [120, -180, 300]) {
+    for (const form of ['colon', 'plain', 'hours'] as const) {
+      const iso = isoAt(evening, local + shift, form) // whole hours from the host's offset: the digits are not the local clock
+      expect([iso, stamp(iso, now)]).toEqual([iso, { text: '18 Kas 23:30', days: 1 }])
+    }
+  }
+  // A Z time: the instant too (in UTC itself it is also the local clock).
+  expect(stamp(new Date(evening).toISOString(), now)).toEqual({ text: '18 Kas 23:30', days: 1 })
+  // The same evening written in an offset whose digits fall on today: the local day is yesterday's.
+  const lateIso = isoAt(evening, local + 120, 'colon')
+  expect(lateIso.slice(0, 10)).toBe('2026-11-19')
+  expect(stamp(lateIso, now).days).toBe(1)
   // No offset: local as written.
   expect(stamp('2026-11-18T23:30:00', now)).toEqual({ text: '18 Kas 23:30', days: 1 })
   expect(stamp('2026-11-19T08:05:00', now)).toEqual({ text: '08:05', days: 0 })
   // Just after midnight: yesterday's evening is one day back whatever the offset it is written in.
   const midnight = new Date(2026, 10, 19, 0, 10).getTime()
-  expect(stamp(new Date(2026, 10, 18, 23, 50).toISOString(), midnight)).toEqual({ text: '18 Kas 23:50', days: 1 })
-  // The brief's example, for a local +03:00 (this Mac); in another zone the same instant is only checked against the local clock.
-  const example = stamp('2026-11-18T23:30:00+00:00', now)
-  const instant = new Date('2026-11-18T23:30:00+00:00')
-  expect(example.text).toBe(clockOfLocal(instant)) // same local day as `now` or not, the clock part is the local one
-  if (new Date(2026, 10, 19).getTimezoneOffset() === -180) expect(example).toEqual({ text: '02:30', days: 0 })
+  const late = new Date(2026, 10, 18, 23, 50).getTime()
+  expect(stamp(isoAt(late, local - 180, 'colon'), midnight)).toEqual({ text: '18 Kas 23:50', days: 1 })
+  // The brief's example, for a local +03:00 (this Mac); only checked in that zone.
+  if (local === 180) expect(stamp('2026-11-18T23:30:00+00:00', now)).toEqual({ text: '02:30', days: 0 })
   expect(stamp(undefined, now)).toEqual({ text: undefined, days: 0 })
 })
 
@@ -4270,7 +4312,7 @@ test('hardening F21 (a): a failed delivery gives back only its own press: anothe
   await ui.unmount()
 })
 
-test('hardening F21 (b): on the terminal a failed re-press of a delivered decision is requeued and shown "Sırada" (its earlier mark is gone, the press is the newer answer); its delivery shows "Gönderildi" with the new option', async ($, on) => {
+test('hardening F21 (b): on the terminal a failed re-press of a delivered decision is requeued and shown "Sırada"; its earlier mark is gone, so a desktop press of the same decision is accepted (kills: rollback keeps the mark)', async ($, on) => {
   const k = await pBoot($, on, { surface: 'terminal', isFilled: false })
   const ui = await k.mount()
   await ui.press({ key: 'd-d1-0' }) // box refuses the fill, idle: submitted
@@ -4281,10 +4323,13 @@ test('hardening F21 (b): on the terminal a failed re-press of a delivered decisi
   const root = await drawnOf(ui)
   expect(textNode(root, /^Sırada/)).toBeDefined()
   expect(textNode(root, /^Gönderildi/)).toBeUndefined()
+  // The desktop ignores a press of a decision whose mark stands. After the failed re-press the mark is gone: this press is taken and replaces the queued one.
   k.gate.submit = 'ok'
-  await ui.press({ key: 'd-d2-0' }) // the next press submits both, in press order
-  expect(k.log.sent).toEqual(['Karar (d1): Durumları gör', 'Karar (d1): Sonra\nKarar (d2): Evet'])
-  expect(textNode(await drawnOf(ui), /^Gönderildi: Sonra$/)).toBeDefined()
+  const desk = await k.mount('desktop')
+  await desk.press({ key: 'd-d1-0' })
+  expect(k.log.sent).toEqual(['Karar (d1): Durumları gör', 'Karar (d1): Durumları gör'])
+  expect(textNode(await drawnOf(ui), /^Gönderildi: Durumları gör$/)).toBeDefined()
+  await desk.unmount()
   await ui.unmount()
 })
 
@@ -4311,12 +4356,12 @@ test('hardening F22: a command neither carries the reopen line nor consumes it',
   expect(await r.prompt()).toHaveLength(1) // the first real prompt still owes it
 })
 
-test('hardening F22: a failing ui.open at session.attach leaves the hook standing and next(e) still runs (mutant: the hook drops next(e); a rejecting ui.open itself cannot be simulated, see the mock)', async ($, on) => {
+test('hardening F22: a rejecting ui.open at session.attach is caught and next(e) still runs (kills: the hook drops next(e); the engine runs a throwing hook fail-open, so removing the .catch alone is not observable here)', async ($, on) => {
   const r = await rBoot($, on)
   r.log.openFails = true
   const before = r.log.attached
   await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
-  expect(r.log.opens).toBeGreaterThan(1) // asked again, and it threw
+  expect(r.log.opens).toBeGreaterThan(1) // asked again, and the open was refused ({ deny }: the call rejects)
   expect(r.log.attached).toBe(before + 1) // the engine's own attach ran
 })
 
@@ -4355,4 +4400,107 @@ test('hardening F23: a file that leaves the listing and comes back with the same
   state.listing = [entry('p--aaaaaaaa.json', { size: 120, mtimeMs: NOW - 60_000 })]
   await clock.advance(500)
   expect(reads).toHaveLength(2) // back with the same size and mtime: read again
+})
+
+// Round 2 (R1): the overflow line is for a real overflow of the status write only. Source: criterion 12 and QA r1 Neon finding 1 (probes PROBE_4, 4b).
+const FRESH = BIG_GOOD.replace('İyi', 'Yeni')
+test('hardening C12 / R1: a failing outbox update after a good status write keeps the new view and shows no overflow line', async ($, on) => {
+  const deny = { outboxOnce: false }
+  const k = await sBoot($, on, 'desktop', on2 =>
+    on2('state.set', (_, e, next) => {
+      if (e.key === 'outbox' && deny.outboxOnce) {
+        deny.outboxOnce = false
+        return { deny: 'transient outbox failure' } as never
+      }
+      return next(e)
+    }),
+  )
+  deny.outboxOnce = true
+  await k.change(FRESH, 100)
+  expect(await k.ui.find({ type: 'Text', text: /Yeni görev/ })).toBeDefined() // the good write is not reverted
+  expect(await k.ui.find({ type: 'Text', text: /^Durum dosyası/ })).toBeUndefined()
+  await k.ui.unmount()
+})
+
+test('hardening C12 / R1: a status write that fails for another reason than size keeps the last view and does not claim an overflow', async ($, on) => {
+  const deny = { statusOnce: false }
+  const k = await sBoot($, on, 'desktop', on2 =>
+    on2('state.set', (_, e, next) => {
+      if (e.key === 'status' && deny.statusOnce) {
+        deny.statusOnce = false
+        return { deny: 'policy denied' } as never
+      }
+      return next(e)
+    }),
+  )
+  deny.statusOnce = true
+  await k.change(FRESH, 100)
+  const lines = (await k.ui.findAll({ type: 'Text', text: /^Durum/ })).map(n => n.text)
+  expect(lines).toHaveLength(1)
+  expect(lines[0]).not.toMatch(/sığmıyor|4 MiB/)
+  expect(await k.ui.find({ type: 'Text', text: /İyi görev/ })).toBeDefined()
+  await k.ui.unmount()
+})
+
+// Round 2 (R6): the session.end timer alone. A stalled poll (its period never answers) and a hand-held `clock.after` isolate it; the mock clock
+// cannot, as it also answers `clock.every`. Source: QA r1 Neon finding 6 (probe PROBE_2); mutant: "session.end carry removed".
+test('hardening F24 / R6: with the poll stalled, the session.end timer (500 ms) alone carries the record to the new id after /clear', async ($, on) => {
+  let sid = ID_OLD
+  let now = CLEAR_NOW
+  const store = new Map<string, unknown>()
+  const atoms = new Map<string, { value: unknown; version: number }>()
+  const slot = (e: { plugin: string; key: string }) => `${e.plugin}/${e.key}`
+  let carried!: () => void
+  const done = new Promise<void>(res => (carried = res))
+  on('store.get', (_, e) => ({ value: store.get(e.key) }))
+  on('store.set', (_, e) => {
+    store.set(e.key, JSON.parse(JSON.stringify(e.value)))
+    if (e.key === `session:${ID_NEW}`) carried()
+    return { value: undefined }
+  })
+  on('store.delete', () => ({ value: undefined }))
+  on('store.keys', () => ({ value: [...store.keys()] }))
+  on('state.get', (_, e) => ({ value: { value: atoms.get(slot(e))?.value, version: atoms.get(slot(e))?.version ?? 0 } }))
+  on('state.set', (_, e) => {
+    const version = atoms.get(slot(e))?.version ?? 0
+    if (e.ifVersion !== undefined && e.ifVersion !== version) return { value: { isSet: false, version } }
+    atoms.set(slot(e), { value: e.value, version: version + 1 })
+    return { value: { isSet: true, version: version + 1 } }
+  })
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true as const } }))
+  on('ui.close', () => ({ value: undefined }))
+  on('env.get', () => ({ value: '/Users/x' }))
+  on('session.id', () => ({ value: sid }))
+  on('fs.exists', () => ({ value: true }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: 1, isLink: false } }))
+  on('fs.read', () => ({ value: '{"v":1}' }))
+  on('fs.list', () => ({ value: [] }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.end', (_, e) => ({ sessionId: e.sessionId }))
+  on('session.append', (_, e, next) => next(e))
+  const afters: { ms: number; fire: () => void }[] = []
+  on('clock.now', () => ({ value: now }))
+  on('clock.every', () => new Promise<never>(() => undefined)) // the poll never ticks
+  on('clock.after', (_, e) => new Promise<{ value: undefined }>(res => afters.push({ ms: e.ms, fire: () => res({ value: undefined }) })))
+  await $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'desktop', isInteractive: true })
+  const foot = await $.ui.mount({ ...FOOTER, surface: 'desktop' })
+  await foot.press({ key: 'team-mode' }) // team mode on: the session has a record
+  await foot.unmount()
+  await $.session.end({ reason: 'clear', sessionId: ID_OLD, resume: { id: ID_OLD } })
+  sid = ID_NEW
+  atoms.clear()
+  expect(afters.map(a => a.ms)).toEqual([500]) // the plugin asked for one look after 500 ms
+  now += 500
+  afters[0]!.fire()
+  await done
+  expect(store.get(`session:${ID_NEW}`)).toEqual(rec(OLD, SWITCH, { announced: OLD }, CLEAR_NOW + 500))
+})
+
+// Round 2 (R9): the reopen line is claimed in one atomic update, so two prompts at once cannot both carry it.
+test('hardening R9: two prompts submitted at the same time carry the reopen line once', async ($, on) => {
+  const r = await rBoot($, on)
+  const send = (text: string) => $.prompt.submit({ wait: false, origin: { kind: 'composer' }, text } as never)
+  await Promise.all([send('bir'), send('iki'), send('üç')])
+  expect(r.log.contexts.flatMap(c => c ?? []).filter(c => c.startsWith(R_PREFIX))).toHaveLength(1)
 })
