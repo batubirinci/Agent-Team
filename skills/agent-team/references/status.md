@@ -21,6 +21,7 @@ Panes also read (never write) the other `*.json` files in the same status folder
 "Diğer oturumlar" that shows other sessions' pending `decisions` read-only: only regular files
 (not links) modified in the last 24 hours and at most 256 KiB, the 20 newest at most, parsed like
 your own file. So keep `decisions` current in your own file; the owner answers there, not in the strip.
+A task session of this session (below) is not in the strip: a linked session is drawn on its task card instead.
 
 The file may already hold tasks and decisions from earlier in this session (before a `/clear` or a
 resume): read it before writing, keep what you did not finish, and update only what changed. Do not
@@ -127,6 +128,21 @@ Fields:
   The pane shows the path as text. Long texts are cut (a finding 300 characters, a note 400).
 - Pressing `Ayrıntı ›` on a task card opens its detail view: rounds, findings, notes and evidence.
   A task without `rounds` still opens, just without the Turlar section.
+
+Task sessions (`references/task-sessions.md`): a task in its own session has two ends in two files, joined by a binding the
+two plugins keep in their store (the marker line of the child's first prompt), never by anything a status file says. A
+`parent` field is read nowhere.
+- The parent's task row carries `"session": { "name": "<handle>" }` (the handle the session was started with).
+- The join: the task of that id is joined to the one file of the session bound to it (a regular `.json`, at most 256 KiB; also while it cannot be read for
+  a moment). At most 8 children. The task keeps its `id`, `title` and `wait`; its stage, round, candidate, counts, roles (the first 12, `+<n> rol` for the
+  rest), rounds, evidence and state are the child's (its task of that id, else its first), drawn with the row `ayrı oturum · <handle> · <id8> · <son yazım>`.
+  The child's decisions (the first 10) are listed under "Senin sıran" after the parent's own. A bound session is not in "Diğer oturumlar"; every other file is,
+  whatever it says. Without the bound session's file the row reads `durum dosyası bekleniyor`; with no session bound, `bağlanmadı` (the owner can bind one
+  by hand: "Bağla"); with two sessions showing one code, `iki oturum aynı kodu gösterdi`.
+- Answers: a press in the parent's pane on a child's decision reaches the child as its own pane press (the two plugins check it). A message from another
+  session is never the owner's answer, and a child's `Push onayı` has no button in the parent's pane. The pane writes no file for it; the child closes the
+  decision in its own file. One answer per decision: the pane sends again only after the child's file, read, no longer has that decision id or that option
+  (or, while the file is not read with it, 24 hours after the press).
 
 Reopened session: when the session is opened again (a resume) the pane keeps the old tasks and decisions and
 shows the day of `updatedAt` when it is not today. Until the file is written again, a banner says how old it is and

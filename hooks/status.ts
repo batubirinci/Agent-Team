@@ -1,4 +1,4 @@
-import type { BandCounts, BandSeg, Decision, DirEntry, Evidence, Finding, Mode, Other, Role, Round, RoleStatus, SessionRecord, Status, Task, TaskState } from '../types'
+import type { BandCounts, BandSeg, Bound, Candidate, Child, Decision, DirEntry, Evidence, Finding, Forward, Kid, Link, Mode, Other, Role, Round, RoleStatus, SessionLine, SessionRecord, Status, Task, TaskState } from '../types'
 
 export const STAGES = ['spec', 'build', 'review', 'revise', 'report'] as const
 export const STAGE_LABELS = ['Spec', 'Build', 'Review', 'Revise', 'Rapor'] as const
@@ -34,14 +34,19 @@ const num = (x: unknown): number | undefined =>
   typeof x === 'number' && Number.isFinite(x) && x >= 0 ? Math.round(x) : undefined
 const list = (x: unknown): Obj[] => (Array.isArray(x) ? x.filter(isObj) : [])
 
-// A kind as the two rules below read it: trimmed, lower case (Turkish rules), ı as i, and no U+0307 (an İ lowered without Turkish rules, or in NFD, is i + U+0307).
-const kindOf = (kind?: string) => (kind ?? '').trim().toLocaleLowerCase('tr').replace(/ı/g, 'i').replace(/\u0307/g, '')
+// A kind as the two rules below read it: no U+0307 (an İ lowered without Turkish rules, or in NFD, is i + U+0307) and no zero-width character (U+200B-U+200D,
+// U+2060, U+FEFF), both taken out before the trim, then trimmed, lower case (Turkish rules), ı as i.
+const kindOf = (kind?: string) => (kind ?? '').replace(/[\u0307\u200b-\u200d\u2060\ufeff]/g, '').trim().toLocaleLowerCase('tr').replace(/ı/g, 'i').replace(/\u0307/g, '')
 
 // A decision kind that says the work is stuck ("Takıldı ...", any case, also "takildi"): one rule for the parser and the strip.
 export const isStuck = (kind?: string) => kindOf(kind).startsWith('takildi')
 
 // A decision whose kind says it approves an irreversible action ("Push onayı ...", any case, also "push onayi"): never carried by a tool result.
 export const isPush = (kind?: string) => kindOf(kind).startsWith('push onayi')
+
+// How every consumer reads a decision's push flag (fail closed): a push unless the flag is the boolean false. A value stored by an earlier build, or any
+// other path that lost the flag, never gives a button, a digit, a forward or a tool-result delivery.
+export const pushOf = (d: { push?: unknown }) => d.push !== false
 
 // A finding that blocks, "BLOCKING" in any letter case: one rule for the parser's cap order and for both drawings.
 export const isBlocking = (f: Finding) => f.severity?.toLowerCase() === 'blocking'
@@ -57,7 +62,11 @@ export function parseStatus(text: string): Status {
     const t = str(d.text)
     if (!t) return []
     const options = Array.isArray(d.options) ? d.options.map(o => str(o)).filter((o): o is string => !!o).slice(0, 4) : []
-    return [{ id: written(d.id, decisionIds) ?? `#${i + 1}`, kind: str(d.kind), text: t, meta: str(d.meta), task: idOf(d.task), options }]
+    // The two flags are read once, here, from the whole kind as written and as drawn (a control character inside is dropped from the drawn one): every consumer
+    // reads the flags, never the kind text, which a copy may cut (a padded "Push onayı" must never lose its flag).
+    const kind = str(d.kind)
+    const raw = typeof d.kind === 'string' ? d.kind : undefined
+    return [{ id: written(d.id, decisionIds) ?? `#${i + 1}`, kind, text: t, meta: str(d.meta), task: idOf(d.task), options, push: isPush(kind) || isPush(raw), stuck: isStuck(kind) || isStuck(raw) }]
   })
 
   const tasks: Task[] = list(raw.tasks).flatMap((t, i) => {
@@ -97,7 +106,7 @@ export function parseStatus(text: string): Status {
     const asked = own ? decisions.filter(d => d.task === own) : []
     const blocked = roles.find(r => r.status === 'blocked')
     const state: TaskState =
-      blocked || asked.some(d => isStuck(d.kind)) ? 'blocked' : roles.some(r => r.status === 'running') ? 'running' : 'waiting'
+      blocked || asked.some(d => d.stuck) ? 'blocked' : roles.some(r => r.status === 'running') ? 'running' : 'waiting'
     const reason =
       state === 'blocked' ? (asked.length ? `senden ${asked.length} karar bekliyor` : blocked?.state || undefined) : wait
     return [{
@@ -124,6 +133,7 @@ export function parseStatus(text: string): Status {
     ? { fiveHourPct: num(raw.limits.fiveHourPct), weeklyPct: num(raw.limits.weeklyPct) }
     : undefined
 
+  // A file's `parent` is read nowhere: a task session is joined by its binding in the plugin store, never by what a file says.
   return { updatedAt: str(raw.updatedAt), lead: str(raw.lead), paused: raw.paused === true, limits, decisions, tasks }
 }
 
@@ -213,15 +223,15 @@ export const countStates = (tasks: readonly Task[]) => ({
 })
 
 // The task a decision names (if it is in the file): its title joins the kind line, a blocked one draws the card in error.
-export function decisionTask(d: Decision, tasks: readonly Task[]) {
+export function decisionTask(d: Omit<Decision, 'push' | 'stuck'>, tasks: readonly Task[]) {
   const t = d.task ? tasks.find(x => x.id === d.task && !x.generatedId) : undefined
   return { kind: [d.kind, t?.title].filter(Boolean).join(' · ') || undefined, blocked: t?.state === 'blocked' }
 }
 
 // A decision answer is one line of the owner's draft, "Karar (<id>): <option>". The id and the option are model-written:
-// a line break in them would start another line, so it becomes a space.
+// a line break in them (also U+2028 and U+2029) would start another line, so it becomes a space.
 export const KARAR = 'Karar ('
-export const flat = (s: string) => s.replace(/\r\n|[\r\n]/g, ' ')
+export const flat = (s: string) => s.replace(/\r\n|[\r\n\u2028\u2029]/g, ' ')
 const head = (id: string) => `${KARAR}${flat(id)}): `
 export const kararLine = (id: string, option: string) => head(id) + flat(option)
 
@@ -238,7 +248,7 @@ export function withKarar(draft: string, id: string, option: string) {
 // The decision lines of a draft (all the pane needs to know of it), and which option of `d` one of them picks (-1: none).
 // A CRLF draft's rows end in \r: it is not part of the line.
 export const kararLines = (draft: string) => draft.split('\n').filter(r => r.startsWith(KARAR)).map(r => r.replace(/\r$/, ''))
-export const pickedAt = (lines: readonly string[], d: Decision) => d.options.findIndex(o => lines.includes(kararLine(d.id, o)))
+export const pickedAt = (lines: readonly string[], d: Omit<Decision, 'push' | 'stuck'>) => d.options.findIndex(o => lines.includes(kararLine(d.id, o)))
 
 // The sentence that tells the Lead the status path (register.tsx leadText) and the prefix of the row that carries it.
 export const ANNOUNCE = "Pane'in okuduğu durum dosyası:"
@@ -246,24 +256,109 @@ export const OPEN_ROW = '[Agent Team modu açıldı] '
 
 const MODE_SOURCES: readonly string[] = ['folder', 'switch', 'off']
 
-// A store record is data on disk: it counts only if it is well formed and its file is directly in <statusDir>/ and ends in .json.
+// The binding of a task session (trust addendum §1): a handle is a task id the Lead chose, a code is the one-time string of the start, written literally
+// (a shell expansion such as $(uuidgen) is no code). The marker is the line the Lead puts first in the child's first prompt.
+export const HANDLE = /^[a-z0-9][a-z0-9-]{0,23}$/
+const CODE = /^[A-Za-z0-9-]{16,64}$/
+export const MARKER = /\[Agent Team görev oturumu\] task=([a-z0-9][a-z0-9-]{0,23}) kod=([A-Za-z0-9-]{16,64})(?![A-Za-z0-9-])/
+export const markerOf = (text: string) => {
+  const m = MARKER.exec(text)
+  return m ? { task: m[1]!, code: m[2]! } : undefined
+}
+export const KIDS_MAX = 16
+
+const kidsIn = (x: unknown): Record<string, Kid> | undefined => {
+  if (!isObj(x)) return undefined
+  const ok = Object.entries(x).flatMap(([task, k]): [string, Kid][] =>
+    HANDLE.test(task) && isObj(k) && typeof k.code === 'string' && CODE.test(k.code) && typeof k.at === 'number' && Number.isFinite(k.at) && (k.to === undefined || (typeof k.to === 'string' && k.to.length > 0 && k.to.length <= 128))
+      ? [[task, { code: k.code, at: k.at, ...(typeof k.to === 'string' && { to: k.to }) }]]
+      : [],
+  )
+  const kept = ok.sort((a, b) => b[1].at - a[1].at).slice(0, KIDS_MAX)
+  return kept.length ? Object.fromEntries(kept) : undefined
+}
+const boundOf = (x: unknown): Bound | undefined =>
+  isObj(x) && typeof x.task === 'string' && HANDLE.test(x.task) && typeof x.code === 'string' && CODE.test(x.code) && typeof x.token === 'string' && x.token.length > 0 && x.token.length <= 128
+    ? { task: x.task, code: x.code, token: x.token }
+    : undefined
+
+// A store record is data on disk: it counts only if it is well formed and its file is directly in <statusDir>/ and ends in .json. Of `kids` and `bound` only
+// well formed ones are kept (at most 16 kids, the newest).
 export function parseRecord(raw: unknown, statusDir: string): SessionRecord | undefined {
   if (!isObj(raw) || typeof raw.file !== 'string' || typeof raw.at !== 'string' || !isObj(raw.mode)) return undefined
   const { file, at, mode, announced } = raw
   if (typeof mode.isOn !== 'boolean' || !MODE_SOURCES.includes(String(mode.source))) return undefined
   if (!file.endsWith('.json') || !file.startsWith(`${statusDir}/`) || file.slice(statusDir.length + 1).includes('/')) return undefined
-  return { file, mode: { isOn: mode.isOn, source: mode.source as Mode['source'] }, at, ...(typeof announced === 'string' && { announced }) }
+  const kids = kidsIn(raw.kids)
+  const bound = boundOf(raw.bound)
+  return { file, mode: { isOn: mode.isOn, source: mode.source as Mode['source'] }, at, ...(typeof announced === 'string' && { announced }), ...(kids && { kids }), ...(bound && { bound }) }
+}
+
+// The store's session records as one list: `sid` is the id after `session:` (never empty).
+export type Rec = { sid: string; r: SessionRecord }
+const atOf = (r: SessionRecord) => Date.parse(r.at) || 0
+const newest = (a: Rec, b: Rec) => atOf(b.r) - atOf(a.r) || a.sid.localeCompare(b.sid)
+
+// One session = one status file: a /clear carries a session's record to its new id with its file, so its earlier ids keep records of the same file. Every
+// reader that counts, compares or ranks records asks here: the other sessions than `sid`'s (no record of its file), each one group of its records, newest
+// first; the groups in the order of their newest records.
+export function othersOf(recs: readonly Rec[], sid: string): Rec[][] {
+  const own = recs.find(x => x.sid === sid)?.r.file
+  const by = new Map<string, Rec[]>()
+  for (const x of [...recs].sort(newest)) if (x.sid !== sid && x.r.file !== own) by.set(x.r.file, [...(by.get(x.r.file) ?? []), x])
+  return [...by.values()]
+}
+
+// A binding is valid while another session (othersOf) holds that code for that task in its `kids`; else it is void (treated as absent).
+export const isValid = (recs: readonly Rec[], sid: string, b: Bound | undefined) => !!b && othersOf(recs, sid).some(g => g.some(x => x.r.kids?.[b.task]?.code === b.code))
+
+// Trust addendum §1.4: for each `kids[h]` of this session's own record, the other sessions' records (othersOf) whose `bound` has that task and code. None: unbound; one
+// file: bound (ids newest first, at most 3; the newest's token); two or more files: conflict. At most 8 bound: the tasks the own file writes now (`open`)
+// first, then the newest kids[h].at. `open` is required: every caller ranks alike, so a card that is drawn is also the one pressed, unbound and guarded.
+export function linksOf(recs: readonly Rec[], own: string, open: ReadonlySet<string>): Link[] {
+  const kids = recs.find(x => x.sid === own)?.r.kids ?? {}
+  const all = Object.entries(kids).flatMap(([task, k]): Link[] => {
+    const by = k.to ? 'owner' : 'code'
+    const held = othersOf(recs, own).map(g => g.filter(x => x.r.bound?.task === task && x.r.bound.code === k.code)).filter(g => g.length)
+    const holders = held[0] ?? []
+    if (!holders.length) return [{ task, state: 'unbound', ids: [], by, at: k.at }]
+    if (held.length > 1) return [{ task, state: 'conflict', ids: [], by, at: k.at }]
+    return [{ task, state: 'bound', file: baseName(holders[0]!.r.file), ids: holders.slice(0, 3).map(x => x.sid), token: holders[0]!.r.bound!.token, by, at: k.at }]
+  })
+  const rank = (l: Link) => (open.has(l.task) ? 0 : 1)
+  const keep = new Set(all.filter(l => l.state === 'bound').sort((a, b) => rank(a) - rank(b) || b.at - a.at).slice(0, CHILDREN).map(l => l.task))
+  return all.filter(l => l.state !== 'bound' || keep.has(l.task)).sort((a, b) => a.task.localeCompare(b.task))
+}
+
+// The records that started a bound task session (its report targets): other sessions' (othersOf), `kids[task].code` is its code; newest first, at most 3.
+export const parentsOf = (recs: readonly Rec[], own: string, b: Bound) =>
+  othersOf(recs, own).flatMap(g => g.filter(x => x.r.kids?.[b.task]?.code === b.code)).sort(newest).slice(0, 3).map(x => x.sid)
+
+// "<project> · <id8>" of a record (the file's project part as otherSession names it, the id8 of the session id in the store key).
+const projectOf = (file: string) => {
+  const base = baseName(file).replace(/\.json$/, '')
+  return base.match(/^(.+)--([^-]{8})$/)?.[1] ?? base
+}
+
+// The sessions the owner may bind to a task by hand (§1.9): each other session's newest record (othersOf), team mode on, with no `kids` and no valid `bound`; newest record first
+// (ties by id); the first 9 and how many more. Only the store decides: no file's content, mtime or name decides who is listed or in what order.
+export function candidatesOf(recs: readonly Rec[], own: string, now: number): { rows: Candidate[]; more: number } {
+  const all = othersOf(recs, own).map(g => g[0]!).filter(x => x.r.mode.isOn && !x.r.kids && !isValid(recs, x.sid, x.r.bound))
+  return { rows: all.slice(0, 9).map(x => ({ sid: x.sid, name: `${projectOf(x.r.file)} · ${x.sid.slice(0, 8)}`, ...(stamp(x.r.at, now).text && { when: stamp(x.r.at, now).text }) })), more: Math.max(0, all.length - 9) }
 }
 
 // Other team sessions' files in the status folder (the pane's read-only strip): a regular .json file that is not this
-// session's own, written in the last 24 h (exactly 24 h old is out), at most 256 KiB; the newest 20 of them.
+// session's own, written in the last 24 h (exactly 24 h old is out), at most 256 KiB; the newest 20 of them. Store records untouched for 30 days are swept.
+export const KEEP_MS = 30 * 86_400_000
 const OTHER_DAY_MS = 86_400_000
 const OTHER_MAX_BYTES = 256 * 1024
 const OTHER_MAX_FILES = 20
 
+// A file the pane may read at all: regular, not a link, .json, at most 256 KiB.
+export const readable = (e: DirEntry) => e.kind === 'file' && !e.isLink && e.name.endsWith('.json') && e.size <= OTHER_MAX_BYTES
 export const otherFiles = (entries: readonly DirEntry[], dir: string, own: string, now: number) =>
   entries
-    .filter(e => e.kind === 'file' && !e.isLink && e.name.endsWith('.json') && `${dir}/${e.name}` !== own && now - e.mtimeMs < OTHER_DAY_MS && e.size <= OTHER_MAX_BYTES)
+    .filter(e => readable(e) && `${dir}/${e.name}` !== own && now - e.mtimeMs < OTHER_DAY_MS)
     .sort((a, b) => b.mtimeMs - a.mtimeMs || a.name.localeCompare(b.name))
     .slice(0, OTHER_MAX_FILES)
 
@@ -272,7 +367,7 @@ const OTHER_KIND = 120
 const OTHER_TEXT = 400
 const OTHER_OPTION = 60
 const OTHER_DECISIONS = 10
-const cut = (x: string, n: number) => (Array.from(x).length > n ? `${clip(x, n - 1)}…` : x)
+export const cut = (x: string, n: number) => (Array.from(x).length > n ? `${clip(x, n - 1)}…` : x)
 
 // One other session from its parsed file, or undefined when it asks nothing. <project>--<id8>.json is "<project> · <id8>",
 // <project>.json is "<project>"; the time is the file's updatedAt, else its mtime (local). `count` and `stuckCount` are of ALL
@@ -290,15 +385,110 @@ export function otherSession(e: DirEntry, s: Status): Other | undefined {
     name: m ? `${project} · ${m[2]}` : project,
     when: clockOf(s.updatedAt) ?? `${pad2(d.getHours())}:${pad2(d.getMinutes())}`,
     count: all.length,
-    stuckCount: all.filter(a => a.blocked || isStuck(a.x.kind)).length,
+    stuckCount: all.filter(a => a.blocked || a.x.stuck).length,
     decisions: all.slice(0, OTHER_DECISIONS).map(({ x, kind, blocked }) => ({
       kind: kind && cut(kind, OTHER_KIND),
       text: cut(x.text, OTHER_TEXT),
       options: x.options.map(o => cut(o, OTHER_OPTION)),
-      stuck: blocked || isStuck(x.kind),
+      stuck: blocked || x.stuck,
     })),
   }
 }
+
+// Task sessions (children): the one file of a bound task's session (linksOf), at most 8. Cut as an untrusted file is (F5): the first 12 roles (the rest
+// counted), role names and states to 60, candidate to 64, reason and branch to 120; the card's state stays the parse's, of all roles.
+const CHILDREN = 8
+const ROLES = 12
+export const STALE_MS = 1_800_000 // a guess from the skill's 20/40 minute watch, not a measured value
+// The label of a child's option, as drawn and as sent (the child checks the same cut of its own option).
+export const label = (o: string) => cut(flat(o), OTHER_OPTION)
+
+export const childOf = (e: DirEntry, s: Status, task: string): Child => {
+  const t = s.tasks.find(x => x.id === task) ?? s.tasks[0]
+  const card = t && {
+    ...t,
+    roles: t.roles.slice(0, ROLES).map(r => ({ ...r, name: cut(r.name, 60), state: cut(r.state, 60) })),
+    moreRoles: Math.max(0, t.roles.length - ROLES),
+    candidate: t.candidate && clip(t.candidate, 64),
+    reason: t.reason && cut(t.reason, 120),
+    branch: t.branch && cut(t.branch, 120),
+  }
+  return {
+    file: e.name,
+    task,
+    name: task,
+    mtimeMs: e.mtimeMs,
+    updatedAt: s.updatedAt,
+    card,
+    more: card ? s.tasks.length - 1 : 0,
+    decisions: s.decisions.slice(0, OTHER_DECISIONS).map(d => ({ ...d, text: cut(d.text, OTHER_TEXT), kind: d.kind && cut(d.kind, OTHER_KIND), meta: d.meta && cut(d.meta, OTHER_KIND), options: d.options.map(label) })),
+    count: s.decisions.length,
+  }
+}
+
+// The children whose task is a written task of `own`, and `own` as the pane draws it: such a task keeps its id, title and wait, takes the child's stage,
+// round, candidate, counts, roles, rounds, evidence, state and reason, and carries `session` (so a reopen never draws it stopped). The count and the order of the tasks never change.
+export const kidsOf = (own: Status | null, kids: readonly Child[]) => kids.filter(c => own?.tasks.some(t => t.id === c.task && !t.generatedId))
+export function joined(own: Status | null, kids: readonly Child[]): Status | null {
+  const mine = kidsOf(own, kids)
+  if (!own || !mine.length) return own
+  return {
+    ...own,
+    tasks: own.tasks.map((t): Task => {
+      const c = t.generatedId ? undefined : mine.find(k => k.task === t.id)
+      const k = c?.card
+      if (!c) return t
+      return { ...t, ...(k && { stage: k.stage, round: k.round, candidate: k.candidate, blocking: k.blocking, followup: k.followup, roles: k.roles, moreRoles: k.moreRoles, rounds: k.rounds, evidence: k.evidence, state: k.state, reason: k.reason, branch: t.branch ?? k.branch }), session: { name: c.name } }
+    }),
+  }
+}
+
+// "31 dk" under 60 minutes, "2 sa" under 48 hours, else "2 gün" (each floored).
+export const ago = (ms: number) => (ms < 3_600_000 ? `${Math.floor(ms / 60_000)} dk` : ms < 172_800_000 ? `${Math.floor(ms / 3_600_000)} sa` : `${Math.floor(ms / 86_400_000)} gün`)
+
+// Whether the owner may bind a session to this task by hand (§1.9): a written task that is unbound or in conflict (a `kids` entry nobody or two files present,
+// or a row with `session` and no entry).
+export const bindable = (t: Task, l: Link | undefined) => !t.generatedId && (l ? l.state !== 'bound' : !!t.session)
+
+// The rows under a task's state row (Turkish, exact; trust addendum §1.4 table). `l`: its binding, if any; `c`: its child, if read; `failed`: a press on one of its
+// decisions was not delivered. A running child silent for more than STALE_MS is marked; the task still counts as running (the pane cannot know more).
+export function sessionLines(t: Task, l: Link | undefined, c: Child | undefined, o: { failed: boolean; now: number; term: boolean }): SessionLine[] {
+  const { term } = o
+  const mark = term ? '◇ ' : ''
+  if (l?.state === 'conflict') return [{ text: `${term ? '✗ ' : ''}ayrı oturum · ${t.id} · iki oturum aynı kodu gösterdi`, color: 'error' }]
+  if (l?.state !== 'bound') return bindable(t, l) ? [{ text: term ? `◇ ayrı oturum · ${t.session?.name ?? t.id} · bağlanmadı · ayrıntıda bağla` : `ayrı oturum · ${t.session?.name ?? t.id} · bağlanmadı` }] : []
+  const id8 = l.ids[0]?.slice(0, 8) ?? ''
+  if (!c) return [{ text: `${mark}ayrı oturum · ${t.id} · ${id8} · durum dosyası bekleniyor` }]
+  const d = new Date(c.mtimeMs)
+  const when = stamp(c.updatedAt, o.now).text ?? `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+  const first: SessionLine[] = o.failed
+    ? term
+      ? [{ text: `✗ oturum açık değil · claude attach ${c.name}`, color: 'error' }]
+      : [{ text: 'oturum açık değil · o oturumu aç', color: 'error' }]
+    : c.card?.state === 'running' && o.now - c.mtimeMs > STALE_MS
+      ? [{ text: `⚠ ${ago(o.now - c.mtimeMs)} önce yazdı · durmuş olabilir`, color: 'warning' }]
+      : [{ text: term ? `◇ ayrı oturum · ${t.id} · ${id8} · ${when}` : `ayrı oturum · ${t.id} · ${id8} · son yazım ${when}` }]
+  return [...first, ...(c.more > 0 ? [{ text: `+${c.more} görev o oturumda` }] : [])]
+}
+
+// The one caption row of a child's decision card (Turkish, exact): push, sent, failed, or the idle line; `f` is the answer's state, if any.
+export function kidCaption(c: Child, d: Decision, f: Forward | undefined, term: boolean): SessionLine | undefined {
+  if (pushOf(d)) return { text: 'Push onayı yalnız o oturumda verilir' }
+  if (f?.state === 'sent') return { text: `Gönderildi: ${cut(f.option, 60)} · ${c.name} oturumuna`, color: 'success' }
+  if (f?.state === 'failed') return { text: 'Gönderilemedi · oturum açık değil, cevabı o oturumda ver', color: 'error' }
+  return d.options.length ? { text: term ? `1-9 ile seç · ${c.name} oturumuna hemen gider` : `Bir seçeneğe bas · ${c.name} oturumuna gider` } : undefined
+}
+
+// The first line of a main-pane press sent to a task session; a JSON line follows (token, decision id, 1-based option index, label). The child's plugin checks
+// and consumes it, and delivers it as that session's own pane press; its model never reads this text.
+export const PANE_HEAD = "[Agent Team pane · ana oturum] Sahip ana oturumun pane'inde bastı:"
+
+// The report a child's plugin sends its parent at the end of a main-loop turn (terminal only): the first 400 code points of a final message that starts
+// "GÖREV " (after white space and any of * # > `), or BLOCKED when the turn ended in an error; else nothing.
+export const reportText = (answer: string, reason: string, task: string, file: string) =>
+  reason === 'error'
+    ? `GÖREV ${task}: BLOCKED · görev oturumunun turu hata ile bitti · durum ${file}`
+    : /^[\s*#>`]*GÖREV /.test(answer) ? clip(answer, 400) : undefined
 
 // Where the pane scrolls once a detail opens (its top) or closes (the card that was left, moved the least that shows it).
 export const detailScroll = (pane: string, open: string | null, left?: string) =>
