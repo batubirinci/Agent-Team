@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
 import { forward } from '../hooks/register'
-import { ago, bandSegments, decisionTask, detailScroll, isInside, isPush, isStuck, joined, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseStatus, pickedAt, spinnerWord, stamp, summary, withKarar } from '../hooks/status'
+import { ago, bandSegments, childOf, decisionTask, detailScroll, isInside, isPush, isStuck, joined, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseStatus, pickedAt, spinnerWord, stamp, summary, withKarar } from '../hooks/status'
 import { CLAY, MUTED, STUCK, TRACK, dotSvg, meterSvg, stagesSvg } from '../hooks/svg'
 
 const fills = (svg: string) => [...svg.matchAll(/<rect [^>]*fill="([^"]+)"/g)].map(m => m[1])
@@ -7245,4 +7245,32 @@ test('T4 TR21 (void bound): a child whose binding went void refuses its old toke
   await $.session.start({ cwd: '/Users/x/Projeler/hard', surface: 'terminal', isInteractive: true }) // a reload
   await k.settle()
   expect(k.record()?.bound).toBeUndefined()
+})
+
+// ---- Revision 4, test-only follow-ups (Neon r5 survivors N-refresh-bind, N-child-caps, N-kids-cap). Source: the addendum's caps (§1.4: KIDS_MAX 16 kids;
+// F5: candidate 64, reason and branch 120) and §1.9 (the view is read from the store every 2 s while open), computed by hand. ----
+test('T4 TR17 (refresh): while the view is open a record that becomes eligible is listed within 4 polls (2 s), newest first', FOLDERS, async ($, on) => {
+  const k = await bindBoot($, on)
+  const ui = await k.pane('terminal')
+  await openBindTerm(ui)
+  const G = '12121212-0000-4000-8000-000000000012'
+  k.store.set(...sess4(G, 'g-proj--12121212.json', hourAt(11) + 55 * MIN4))
+  await polls4(k)
+  expect(rowKeys(await drawnOf(ui))).toEqual([`bind-row-${G}`, `bind-row-${B_SID}`, `bind-row-${A_SID}`, `bind-row-${F_SID}`])
+})
+
+test('T4 TR15 (fields): a child task\'s candidate is cut to 64 code points, its reason and branch to 120', () => {
+  const kid = kid4({ decisions: [], tasks: [{ id: 'hard', title: 'G', stage: 'review', candidate: 'c'.repeat(200), branch: 'b'.repeat(500), roles: [tRole('QA', 'r'.repeat(500), 'blocked')] }] })
+  const card = childOf({ name: C4_KID, kind: 'file', size: 10, mtimeMs: C4_NOW, isLink: false }, parseStatus(kid), 'hard').card
+  expect([card?.candidate, card?.branch, card?.reason]).toEqual(['c'.repeat(64), `${'b'.repeat(119)}…`, `${'r'.repeat(119)}…`])
+})
+
+test('T4 TR1 (sixteen): seventeen starts of seventeen tasks keep the sixteen newest kids; the oldest goes', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { mine: null })
+  for (let i = 0; i < 17; i++) {
+    k.gate.now = C4_NOW + i * MIN4
+    await $.tool.call({ tool: 'Bash', command: `cd /x && claude --bg -n t${i} "[Agent Team görev oturumu] task=t${i} kod=code-${String(i).padStart(2, '0')}-0123456789ab"`, tool_use_id: `u${i}` } as never)
+    await k.settle()
+  }
+  expect(Object.keys(k.record()?.kids ?? {}).sort()).toEqual(Array.from({ length: 16 }, (_, i) => `t${i + 1}`).sort())
 })

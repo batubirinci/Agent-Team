@@ -92,7 +92,7 @@ export type Other = { file: string; project: string; name: string; when: string;
 export type Child = { file: string; task: string; name: string; mtimeMs: number; updatedAt?: string; card?: Task; more: number; decisions: Decision[]; count: number }
 
 // A main-pane press on a child's decision: delivered (`sent`) or not (`failed`, until the child's file changes: `mtimeMs` is its mtime then).
-// `i`: the 1-based index of the option, `option` its label as drawn; `at`: when it was pressed (a `sent` answer goes 24 h later at the latest).
+// `i`: the 1-based index of the option, `option` its label as drawn; `at`: when it was pressed (a `sent` answer goes when a parse of its file no longer lists it with that label, or after 24 h while its file is not parsed with it).
 export type Forward = { file: string; id: string; i: number; option: string; state: 'sent' | 'failed'; mtimeMs: number; at: number }
 
 // One row under a joined task's state row, or a child decision card's caption; no `color` is dim.
