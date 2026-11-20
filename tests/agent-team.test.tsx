@@ -7187,22 +7187,22 @@ test('T4 TR2 (/clear, in flight): a prompt and a press that come while the poll\
   expect(k.log.received.filter(t => t.includes(TOK4))).toEqual([])
 })
 
-// Expected values: TR3 (the first marker prompt binds task hard with CODE4) and R5-B3 (a prompt that overlaps an in-flight follow waits for it, so the
-// carry cannot land after the binding). Only the poll's read of the old record is held; the prompt's own read goes through.
-test('T4 TR3 (/clear, in flight): a first marker prompt that comes while the poll\'s follow is carrying the record keeps its binding after the carry lands', FOLDERS, async ($, on) => {
-  const k = await kidBoot($, on, { mine: null })
+// Expected values: R5-B3 (a hook that overlaps an in-flight follow waits for it; follows run one at a time) and the /team rule (a press turns team mode off,
+// the record keeps it). Only the poll's read of the old record is held; the command's own read goes through. Without the queue the poll's carry lands
+// after the command and puts the old mode (on) back.
+test('T4 R5-B3 (/clear, in flight): /team turning the mode off while the poll\'s follow is carrying the record stays off after the carry lands', FOLDERS, async ($, on) => {
+  const k = await kidBoot($, on)
   k.clear(KID_NEW)
   let go = () => undefined as void
   k.gate.hold = { key: `session:${C4_KID_SID}`, wait: new Promise<void>(r => (go = r)) }
   await k.poll() // its follow waits on the old record
   k.gate.hold = undefined
-  const p = $.prompt.submit({ wait: false, origin: { kind: 'composer' }, text: `${MARK4}\nBrief…` } as never)
+  const p = $.command.run({ command: 'team', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
   await k.settle()
   go()
   await p
   await k.settle()
-  const b = k.record(KID_NEW)?.bound
-  expect([b?.task, b?.code]).toEqual(['hard', CODE4])
+  expect((k.record(KID_NEW) as { mode?: { isOn: boolean } } | undefined)?.mode?.isOn).toBe(false)
 })
 
 test('T4 TR22 (unpresented code, /clear): after a /clear the owner\'s bind replaces the old code in every record of this session; a session that later shows it is a candidate', FOLDERS, async ($, on) => {
