@@ -4552,10 +4552,11 @@ test('hardening S2: an out-of-range offset is ignored (the written clock is read
 // basic.json (2 decisions, 2 running tasks, running roles "QA · GPT-6 Astra" then "Developer · Sonnet 5.5"), and the owner's text of 2026-11-19
 // (owner-decisions.md). Never read back from the implementation.
 const tRole = (name: string, state: string, status: string) => ({ name, state, status })
-const tFile = (o: { decisions?: number; running?: number; blocked?: number } = {}) =>
+const tFile = (o: { decisions?: number; running?: number; blocked?: number; updatedAt?: string; paused?: boolean } = {}) =>
   JSON.stringify({
     v: 1,
-    updatedAt: '2026-11-19T16:00:00+03:00',
+    updatedAt: o.updatedAt ?? '2026-11-19T16:00:00+03:00',
+    ...(o.paused && { paused: true }),
     lead: 'Opus 5.5',
     decisions: Array.from({ length: o.decisions ?? 0 }, (_, i) => ({ id: `d${i + 1}`, text: `Soru ${i + 1}`, options: ['Evet'] })),
     tasks: [
@@ -4583,21 +4584,37 @@ const T_BASIC = JSON.stringify({
 const tBoot = async (
   $: Parameters<TestBody>[0],
   on: Parameters<TestBody>[1],
-  o: { surface?: 'desktop' | 'terminal'; status?: string; placed?: boolean; reopen?: boolean; others?: number; noFile?: boolean } = {},
+  o: { surface?: 'desktop' | 'terminal'; status?: string; placed?: boolean; reopen?: boolean; others?: number; noFile?: boolean; manual?: boolean; clearable?: boolean } = {},
 ) => {
   const disk = { text: o.status ?? T_BASIC, mtime: R_OLD_MTIME }
-  const st = { placed: o.placed ?? false }
+  const st = { placed: o.placed ?? false, id: ID_OLD, drop: false }
   const log = {
     opened: [] as { id: string; title?: string; columns?: number; focus?: true }[],
     sets: [] as string[],
     gets: [] as string[],
     submits: [] as { text: string; context?: readonly string[] }[],
     rows: [] as string[],
+    // One ordered log of what reached the model's side: the queued rows (with the message type) and the submits (with origin and context).
+    events: [] as { kind: 'row' | 'submit'; type?: string; text: string; context?: readonly string[]; origin?: unknown }[],
   }
   const OTHER = 'ops--5e6f7a8b.json'
-  const clock = mock.clock(on, { now: R_NOW })
+  // `manual`: no mock clock. Every clock.every period is a held dispatch the test releases, so a timer that was cancelled shows as a period
+  // whose release runs nothing (a stopped timer never fires again, types:16350), and one that was not shows as state reads.
+  const held: { ms: number; fire: () => void }[] = []
+  const clock = o.manual ? (undefined as never) : mock.clock(on, { now: R_NOW })
+  if (o.manual) {
+    on('clock.now', () => ({ value: R_NOW }))
+    on('clock.every', (_, e) => new Promise(go => held.push({ ms: e.ms, fire: () => go({ value: undefined }) })) as never)
+    on('clock.after', () => new Promise(() => undefined) as never)
+  }
   mock.store(on, o.reopen ? { [KEY_OLD]: rec(OLD, SWITCH, { announced: OLD }) } : {})
-  on('session.id', () => ({ value: ID_OLD }))
+  on('session.id', () => ({ value: st.id }))
+  // The test owns the atoms (a Map), so a /clear can wipe them like the engine does (every atom reset, no session.start).
+  const atoms = new Map<string, { value: unknown; version: number }>()
+  const slot = (e: { plugin: string; key: string }) => `${e.plugin}/${e.key}`
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('tool.call', () => ({ result: 'ok', text: 'ok' }) as never)
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('ui.open', (_, e) => {
     log.opened.push(e as never)
@@ -4611,22 +4628,34 @@ const tBoot = async (
   on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: disk.mtime, isLink: false } }))
   on('fs.list', () => ({ value: o.others ? [{ name: OTHER, kind: 'file' as const, size: 1000, mtimeMs: R_NOW - 60_000, isLink: false }] : [] }))
   on('fs.read', (_, e) => ({ value: e.path.endsWith(OTHER) ? tFile({ decisions: o.others }) : disk.text }))
+  // `clearable`: the test's own Map is the atoms, so `clear` can wipe them. The engine's atoms redraw a mounted tree when one changes; a Map does not,
+  // so only a test that presses a stale tree and reads logs uses it.
   on('state.get', (_, e, next) => {
     log.gets.push(e.key)
-    return next(e)
+    if (!o.clearable) return next(e)
+    return { value: { value: atoms.get(slot(e))?.value, version: atoms.get(slot(e))?.version ?? 0 } }
   })
   on('state.set', (_, e, next) => {
     log.sets.push(e.key)
-    return next(e)
+    if (!o.clearable) return next(e)
+    const version = atoms.get(slot(e))?.version ?? 0
+    if (e.ifVersion !== undefined && e.ifVersion !== version) return { value: { isSet: false, version } }
+    atoms.set(slot(e), { value: e.value, version: version + 1 })
+    return { value: { isSet: true, version: version + 1 } }
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.end', (_, e) => ({ sessionId: e.sessionId }))
   on('session.append', (_, e, next) => {
     const block = e.message.content[0]
-    log.rows.push(block && 'text' in block ? String(block.text) : '')
+    const text = block && 'text' in block ? String(block.text) : ''
+    log.rows.push(text)
+    log.events.push({ kind: 'row', type: e.message.type, text })
     return next(e)
   })
   on('prompt.submit', (_, e) => {
     log.submits.push({ text: e.text, context: e.context })
+    log.events.push({ kind: 'submit', text: e.text, context: e.context, origin: e.origin })
+    if (st.drop) return { drop: 'refused' }
     return { text: e.text }
   })
   // Beneath the plugin: what `next(e)` draws. A hidden band shows "engine"; a Spinner shows the word it was handed.
@@ -4646,7 +4675,25 @@ const tBoot = async (
     disk.mtime = Math.max(disk.mtime, R_NOW) + 1000 // after the reopen: the Lead wrote again
     await clock.advance(POLL)
   }
-  return { disk, st, log, clock, band, spinner, pane, footer, change }
+  // /clear: a new id and every atom reset; the clock does not move, so no poll has run (the engine fires no session.start for it).
+  const clear = (id: string) => {
+    st.id = id
+    atoms.clear()
+  }
+  const startTurn = (turnId: string) => $.turn.start({ text: 'x', turnId })
+  const endTurn = async (turnId: string) => {
+    await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, reason: 'answer', turnId })
+    await clock.advance(0)
+  }
+  // Manual clock: release the periods of `ms` that are held (a poll is 500, the tick 1000) and let what they started finish.
+  const fire = async (ms: number) => {
+    for (const h of held.filter(x => x.ms === ms)) {
+      held.splice(held.indexOf(h), 1)
+      h.fire()
+    }
+    for (let i = 0; i < 8; i++) await new Promise(r => (globalThis as unknown as { setTimeout: (f: () => void, ms: number) => void }).setTimeout(() => r(undefined), 0))
+  }
+  return { disk, st, log, clock, band, spinner, pane, footer, change, clear, startTurn, endTurn, fire, held }
 }
 type TMounted = Awaited<ReturnType<Awaited<ReturnType<typeof tBoot>>['band']>>
 const bandHidden = async (ui: TMounted) => {
@@ -5005,4 +5052,181 @@ test('T1-2 (team mode off): a plugin submit carries nothing', async ($, on) => {
   await ui.press({ key: 'pause' })
   await k.clock.advance(0)
   expect(k.log.rows.filter(r => r.includes("Sen Lead'sin") || r.includes('yeniden açılış'))).toEqual([])
+})
+
+// ---- Round 1 revision (Lead's adjudication qa-r1/lead-r1-adjudication.md: R1 /clear order, R2 session end, R3 tick tests, R4 T1 tests) ----
+const NEW_ID = '99999999-0000-4000-8000-000000000000'
+const LEAD = "Sen Lead'sin"
+const ticksOf = (k: { log: { sets: string[] } }) => k.log.sets.filter(x => x === 'tick').length
+const rewrite = (k: { disk: { text: string; mtime: number } }, text: string) => {
+  k.disk.text = text
+  k.disk.mtime = Math.max(k.disk.mtime, R_NOW) + 1000
+}
+
+test('R1 (T1-2 after /clear): a plugin submit before the first poll carries the Lead line first, like a typed prompt, with the old file path', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { placed: true, clearable: true })
+  const ui = await k.pane()
+  k.log.events.length = 0
+  k.clear(NEW_ID) // /clear: new id, atoms reset, no poll yet
+  await ui.press({ key: 'pause' })
+  await k.clock.advance(0)
+  expect(k.log.events.map(e => [e.kind, e.type ?? '', e.kind === 'submit' ? e.text : ''])).toEqual([
+    ['row', 'user', ''],
+    ['submit', '', 'Pause'],
+  ])
+  expect(k.log.events[0]?.text).toContain(LEAD)
+  expect(k.log.events[0]?.text).toContain('shop--66b9491d.json') // the path the session had, never an empty one
+})
+
+test('R1 family: a press after /clear, before the first poll, still waits for the running turn (the mode is restored before it is read)', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { placed: true, clearable: true })
+  const ui = await k.pane()
+  await k.startTurn('t1')
+  k.clear(NEW_ID)
+  await ui.press({ key: 'pause' })
+  await k.clock.advance(0)
+  expect(k.log.submits).toEqual([]) // queued for the next tool call, not submitted into the turn
+})
+
+test('R2, c34 (session end): an exit cancels the tick timer and the poll does not bring it back', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { placed: true, manual: true })
+  await k.fire(1000)
+  expect(ticksOf(k)).toBe(1) // the control: it was turning, and a released period runs the timer's function
+  await $.session.end({ reason: 'prompt_input_exit', sessionId: ID_OLD, resume: { id: ID_OLD } })
+  const reads = k.log.gets.length
+  await k.fire(1000)
+  expect([k.log.gets.length, ticksOf(k)]).toEqual([reads, 1]) // a cancelled timer's period runs nothing
+  await k.fire(500) // a poll after the end
+  await k.fire(1000)
+  expect(ticksOf(k)).toBe(1)
+})
+
+test('R2 (clear and resume are not the end of the process): the poll starts the tick again', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { placed: true, manual: true })
+  await $.session.end({ reason: 'clear', sessionId: ID_OLD, resume: { id: ID_OLD } })
+  await k.fire(500)
+  await k.fire(1000)
+  expect(ticksOf(k)).toBe(1)
+})
+
+test('R3 (Q1: stopBeat that never cancels): no running role, or the pane unplaced, cancels the timer: its next period runs nothing', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { placed: true, manual: true })
+  await k.fire(1000)
+  expect(ticksOf(k)).toBe(1)
+  rewrite(k, tFile({ decisions: 1 })) // no running role
+  await k.fire(500) // the poll reads it and stops the timer
+  let reads = k.log.gets.length
+  await k.fire(1000)
+  expect([k.log.gets.length, ticksOf(k)]).toEqual([reads, 1])
+  rewrite(k, T_BASIC) // a role runs again: a new timer
+  await k.fire(500)
+  await k.fire(1000)
+  expect(ticksOf(k)).toBe(2)
+  k.st.placed = false // the pane closed
+  await k.fire(500)
+  reads = k.log.gets.length
+  await k.fire(1000)
+  expect([k.log.gets.length, ticksOf(k)]).toEqual([reads, 2])
+})
+
+test('R3 (Q3): a band that is drawn (pane not placed) never reads the tick', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on)
+  const ui = await k.band()
+  expect(bandRow(await drawnOf(ui))).toBe('◆ 2 karar · ◐ 2 çalışıyor  t: pane')
+  await k.clock.advance(5000)
+  expect(k.log.gets.filter(x => x === 'tick')).toEqual([])
+})
+
+test('R4, T1-2 (order and type): the context row is a user row queued before the submit it belongs to, each time', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { placed: true, reopen: true })
+  const ui = await k.pane()
+  k.log.events.length = 0
+  await ui.press({ key: 'reopen-ask' })
+  await k.clock.advance(0)
+  await ui.press({ key: 'pause' })
+  await k.clock.advance(0)
+  expect(k.log.events.map(e => [e.kind, e.type ?? '', e.kind === 'submit' ? e.text : ''])).toEqual([
+    ['row', 'user', ''],
+    ['submit', '', 'Nerede kaldık?'],
+    ['row', 'user', ''],
+    ['submit', '', 'Pause'],
+  ])
+  const [first, , second] = k.log.events
+  expect([first?.text.includes(LEAD), first?.text.includes('[Agent Team · yeniden açılış]')]).toEqual([true, true])
+  expect([second?.text.includes(LEAD), second?.text.includes('yeniden açılış')]).toEqual([true, false])
+})
+
+test('R4, T1-2 (desktop): the shared path carries the row on the desktop too', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { surface: 'desktop' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  k.log.events.length = 0
+  await ui.press({ key: 'pause' })
+  await k.clock.advance(0)
+  expect(k.log.events.map(e => [e.kind, e.type ?? ''])).toEqual([['row', 'user'], ['submit', '']])
+  expect(k.log.events[0]?.text).toContain(LEAD)
+})
+
+test('R4, T1-2 (batch): presses queued during a turn leave as one submit with one row', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { surface: 'desktop' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await k.startTurn('t1')
+  await ui.press({ key: 'd-d1-0' })
+  await ui.press({ key: 'pause' })
+  k.log.events.length = 0
+  await k.endTurn('t1')
+  expect(k.log.events.map(e => [e.kind, e.kind === 'submit' ? e.text : ''])).toEqual([['row', ''], ['submit', 'Karar (d1): Durumları gör\nPause']])
+})
+
+test('R4, T1-2 (no doubling with tool.call): a press delivered in a tool result adds no row and no submit at the turn end', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { surface: 'desktop' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await k.startTurn('t1')
+  await ui.press({ key: 'pause' })
+  k.log.events.length = 0
+  const r = (await $.tool.call({ tool: 'Bash', command: 'ls' } as never)) as { context?: readonly string[] }
+  expect(r.context).toEqual([`${HEAD}\nPause`])
+  await k.endTurn('t1')
+  expect(k.log.events).toEqual([])
+})
+
+test('R4, T1-2 (origin guard): the hook adds nothing to this plugin\'s own submit, and still adds the Lead line to another plugin\'s', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { placed: true })
+  await $.prompt.submit({ wait: false, origin: { kind: 'plugin', name: 'agent-team', asUser: true }, text: 'own' } as never)
+  await $.prompt.submit({ wait: false, origin: { kind: 'plugin', name: 'başka', asUser: true }, text: 'other' } as never)
+  const ctx = (text: string) => k.log.submits.find(s => s.text === text)?.context ?? []
+  expect(ctx('own')).toEqual([])
+  expect(ctx('other').some(c => c.includes(LEAD))).toBe(true)
+})
+
+test('R4, T1-1 (notes and day): the header keeps its two rows through sırada, gönderildi, Devam and Devam · gönderildi', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { placed: true })
+  const ui = await k.pane()
+  const head = async () => (await drawnOf(ui)).children?.[0] as Node
+  const label = async () => buttons(await head())[0]?.props?.label
+  const fits = async () => {
+    const [top] = (await head()).children as Node[]
+    const b = buttons(top as Node)[0]
+    return Array.from('AGENT TEAM').length + 2 + Array.from(`${b?.props?.hotkey}: ${b?.props?.label}`).length <= 46
+  }
+  const base = shapeOf(await head())
+  expect([await label(), await fits()]).toEqual(['Pause', true])
+  await k.startTurn('t1')
+  await ui.press({ key: 'pause' })
+  await k.clock.advance(0)
+  expect([await label(), shapeOf(await head()), await fits()]).toEqual(['Pause · sırada', base, true])
+  await k.endTurn('t1') // the queued press goes as the owner's
+  expect([await label(), shapeOf(await head()), await fits()]).toEqual(['Pause · gönderildi', base, true])
+  await k.change(tFile({ decisions: 2, running: 2, paused: true }))
+  expect([await label(), shapeOf(await head())]).toEqual(['Devam', base])
+  await ui.press({ key: 'resume' })
+  await k.clock.advance(0)
+  expect([await label(), shapeOf(await head()), await fits()]).toEqual(['Devam · gönderildi', base, true])
+})
+
+test('R4, T1-1 (reopen day): a reopened header with the written day keeps the text and two rows', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { placed: true, reopen: true, status: tFile({ decisions: 1, updatedAt: '2026-11-17T15:30:00+03:00' }) })
+  const head = (await drawnOf(await k.pane())).children?.[0] as Node
+  expect(head.children?.length).toBe(2)
+  expect(shapeOf(head)).not.toContain('~wrap')
+  expect(textNode(head, /^Lead · Opus 5\.5 · 17 Kas 15:30$/)).toBeDefined()
 })

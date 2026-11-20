@@ -159,8 +159,8 @@ const giveBack = ($: EngineInterface, got: Press[]) =>
 // one hidden user row, the reminder a `session.append` is. Team mode only, as the hook; never throws.
 async function contextRow($: EngineInterface) {
   try {
+    await follow($) // after a /clear the atoms are reset until it carries the mode over: it runs before the mode is read
     if (!(await read($, mode)).isOn) return
-    await follow($)
     const line = await takeReopen($)
     const text = [leadText((await read($, status)).file), ...(line ? [line] : [])].join('\n')
     await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
@@ -184,6 +184,7 @@ async function submitOut($: EngineInterface) {
 // on the terminal, where a repeated fallback press submits again; before delivery the last press per decision wins.
 async function press($: EngineInterface, running: Set<string>, p: Press, term = false) {
   try {
+    await follow($) // the mode below is read after a /clear carried it over
     let ignored = false
     await update($, outbox, s => {
       ignored = p.id !== undefined && !term && s.sent.some(([id]) => id === p.id)
@@ -389,22 +390,27 @@ async function setMode($: EngineInterface, isOn: boolean) {
 // checks again before every write, so nothing is written after the last role stops. Nothing else reads `tick`: only the Pane redraws.
 // A (re)start of the session drops the old timer, so a hot reload or a new session never leaves two.
 let beat: ReturnType<EngineInterface['clock']['every']> | undefined
+// A session that ended for good (exit, logout, -p done): the poll, which nothing cancels, must not start the timer again. Clear and resume go on in the process.
+let ended = false
 const turning = async ($: EngineInterface) => (await read($, mode)).isOn && (await read($, placed)) && runningRoles((await drawnStatus($)).data).length > 0
 function stopBeat() {
   beat?.cancel()
   beat = undefined
 }
 async function syncTick($: EngineInterface) {
-  if (!(await turning($))) return stopBeat()
+  if (ended || !(await turning($))) return stopBeat()
   beat ??= $.clock.every(TICK_MS, async () => {
-    if (await turning($)) await update($, tick, n => (n + 1) % FRAMES.length)
-    else stopBeat()
+    try {
+      if (await turning($)) await update($, tick, n => (n + 1) % FRAMES.length)
+      else stopBeat()
+    } catch {} // a failed read or write skips this beat; the next one tries again
   })
 }
 
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     stopBeat()
+    ended = false
     await $.command.register({ name: 'team', description: 'Agent Team modunu aç ya da kapat' })
     await $.command.register({ name: 'team-pane', description: "Agent Team pane'ini aç" })
 
@@ -453,7 +459,10 @@ export const register: Register = (on, options) => {
     const poll = async () => {
       const done = await Promise.allSettled([follow($), refresh($, file), scanOthers($, dir, file, seen)])
       // Terminal only: whether the pane is placed (the band), and the glyph tick. Reads, and writes only a change.
-      if (term) await syncPlaced($).then(() => syncTick($)).catch(() => undefined)
+      if (term) {
+        await syncPlaced($).catch(() => undefined) // a failing pane list leaves `placed` as it was; the tick is still looked at
+        await syncTick($).catch(() => undefined)
+      }
       return done
     }
     await poll()
@@ -471,6 +480,8 @@ export const register: Register = (on, options) => {
   // /clear ends the old session and the new id shows a moment later: look once after 500 ms, so a quit right after still leaves a record. The 500 ms poll looks
   // as often, so while it ticks this is a second path; with the poll stalled it is the only one (tested alone: the F24 / R6 test).
   on('session.end', async ($, e, next) => {
+    stopBeat() // the tick never outlives its session; the poll starts it again where the process goes on (clear, resume)
+    ended = e.reason !== 'clear' && e.reason !== 'resume'
     if (e.reason === 'clear') $.clock.after(SOON_MS, () => follow($))
     return next(e)
   })
@@ -553,7 +564,7 @@ export const register: Register = (on, options) => {
     return { text: "Agent Team pane'i açıldı." }
   })
 
-  // A chip left of the footer's mode labels turns team mode on and off, a Pane button next to it opens the pane; nothing is drawn above the prompt.
+  // A chip left of the footer's mode labels turns team mode on and off, a Pane button next to it opens the pane; the band above the prompt is the other seat (AbovePrompt, below).
   on('ui.render', { component: 'SessionMode' }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const { isOn } = await read($, mode)
