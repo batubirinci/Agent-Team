@@ -5322,7 +5322,7 @@ const cBoot = async (
   const files = o.files ?? defaultFiles4()
   // Revision 4: `hold` keeps a store.get of that key waiting until its promise settles (a follow in flight).
   const gate = { deliver: o.deliver ?? (() => true), storeFails: false, listFails: o.listFails ?? false, ownGone: false, now: C4_NOW, sid, isFilled: o.isFilled ?? true, turns: 0, deny: false, hold: undefined as { key: string; wait: Promise<void> } | undefined }
-  const log = { sends: [] as { to: string; text: string }[], reads: [] as string[], fills: [] as string[], submits: [] as { text: string; context?: readonly string[] }[], sets: [] as string[], writes: [] as string[], received: [] as string[] }
+  const log = { sends: [] as { to: string; text: string }[], reads: [] as string[], fills: [] as string[], submits: [] as { text: string; context?: readonly string[] }[], sets: [] as string[], writes: [] as string[], received: [] as string[], nowAt: [] as number[] }
   // Revision 3: the default store holds the binding of the fixture (the parent's `kids.hard`, the child's `bound`).
   const store = new Map<string, unknown>(Object.entries(o.store ?? KID_REC))
   on('store.get', (_, e) => {
@@ -5369,7 +5369,7 @@ const cBoot = async (
   })
   // Manual clock: `now` never moves; every clock.every period is held until fire() releases it (one poll = fire(500)).
   const held: { ms: number; fire: () => void }[] = []
-  on('clock.now', () => ({ value: gate.now }))
+  on('clock.now', () => (log.nowAt.push(log.sets.length), { value: gate.now }))
   on('clock.every', (_, e) => new Promise(go => held.push({ ms: e.ms, fire: () => go({ value: undefined }) })) as never)
   on('clock.after', () => new Promise(() => undefined) as never)
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -7639,8 +7639,10 @@ test('pane-groups C10 + C11 + A10 + A11 (desktop fold): Göster opens one row pe
   const snap = () => JSON.stringify([k.log.reads.length, k.log.writes.length, k.log.fills.length, k.log.submits.length, k.log.sends.length])
   const before = snap()
   const sets = k.log.sets.length
+  const clocks = k.log.nowAt.length
   await ui.press({ key: 'done-toggle' })
   expect(snap()).toBe(before) // A10: no fs, store, prompt or send call
+  expect(k.log.nowAt.slice(clocks).every(n => n > sets)).toBe(true) // A10: no clock call before the doneOpen write (each one saw it already)
   expect(k.log.sets.slice(sets)).toEqual(['doneOpen']) // exactly one write
   root = await drawnOf(ui) // and no poll ran: the tree shows the open group
   expect(byKey(root, 'done-toggle').props?.label).toBe('Gizle')
