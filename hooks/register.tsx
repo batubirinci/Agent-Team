@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Child, Decision, DirEntry, Forward, Mode, Other, Outbox, Press, Reopen, RoleStatus, SessionRecord, Status, StatusView, Task, TaskState } from '../types'
-import { ANNOUNCE, ASK_WHERE, KARAR, KEEP_MS, OPEN_ROW, PANE_HEAD, STAGE_LABELS, bandSegments, baseName, childFiles, clip, countStates, cut as shorten, decisionTask, detailScroll, expandHome, flat, isBlocking, isInside, isPush, isStuck, joined, kararLine, kararLines, kidCaption, kidsOf, linkChildren, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, reopenLine, reportText, runningRoles, sessionLines, spinnerWord, stamp, stopped, trimSlash, withKarar } from './status'
+import { ANNOUNCE, ASK_WHERE, KARAR, KEEP_MS, OPEN_ROW, PANE_HEAD, STAGE_LABELS, bandSegments, baseName, childFiles, clip, countStates, cut as shorten, decisionTask, detailScroll, expandHome, flat, isBlocking, isInside, joined, kararLine, kararLines, kidCaption, kidsOf, linkChildren, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, reopenLine, reportText, runningRoles, sessionLines, spinnerWord, stamp, stopped, trimSlash, withKarar } from './status'
 import { AMBER, BAD, CLAY, MUTED, OK, TRACK, dotSvg, meterSvg, stagesSvg } from './svg'
 import { FRAMES, QUEUED, QUEUED_PUSH, TBOX, hk, termBand, termBanner, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termTasks, termUsage } from './terminal'
 
@@ -216,7 +216,7 @@ async function pick($: EngineInterface, running: Set<string>, d: Decision, o: st
       text === box.text ||
       (await $.prompt.fill(text.startsWith(box.text) ? { text: text.slice(box.text.length), mode: 'append' } : { text, mode: 'replace' })).isFilled
   } catch {}
-  if (!isFilled) await press($, running, { line: kararLine(d.id, o), id: d.id, option: o, push: isPush(d.kind) }, term)
+  if (!isFilled) await press($, running, { line: kararLine(d.id, o), id: d.id, option: o, push: d.push }, term)
 }
 
 const openRow = (file: string) => `${OPEN_ROW}${leadText(file)}`
@@ -302,14 +302,21 @@ async function scanOthers($: EngineInterface, dir: string, own: string, seen: Se
     return { e, s }
   }
   // Nothing in here may throw out: another session's file must not stop this session's poll or start.
+  // `kids` stays undefined when the listing failed: a failed scan keeps the last good children and the answers given to them.
   let next: Other[] = []
-  let kids: Child[] = []
+  let kids: Child[] | undefined
   try {
     const entries = await $.fs.list(dir)
     const now = await $.clock.now()
-    const cands = childFiles(entries, dir, own, now)
-    const link = linkChildren((await Promise.all(cands.map(parsed))).filter((c): c is { e: DirEntry; s: Status } => !!c.s), baseName(own), (await read($, status)).data?.tasks ?? [])
-    kids = link.kids
+    const ownTasks = (await read($, status)).data?.tasks ?? []
+    // No file can link to an own file with no written task: then no child file is looked for (nor read).
+    const cands = ownTasks.some(t => !t.generatedId) ? childFiles(entries, dir, own, now) : []
+    const got = await Promise.all(cands.map(parsed))
+    const link = linkChildren(got.filter((c): c is { e: DirEntry; s: Status } => !!c.s), baseName(own), ownTasks)
+    // A child file still listed but not readable or parsable this poll (a partial scan) keeps its last good child, unless another file now claims the task.
+    const bad = new Set(got.filter(c => !c.s).map(c => c.e.name))
+    const kept = (await read($, children)).filter(c => bad.has(c.file) && !link.kids.some(k => k.task === c.task))
+    kids = [...link.kids, ...kept].sort((a, b) => b.mtimeMs - a.mtimeMs || a.file.localeCompare(b.file)).slice(0, 8)
     const joinedNames = new Set([...link.claimed, ...kids.map(c => c.file)])
     const files = otherFiles(entries.filter(e => !joinedNames.has(e.name)), dir, own, now)
     const names = new Set([...cands, ...files].map(f => f.name))
@@ -320,9 +327,11 @@ async function scanOthers($: EngineInterface, dir: string, own: string, seen: Se
     if (JSON.stringify(await read($, others)) !== JSON.stringify(next)) await update($, others, () => next)
   } catch {}
   try {
-    if (JSON.stringify(await read($, children)) !== JSON.stringify(kids)) await update($, children, () => kids)
+    if (!kids) return
+    const now = kids
+    if (JSON.stringify(await read($, children)) !== JSON.stringify(now)) await update($, children, () => now)
     // An answer's state goes when its decision leaves the child's file; a failed one also when the file changes.
-    const gone = (f: Forward) => !kids.some(c => c.file === f.file && c.decisions.some(d => d.id === f.id) && (f.state === 'sent' || c.mtimeMs === f.mtimeMs))
+    const gone = (f: Forward) => !now.some(c => c.file === f.file && c.decisions.some(d => d.id === f.id) && (f.state === 'sent' || c.mtimeMs === f.mtimeMs))
     if ((await read($, forwards)).some(gone)) await update($, forwards, fs => fs.filter(f => !gone(f)))
   } catch {}
 }
@@ -346,11 +355,11 @@ async function sweep($: EngineInterface) {
 // Where a message for another team session goes: the ids of the store records (one per team session, machine-wide per plugin, read live) whose file is `file`
 // in the status folder, newest first, at most 3, never this session's own. The message goes to the first that delivers; a send that throws or is refused is the next try.
 async function sendTo($: EngineInterface, dir: string, file: string, text: string) {
-  const mine = String(await $.session.id().catch(() => ''))
+  const mine = String(await $.session.id().catch(() => followed.last))
   const ids: { id: string; at: number }[] = []
   for (const key of await $.store.keys()) {
     const r = key.startsWith('session:') ? parseRecord(await $.store.get(key), dir) : undefined
-    if (r && r.file === `${dir}/${file}` && key.slice(8) !== mine) ids.push({ id: key.slice(8), at: Date.parse(r.at) || 0 })
+    if (r && key.length > 8 && r.file === `${dir}/${file}` && key.slice(8) !== mine) ids.push({ id: key.slice(8), at: Date.parse(r.at) || 0 })
   }
   for (const { id } of ids.sort((a, b) => b.at - a.at).slice(0, 3)) {
     try {
@@ -365,12 +374,13 @@ async function sendTo($: EngineInterface, dir: string, file: string, text: strin
 const sending = new Set<string>()
 export async function forward($: EngineInterface, c: Child, d: Decision, option: string, dir = followed.dir) {
   const key = `${c.file}\n${d.id}`
-  if (isPush(d.kind) || sending.has(key)) return
+  if (d.push || sending.has(key)) return
+  sending.add(key) // before any await: two presses together send once
   try {
     if ((await read($, forwards)).some(f => f.file === c.file && f.id === d.id && f.state === 'sent')) return
-    sending.add(key)
     const ok = await sendTo($, dir, c.file, `${PANE_HEAD}\n${kararLine(d.id, option)}`).catch(() => false)
-    await update($, forwards, fs => [...fs.filter(f => f.file !== c.file || f.id !== d.id), { file: c.file, id: d.id, option, state: ok ? ('sent' as const) : ('failed' as const), mtimeMs: c.mtimeMs }])
+    // A delivered send also clears the failed marks of the child's other decisions (the child answers again).
+    await update($, forwards, fs => [...fs.filter(f => f.file !== c.file || (f.id !== d.id && !(ok && f.state === 'failed'))), { file: c.file, id: d.id, option, state: ok ? ('sent' as const) : ('failed' as const), mtimeMs: c.mtimeMs }])
   } catch {} finally {
     sending.delete(key)
   }
@@ -759,7 +769,7 @@ export const register: Register = (on, options) => {
     const kidCard = (c: Child, d: Decision) => {
       const f = fwd.find(x => x.file === c.file && x.id === d.id)
       const at = f?.state === 'sent' ? d.options.indexOf(f.option) : -1
-      const stuck = isStuck(d.kind)
+      const stuck = d.stuck
       const edge = f?.state === 'sent' ? 'success' : stuck ? BLOCKED_EDGE : CARD.borderColor
       const cap = kidCaption(c, d, f, false)
       return (
@@ -770,7 +780,7 @@ export const register: Register = (on, options) => {
             {d.meta && <Text size="caption" mono dimColor>{d.meta}</Text>}
           </Box>
           {d.options.length > 0 &&
-            (isPush(d.kind) ? (
+            (d.push ? (
               <Text size="caption" dimColor>{d.options.map(o => shorten(o, 60)).join(' · ')}</Text>
             ) : (
               <Box flexDirection="row" gap="xs" flexWrap="wrap">
@@ -1131,7 +1141,7 @@ export const register: Register = (on, options) => {
             {data.decisions.map(decisionCard)}
             {kids.flatMap(c => [
               ...c.decisions.map(d => kidCard(c, d)),
-              ...(c.count > c.decisions.length ? [<Text key={`kd-${c.task}-more`} size="caption" dimColor>{`+${c.count - c.decisions.length} karar daha · o oturumda`}</Text>] : []),
+              ...(c.count > c.decisions.length ? [<Text key={`kd-${c.task}-#more`} size="caption" dimColor>{`+${c.count - c.decisions.length} karar daha · o oturumda`}</Text>] : []),
             ])}
           </Box>
         )}

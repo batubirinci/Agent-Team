@@ -57,7 +57,11 @@ export function parseStatus(text: string): Status {
     const t = str(d.text)
     if (!t) return []
     const options = Array.isArray(d.options) ? d.options.map(o => str(o)).filter((o): o is string => !!o).slice(0, 4) : []
-    return [{ id: written(d.id, decisionIds) ?? `#${i + 1}`, kind: str(d.kind), text: t, meta: str(d.meta), task: idOf(d.task), options }]
+    // The two flags are read once, here, from the whole kind as written and as drawn (a control character inside is dropped from the drawn one): every consumer
+    // reads the flags, never the kind text, which a copy may cut (a padded "Push onayı" must never lose its flag).
+    const kind = str(d.kind)
+    const raw = typeof d.kind === 'string' ? d.kind : undefined
+    return [{ id: written(d.id, decisionIds) ?? `#${i + 1}`, kind, text: t, meta: str(d.meta), task: idOf(d.task), options, push: isPush(kind) || isPush(raw), stuck: isStuck(kind) || isStuck(raw) }]
   })
 
   const tasks: Task[] = list(raw.tasks).flatMap((t, i) => {
@@ -97,7 +101,7 @@ export function parseStatus(text: string): Status {
     const asked = own ? decisions.filter(d => d.task === own) : []
     const blocked = roles.find(r => r.status === 'blocked')
     const state: TaskState =
-      blocked || asked.some(d => isStuck(d.kind)) ? 'blocked' : roles.some(r => r.status === 'running') ? 'running' : 'waiting'
+      blocked || asked.some(d => d.stuck) ? 'blocked' : roles.some(r => r.status === 'running') ? 'running' : 'waiting'
     const reason =
       state === 'blocked' ? (asked.length ? `senden ${asked.length} karar bekliyor` : blocked?.state || undefined) : wait
     return [{
@@ -218,7 +222,7 @@ export const countStates = (tasks: readonly Task[]) => ({
 })
 
 // The task a decision names (if it is in the file): its title joins the kind line, a blocked one draws the card in error.
-export function decisionTask(d: Decision, tasks: readonly Task[]) {
+export function decisionTask(d: Omit<Decision, 'push' | 'stuck'>, tasks: readonly Task[]) {
   const t = d.task ? tasks.find(x => x.id === d.task && !x.generatedId) : undefined
   return { kind: [d.kind, t?.title].filter(Boolean).join(' · ') || undefined, blocked: t?.state === 'blocked' }
 }
@@ -243,7 +247,7 @@ export function withKarar(draft: string, id: string, option: string) {
 // The decision lines of a draft (all the pane needs to know of it), and which option of `d` one of them picks (-1: none).
 // A CRLF draft's rows end in \r: it is not part of the line.
 export const kararLines = (draft: string) => draft.split('\n').filter(r => r.startsWith(KARAR)).map(r => r.replace(/\r$/, ''))
-export const pickedAt = (lines: readonly string[], d: Decision) => d.options.findIndex(o => lines.includes(kararLine(d.id, o)))
+export const pickedAt = (lines: readonly string[], d: Omit<Decision, 'push' | 'stuck'>) => d.options.findIndex(o => lines.includes(kararLine(d.id, o)))
 
 // The sentence that tells the Lead the status path (register.tsx leadText) and the prefix of the row that carries it.
 export const ANNOUNCE = "Pane'in okuduğu durum dosyası:"
@@ -301,12 +305,12 @@ export function otherSession(e: DirEntry, s: Status): Other | undefined {
     name: m ? `${project} · ${m[2]}` : project,
     when: clockOf(s.updatedAt) ?? `${pad2(d.getHours())}:${pad2(d.getMinutes())}`,
     count: all.length,
-    stuckCount: all.filter(a => a.blocked || isStuck(a.x.kind)).length,
+    stuckCount: all.filter(a => a.blocked || a.x.stuck).length,
     decisions: all.slice(0, OTHER_DECISIONS).map(({ x, kind, blocked }) => ({
       kind: kind && cut(kind, OTHER_KIND),
       text: cut(x.text, OTHER_TEXT),
       options: x.options.map(o => cut(o, OTHER_OPTION)),
-      stuck: blocked || isStuck(x.kind),
+      stuck: blocked || x.stuck,
     })),
   }
 }
@@ -380,7 +384,7 @@ export function sessionLines(t: Task, c: Child | undefined, o: { failed: boolean
   const when = stamp(c.updatedAt, o.now).text ?? `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
   const first: SessionLine[] = o.failed
     ? term
-      ? [{ text: '✗ oturum açık değil', color: 'error' }, { text: `claude attach ${c.name}` }]
+      ? [{ text: `✗ oturum açık değil · claude attach ${c.name}`, color: 'error' }]
       : [{ text: 'oturum açık değil · o oturumu aç', color: 'error' }]
     : c.card?.state === 'running' && o.now - c.mtimeMs > STALE_MS
       ? [{ text: `⚠ ${ago(o.now - c.mtimeMs)} önce yazdı · durmuş olabilir`, color: 'warning' }]
@@ -390,7 +394,7 @@ export function sessionLines(t: Task, c: Child | undefined, o: { failed: boolean
 
 // The one caption row of a child's decision card (Turkish, exact): push, sent, failed, or the idle line; `f` is the answer's state, if any.
 export function kidCaption(c: Child, d: Decision, f: Forward | undefined, term: boolean): SessionLine | undefined {
-  if (isPush(d.kind)) return { text: 'Push onayı yalnız o oturumda verilir' }
+  if (d.push) return { text: 'Push onayı yalnız o oturumda verilir' }
   if (f?.state === 'sent') return { text: `Gönderildi: ${cut(f.option, 60)} · ${c.name} oturumuna`, color: 'success' }
   if (f?.state === 'failed') return { text: 'Gönderilemedi · oturum açık değil, cevabı o oturumda ver', color: 'error' }
   return d.options.length ? { text: term ? `1-9 ile seç · ${c.name} oturumuna hemen gider` : `Bir seçeneğe bas · ${c.name} oturumuna gider` } : undefined

@@ -41,6 +41,10 @@ export type Decision = {
   meta?: string
   task?: string
   options: string[]
+  // Classified once, at parse time, from the whole kind (never from a cut or drawn copy): an approval of an irreversible action (a push: no button, never
+  // carried to another session) and a "stuck" report. Every consumer reads these.
+  push: boolean
+  stuck: boolean
 }
 
 export type Status = {
