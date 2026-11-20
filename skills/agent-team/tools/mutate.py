@@ -276,7 +276,8 @@ def _self_check(root):
     for name, (lst, extra) in bad.items():
         r, lg = run(lst, "--jobs", "1", *extra)
         checks[f"{name} refused (exit 2, nothing run)"] = (
-            r.returncode == 2 and lg is None and read_text(outside) == "SECRET\n")
+            r.returncode == 2 and lg is None and os.path.exists(outside)
+            and read_text(outside) == "SECRET\n")
 
     r5, log5 = run([{"id": "crlf-out", "edits": ed("mode=ok", "mode=crlf"), "want": "test_crlf"}],
                    "--jobs", "1", "--fail-re", "test_crlf$")  # CRLF output, $-anchored pattern
