@@ -175,7 +175,7 @@ unverified premise is marked so.
   files (`<evidence root>/worktrees/<task>/…`), never the scratchpad; and every worktree is
   committed before the chat ends.
 - **Limits — stop safely before them:** before starting new work, read the usage view (5-hour
-  and weekly). 5-hour ≥ 95 % or weekly ≥ 97 %, or the Lead's context nearing ~600k (the owner's
+  and weekly). 5-hour ≥ 95 % or weekly ≥ 97 %, or the Lead's context nearing ~300k (the owner's
   `/context` is authoritative; transcript growth is only an estimate) → start nothing new, run
   Pause, write a hand-off note and give the owner one paste-ready continuation prompt for a fresh
   chat. A different chat cannot resume this chat's agents, so the prompt carries fresh briefs; the
@@ -212,7 +212,7 @@ first, before the owner's own request:
 Owner decision 2026-11-19: a new task can start in its own session. The brief block, the checks and the
 dead-child steps are in `references/task-sessions.md` (read it before the first one).
 
-- **When.** Offer it for every new task that gets its own branch. Never for a piece of a task, a question
+- **When.** Offer it for every new independent task that gets its own branch. Never for a piece of a task, a question
   or a routine fix you spec yourself in minutes, and never from inside a task session. A task session
   counts toward the 4-task cap.
 - **The offer, per surface.** Desktop (you have `mcp__ccd_session__start_session`): call it with
@@ -280,12 +280,17 @@ dead-child steps are in `references/task-sessions.md` (read it before the first 
    asks the owner about them in one batch, with real current captures and a clearly labelled
    picture of each outcome. Each answered case becomes an acceptance criterion with at least one
    acceptance test in "Done when". The Lead fixes one agreed set of criteria before the Developer
-   starts; a case discovered later still goes to the Lead.
+   starts; a case discovered later still goes to the Lead. **Spec adversary:** for cross-module or
+   trust work (sessions, permissions, push, a shared file format) the cross-model QA attacks the
+   agreed spec before any code — gaps, contradictions, missed cases, drift from the code on base;
+   the Lead folds each real gap into the criteria (or asks the owner) before the Developer starts.
 2. **Build** — the Lead opens the Developer's worktree
    (`git worktree add -b <branch> <evidence root>/worktrees/<task>/dev <base>` + the project's dependency setup
    inside it, or the project's worktree script); the Developer runs no command in the owner's
    checkout. It implements with tests and hands off one **candidate SHA**; verify it with Git
-   before routing. The Lead records the owner's checkout branch, HEAD and `git status` at start and
+   before routing. Its report opens with a summary block of at most 15 lines (state, base +
+   candidate SHA, what changed, gates with exit codes, mutants killed/survived, open items, report
+   path); read that block first. The Lead records the owner's checkout branch, HEAD and `git status` at start and
    compares all three after every round; an unexplained change is reported to the owner.
 3. **Review** — disposable review worktrees at the candidate SHA (below). **Evidence package:**
    when the Developer's report carries gate results for this exact SHA with command, environment,
@@ -298,6 +303,11 @@ dead-child steps are in `references/task-sessions.md` (read it before the first 
    stated reason). Round-1 findings are withheld from the other QA and the Developer until both
    finish; the Lead consolidates them into one handoff. An incomplete review blocks. Exception: an
    active harm (data loss, a process damaging a shared environment) is acted on at once.
+   **Mutation first** (when the project's checks include mutation): `tools/mutate.py` next to this
+   file runs a mutant list in parallel detached worktrees (`--jobs`, default 4), one line per
+   mutant. The Developer's list runs first; each reviewer reads the survivors, adds its own mutants
+   for the change and runs them early. Test and gate output goes to a file, never a pipe (`claude
+   plugin test` cuts piped output at 64 KiB; the tool does it itself).
    Neither QA changes the candidate. Each verdict states `VERDICT: GO|NO-GO`, base and candidate
    SHA, and findings as `SEVERITY — origin — file:line — what — how measured`. **Origin** is
    `introduced` (absent on base, shown by comparison) or `pre-existing`. **Disposition** (set by
@@ -311,11 +321,14 @@ dead-child steps are in `references/task-sessions.md` (read it before the first 
    most two revision rounds in a row, earlier fresh if its context is clearly large; otherwise
    start a fresh one with a revision package (criteria, candidate SHA, findings, failing tests or
    repro, files touched, approaches tried, open questions). Any change to the candidate
-   invalidates earlier approvals.
+   invalidates earlier approvals. Per revision only the mutants that touch the fix diff run (plus new
+   ones); the full set runs once on the final candidate before landing.
    **From round 2 on, only QA reviews, focused** (`medium`, `high` if the change is risky), with
    the evidence package for the new SHA; it widens to full review when architecture, shared
    geometry or test infrastructure changed, and the required regression/mutation gates run on the
-   final commit. **Closure by evidence:** QA closes code/test findings; QA 2 closes live-behavior
+   final commit. A focused re-check brief carries only the fix diff, the Lead's disposition of each
+   finding and the Developer's summary block — not earlier reports, no separate context pack
+   (pilot: reviewers read the code anyway); Claude re-checkers run on Sonnet (`model: "sonnet"`). **Closure by evidence:** QA closes code/test findings; QA 2 closes live-behavior
    and timing findings with a short targeted re-check on the new SHA; a mixed finding needs both.
    QA 2 also returns for a revision that changes UI/interaction, speed or a performance budget
    (short targeted check), or is large / outside round 1's scope (affected live scenarios; full

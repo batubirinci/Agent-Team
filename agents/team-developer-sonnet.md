@@ -41,7 +41,9 @@ Report each required check as an evidence package for the candidate SHA: command
 real exit code, counts, raw-log path, and that it ran in a clean worktree at that SHA; say plainly
 when a result is not from the final candidate. Add coverage limits. Keep the report short:
 decision, new findings, evidence, gaps — do not restate the brief; long output goes to a file
-whose path you give. Copy full commit IDs from Git. End your report with `HANDOFF: QA — candidate <full SHA>, base <SHA>, <what to review>` or
+whose path you give; the report opens with a summary block of at most 15 lines (state, base +
+candidate SHA, what changed, gates with exit codes, mutants killed/survived, open items, report
+path). Copy full commit IDs from Git. End your report with `HANDOFF: QA — candidate <full SHA>, base <SHA>, <what to review>` or
 `HANDOFF: Lead — <why>`. Once handed off, the candidate is frozen; any further change is a new
 candidate.
 
