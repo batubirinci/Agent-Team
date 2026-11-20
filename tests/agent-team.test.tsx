@@ -6523,9 +6523,10 @@ test('T4 E1a (forwards-1): an answer stored by r1 (forwards-1, no time) is decli
 })
 
 test('T4 R-cheap (sendTo empty id): with session.id() answering "" after the start, the own record is still never a target', FOLDERS, async ($, on) => {
-  const store = Object.fromEntries([sess4(C4_SID, C4_KID, hourAt(12)), sess4(C4_KID_SID, C4_KID, hourAt(11))]) // the own id's record is the newest
-  const k = await cBoot($, on, { store })
+  const k = await cBoot($, on, { store: KID_REC })
   const ui = await k.pane('terminal')
+  // After the start (which rewrites the own record): the own id's record names the child file and is the newest, so only the own-id rule keeps it out.
+  k.store.set(...sess4(C4_SID, C4_KID, hourAt(12)))
   k.gate.sid = ''
   await press4(ui, 'kd-hard-k1-0')
   await k.settle()
