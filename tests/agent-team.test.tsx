@@ -4587,7 +4587,7 @@ const tBoot = async (
   o: { surface?: 'desktop' | 'terminal'; status?: string; placed?: boolean; reopen?: boolean; others?: number; noFile?: boolean; manual?: boolean; clearable?: boolean } = {},
 ) => {
   const disk = { text: o.status ?? T_BASIC, mtime: R_OLD_MTIME }
-  const st = { placed: o.placed ?? false, id: ID_OLD, drop: false }
+  const st = { placed: o.placed ?? false, id: ID_OLD, drop: false, onSet: undefined as ((key: string) => void) | undefined }
   const log = {
     opened: [] as { id: string; title?: string; columns?: number; focus?: true }[],
     sets: [] as string[],
@@ -4641,6 +4641,7 @@ const tBoot = async (
     const version = atoms.get(slot(e))?.version ?? 0
     if (e.ifVersion !== undefined && e.ifVersion !== version) return { value: { isSet: false, version } }
     atoms.set(slot(e), { value: e.value, version: version + 1 })
+    st.onSet?.(e.key) // a /clear can land between two writes of the plugin
     return { value: { isSet: true, version: version + 1 } }
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -5076,6 +5077,20 @@ test('R1 (T1-2 after /clear): a plugin submit before the first poll carries the 
   ])
   expect(k.log.events[0]?.text).toContain(LEAD)
   expect(k.log.events[0]?.text).toContain('shop--66b9491d.json') // the path the session had, never an empty one
+})
+
+test('R1 (race): a /clear that lands after the press took its lines and before the context row still gets the Lead line (follow runs before the mode is read)', FOLDERS, async ($, on) => {
+  const k = await tBoot($, on, { placed: true, clearable: true })
+  const ui = await k.pane()
+  k.log.events.length = 0
+  let writes = 0
+  k.st.onSet = key => {
+    if (key === 'outbox' && ++writes === 2) k.clear(NEW_ID) // 1: the press queued, 2: submitOut took it
+  }
+  await ui.press({ key: 'pause' })
+  await k.clock.advance(0)
+  expect(k.log.events.map(e => [e.kind, e.type ?? ''])).toEqual([['row', 'user'], ['submit', '']])
+  expect(k.log.events[0]?.text).toContain(LEAD)
 })
 
 test('R1 family: a press after /clear, before the first poll, still waits for the running turn (the mode is restored before it is read)', FOLDERS, async ($, on) => {
