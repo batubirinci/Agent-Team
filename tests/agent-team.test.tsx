@@ -5462,7 +5462,7 @@ const cBoot = async (
   }
   return { files, disk, store, log, gate, settle, fire, poll, setOwn, pane, band, ownName, mineAdd, record, clear }
 }
-const ATOM_KEYS4 = ['mode', 'status', 'detail', 'others', 'children', 'forwards', 'links', 'bind', 'othersOpen', 'karar', 'outbox', 'reopen', 'placed', 'tick']
+const ATOM_KEYS4 = ['mode', 'status', 'detail', 'others', 'children', 'forwards', 'links', 'bind', 'othersOpen', 'karar', 'outbox', 'reopen', 'placed', 'tick', 'fresh', 'doneOpen']
 const texts4 = (root: Node) => nodesOf(root).filter(n => n.type === 'Text').map(textOf)
 const byKey = (root: Node, key: string) => {
   const n = nodesOf(root).find(x => x.props?.key === key)
@@ -7800,7 +7800,7 @@ test('pane-groups C27 (caption, desktop): a flagged parent whose joined child ke
   const ui = await k.pane('desktop')
   const root = await drawnOf(ui)
   expect(texts4(byKey(root, 't-hard')).filter(x => x === CAP)).toEqual([CAP])
-  expect(textNode(byKey(root, 't-hard'), /^✓ bitti işaretli/)?.props).toMatchObject({ size: 'caption', dimColor: true })
+  expect(textNode(byKey(root, 't-hard'), /^✓ bitti işaretli/)?.props).toMatchObject({ size: 'caption', dimColor: true, wrap: 'truncate-end' }) // spec A8/criterion 27: one row
   await ui.press({ key: 'detail-hard' })
   expect(texts4(await drawnOf(ui)).filter(x => x === CAP)).toEqual([CAP]) // the same helper feeds the detail
 })
@@ -7835,6 +7835,22 @@ test('pane-groups A2 (cap): eight bound done tasks and one older live bound task
   expect(texts4(byKey(root, 't-t9'))).toContain('Review · 3/5') // the live task is joined
 })
 
+test('pane-groups F1 (relink key): when the own file marks eight bound tasks done, the cap is re-ranked within one poll, so the older live task is joined at once', FOLDERS, async ($, on) => {
+  const task = (i: number, fin: boolean) => ({ id: `t${i + 1}`, title: `Görev ${i + 1}`, stage: 'report', ...(fin && { done: true, roles: R_DONE }) })
+  const name = (i: number) => `k${i + 1}--0000000${i + 1}.json`
+  const sid = (i: number) => `0000000${i + 1}-0000-4000-8000-000000000000`
+  const ids = Array.from({ length: 9 }, (_, i) => i)
+  const files = Object.fromEntries(ids.map(i => [name(i), { text: kid4({ decisions: [], tasks: [{ id: `t${i + 1}`, title: 'K', stage: 'review', roles: [] }] }), age: (i + 1) * MIN4 }]))
+  const store = Object.fromEntries(ids.map(i => sess4(sid(i), name(i), hourAt(11), boundOf4(`t${i + 1}`, `code-t${i + 1}-0123456789`))))
+  const kids = Object.fromEntries(ids.map(i => [`t${i + 1}`, { code: `code-t${i + 1}-0123456789`, at: hourAt(10) - i * MIN4 }])) // t9 is the oldest
+  const own = (fin: boolean) => own4({ decisions: [], tasks: ids.map(i => task(i, fin && i < 8)) })
+  const k = await cBoot($, on, { surface: 'terminal', own: own(false), files, store, mine: { kids } })
+  const ui = await k.pane('terminal')
+  expect(texts4(byKey(await drawnOf(ui), 't-t9'))).not.toContain('Review · 3/5') // all live: the eight newest are bound, t9 is not
+  await k.setOwn(own(true)) // one poll, not the 4th: only the changed done flags can trigger the re-rank
+  expect(texts4(byKey(await drawnOf(ui), 't-t9'))).toContain('Review · 3/5')
+})
+
 test('pane-groups A2 (link drops): a finished task whose link goes (here: the binding is removed) and whose roles are all done stays under Biten', FOLDERS, async ($, on) => {
   const own = own4({ decisions: [], tasks: [{ id: 'hard', title: 'Sağlamlık', stage: 'report', done: true, wait: 'Ana not', session: { name: 'hard' }, roles: [tRole('Görev oturumu · hard', 'bitti', 'done')] }] })
   const k = await cBoot($, on, { surface: 'desktop', own, files: { [C4_KID]: { text: kid4({ decisions: [], roles: R_DONE }), age: 5 * MIN4 } } })
@@ -7866,23 +7882,24 @@ test('pane-groups A6 (places): finishes from waiting and from blocked sit at the
       PGD('Bk2', { roles: blockedRole }),
       PGD('R', { roles: fin.R ? R_DONE : R_RUN, ...(fin.R && { done: true }) }),
       PGD('R2', { roles: fin.R2 ? R_DONE : R_RUN, ...(fin.R2 && { done: true }) }),
+      PGD('R3', { roles: fin.R3 ? R_DONE : R_RUN, ...(fin.R3 && { done: true }) }),
     ])
   const k = await pgBoot($, on, file({}))
   const ui = await k.pane('desktop')
-  expect(layout(await drawnOf(ui))).toEqual(['çalışan:R', 'çalışan:R2', 'bekleyen:Bk', 'bekleyen:Bk2', 'bekleyen:W'])
+  expect(layout(await drawnOf(ui))).toEqual(['çalışan:R', 'çalışan:R2', 'çalışan:R3', 'bekleyen:Bk', 'bekleyen:Bk2', 'bekleyen:W'])
   await k.setOwn(file({ Bk: true }))
-  expect(layout(await drawnOf(ui))).toEqual(['çalışan:R', 'çalışan:R2', 'bekleyen:Bk', 'bekleyen:Bk2', 'bekleyen:W']) // from blocked: among the blocked
+  expect(layout(await drawnOf(ui))).toEqual(['çalışan:R', 'çalışan:R2', 'çalışan:R3', 'bekleyen:Bk', 'bekleyen:Bk2', 'bekleyen:W']) // from blocked: among the blocked
   expect(chipOf(await drawnOf(ui), 'Bk')).toBe('✓ Bitti')
   frozen(k, 3000)
-  await k.setOwn(file({ Bk: true, W: true, R: true, R2: true })) // W from waiting, R and R2 from running: three more at once
+  await k.setOwn(file({ Bk: true, W: true, R: true, R2: true, R3: true })) // W from waiting, R, R2 and R3 from running: four more in ONE read (a cap of 3 would fail)
   let root = await drawnOf(ui)
-  expect(layout(root)).toEqual(['çalışan:R', 'çalışan:R2', 'bekleyen:Bk', 'bekleyen:Bk2', 'bekleyen:W'])
-  expect(['W', 'R', 'R2'].map(id => chipOf(root, id))).toEqual(['✓ Bitti', '✓ Bitti', '✓ Bitti'])
-  expect(doneSvgs(root).length).toBe(4) // all four play
-  frozen(k, 5000) // the first finish (at 0) ends; the three of 3000 do not
+  expect(layout(root)).toEqual(['çalışan:R', 'çalışan:R2', 'çalışan:R3', 'bekleyen:Bk', 'bekleyen:Bk2', 'bekleyen:W'])
+  expect(['W', 'R', 'R2', 'R3'].map(id => chipOf(root, id))).toEqual(['✓ Bitti', '✓ Bitti', '✓ Bitti', '✓ Bitti'])
+  expect(doneSvgs(root).length).toBe(5) // all five play: Bk and the four of one read
+  frozen(k, 5000) // the first finish (at 0) ends; the four of 3000 do not
   await k.poll()
   root = await drawnOf(ui)
-  expect(layout(root)).toEqual(['çalışan:R', 'çalışan:R2', 'bekleyen:Bk2', 'bekleyen:W'])
+  expect(layout(root)).toEqual(['çalışan:R', 'çalışan:R2', 'çalışan:R3', 'bekleyen:Bk2', 'bekleyen:W'])
   frozen(k, 8000)
   await k.poll()
   expect(layout(await drawnOf(ui))).toEqual(['bekleyen:Bk2'])

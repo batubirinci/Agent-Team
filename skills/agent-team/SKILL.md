@@ -332,7 +332,8 @@ dead-child steps are in `references/task-sessions.md` (read it before the first 
    the owner gets a short status report then. A new product decision or an owner-only area still
    goes to the owner.
 5. **Report** — what changed, candidate SHA, gates, every verdict, finding dispositions, open
-   items, coverage limits, the pilot row (`references/pilot.md`). Update the status record.
+   items, coverage limits, the pilot row (`references/pilot.md`). Update the status record: set the task's `done: true`
+   in the status file, and every role of it `done` (not in a task session: a task session never writes `done`).
 
 Every invocation has a task handle, the expected engine and a complete role-appropriate report (a
 Codex run also its unique output files, `references/gpt-roles.md`); one that returns without it

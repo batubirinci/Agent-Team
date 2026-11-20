@@ -248,10 +248,10 @@ export function termTasks(ui: UI, sec: ReturnType<typeof sections>, hasOn: boole
   const blocked = sec.waiting.filter(t => t.state === 'blocked').length
   return (
     <Box flexDirection="column">
-      {sec.running.length > 0 && <Text key="sec-running" weight="bold">{`${'Çalışan'.toLocaleUpperCase('tr')} · ${sec.running.length}`}</Text>}
+      {sec.running.length > 0 && <Text key="sec-running" weight="bold" wrap="truncate-end">{`${'Çalışan'.toLocaleUpperCase('tr')} · ${sec.running.length}`}</Text>}
       {sec.running.map(card)}
       {sec.waiting.length > 0 && (
-        <Text key="sec-waiting" weight="bold">
+        <Text key="sec-waiting" weight="bold" wrap="truncate-end">
           {`${'Bekleyen'.toLocaleUpperCase('tr')} · ${sec.waiting.length}`}
           {blocked > 0 && <Text color="error" weight="bold">{` · ${blocked} takıldı`}</Text>}
         </Text>
@@ -259,7 +259,7 @@ export function termTasks(ui: UI, sec: ReturnType<typeof sections>, hasOn: boole
       {sec.waiting.map(card)}
       {sec.done.length > 0 && (
         <Box key="sec-done" flexDirection="row" justifyContent="space-between" gap={2}>
-          <Text>
+          <Text wrap="truncate-end">
             <Text color="success">✓ </Text>
             <Text weight="bold">{`${'Biten'.toLocaleUpperCase('tr')} · ${sec.done.length}`}</Text>
           </Text>

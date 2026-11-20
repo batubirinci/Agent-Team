@@ -1053,7 +1053,7 @@ export const register: Register = (on, options) => {
       return l?.state === 'bound' ? (l.by === 'owner' ? 'bağ: sahip bağladı' : 'bağ: başlatma kodu') : undefined
     }
     const rowColor = { warning: '#E5CC7A', error: BLOCKED_INK, success: undefined } as const
-    const sessionRows = (t: Task) => rows(t).map((l, i) => <Text key={`t-${t.id}-s-${i}`} size="caption" color={l.color && rowColor[l.color]} dimColor={!l.color}>{l.text}</Text>)
+    const sessionRows = (t: Task) => rows(t).map((l, i) => <Text key={`t-${t.id}-s-${i}`} size="caption" color={l.color && rowColor[l.color]} dimColor={!l.color} wrap="truncate-end">{l.text}</Text>)
     // What a Pause / Devam button adds to its label: queued behind a running turn, or already submitted as the owner (until the file changes).
     const note = (line: string) => (out.queue.some(q => q.line === line) ? 'sırada' : out.said.includes(line) ? 'gönderildi' : '')
     const labelled = (label: string, line: string) => (note(line) ? `${label} · ${note(line)}` : label)
