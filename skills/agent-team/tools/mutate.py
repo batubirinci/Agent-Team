@@ -210,7 +210,7 @@ def run_share(wt, mutants, a, rm_paths, cmd_tokens, fail_re, w, stop, procs):
 
 
 CHECK_PY = """\
-import os, stat, sys
+import os, shutil, stat, sys
 wt = sys.argv[1]
 s = open(wt + '/src.txt').read()
 open(wt + '/sub/junk.tmp', 'w').write('x')
@@ -218,6 +218,9 @@ out, rc = 'all pass\\n', 0
 if 'swap=yes' in open(wt + '/swap.txt').read():  # the test swaps an edited file for a link out
     os.remove(wt + '/swap.txt')
     os.symlink('../outside.txt', wt + '/swap.txt')
+if 'f=2' in open(wt + '/lnk/f.txt').read():  # ... or an edited file's directory for a link out
+    shutil.rmtree(wt + '/lnk')
+    os.symlink('../outside_dir', wt + '/lnk')
 if 'big=yes' in s:
     out, rc = ('x' * 99 + '\\n') * 1100 + '(fail) test_big\\n', 1
 elif 'mode=boom' in s:
@@ -260,9 +263,10 @@ def _self_check(root):
         write_text(p, t)
     files = {"src.txt": "value=1\ncolor=red\n# note: harmless comment\nmode=ok\nbig=no\n",
              "crlf.txt": "a=1\r\nb=2",  # CRLF, no trailing newline: restore must be byte-exact
-             "ro.txt": "r=1\n", "swap.txt": "swap=no\n", "sub/keep.txt": "k\n",
+             "ro.txt": "r=1\n", "swap.txt": "swap=no\n", "sub/keep.txt": "k\n", "lnk/f.txt": "f=1\n",
              "check.py": CHECK_PY}
-    os.mkdir(os.path.join(repo, "sub"))
+    for d in ("sub", "lnk"):
+        os.mkdir(os.path.join(repo, d))
     for n, t in files.items():
         write_text(os.path.join(repo, n), t)
     os.symlink("../outside.txt", os.path.join(repo, "link.txt"))
@@ -315,8 +319,9 @@ def _self_check(root):
                    and open(os.path.join(repo, k), "rb").read() == v.encode() for k, v in files.items())
         return same and not git_out(repo, "status", "--short").strip()
 
-    def outside_ok():
-        return all(os.path.exists(p) and read_text(p) == t for p, t in outside.items())
+    def outside_ok():  # every outside file as it was, no new file next to them
+        return (all(os.path.exists(p) and read_text(p) == t for p, t in outside.items())
+                and sorted(os.listdir(os.path.join(root, "outside_dir"))) == ["victim.txt"])
 
     checks = {}
     raw = os.path.join(root, "raw")
@@ -377,8 +382,16 @@ def _self_check(root):
     checks["after a failed restore the rest of the share is not run"] = (
         line(log6, "killed") == "killed: ERROR; not run: tree not restored" and r6.returncode == 1)
     checks["failed restore: nothing outside written"] = outside_ok()
-    os.remove(os.path.join(repo, "swap.txt"))
-    subprocess.run(["git", "-C", repo, "checkout", "--", "swap.txt"], capture_output=True)
+    reset = ["git", "-C", repo, "checkout", "--"]
+    if os.path.islink(os.path.join(repo, "swap.txt")):
+        os.remove(os.path.join(repo, "swap.txt"))
+    subprocess.run([*reset, "swap.txt"], capture_output=True)
+    r6b, log6b = run([mu("swapdir", ed("f=1", "f=2", file="lnk/f.txt"))], "--jobs", "1")
+    checks["restore refused under a test-swapped directory link: ERROR, nothing outside written"] = (
+        result(log6b, "swapdir") == "ERROR" and r6b.returncode == 1 and outside_ok())
+    if os.path.islink(os.path.join(repo, "lnk")):
+        os.remove(os.path.join(repo, "lnk"))
+    subprocess.run([*reset, "lnk"], capture_output=True)
     checks["failed restore: tree clean after manual reset"] = tree_ok()
 
     r7, log7 = run([mu("rmlink", ed("mode=ok", "mode=link"))],
