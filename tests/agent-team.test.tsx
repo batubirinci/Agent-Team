@@ -8221,6 +8221,8 @@ test('biten-overflow R2 (desktop pane, Biten, detail): rows with text beside a B
   for (let i = 0; i < 10; i++) await new Promise(r => (globalThis as unknown as { setTimeout: (f: () => void, ms: number) => void }).setTimeout(() => r(undefined), 0))
   expect(await ui.find({ key: 'ev-open-0' })).toBeDefined() // the evidence row is the loaded (Button) kind
   await look('detail')
+  // The evidence row has no Button beside its text (the Button is inside the text column), so the rule above does not see it: its column is checked by key.
+  expect(kidsOf(byKey(await drawnOf(ui), 'ev-0')).find(k => k.type === 'Box')?.props).toMatchObject({ flexGrow: 1, flexShrink: 1, minWidth: 0 })
   expect(Object.fromEntries(Object.entries(seen).map(([k, v]) => [k, v.bad]))).toEqual({ 'header + folded Biten': [], 'Biten rows': [], detail: [] })
   expect(Object.fromEntries(Object.entries(seen).map(([k, v]) => [k, v.checked > 0]))).toEqual({ 'header + folded Biten': true, 'Biten rows': true, detail: false })
 })
