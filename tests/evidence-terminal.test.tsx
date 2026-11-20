@@ -4,7 +4,7 @@ import { termDetail, termReader } from '../hooks/terminal'
 import type { ReaderHandlers } from '../hooks/terminal'
 import type { Task, TermEvRow, TermReaderView } from '../types'
 
-// The terminal views of the evidence view (design B). Expected values come from /Users/batuhan/agent-team-evidence/tasks/evidence-view:
+// The terminal views of the evidence view (design B). Expected values come from <evidence root>/tasks/evidence-view:
 // "A" = analyst-report.md, "F" = spec-fixes.md; the section or criterion number is named at each group.
 // The views are drawn here directly with a plain UI whose Box, Button and Text are their own names, so a drawn node is `{ type, props, children, onPress }`
 // (the shape tests/agent-team.test.tsx reads from a mounted Pane). Nothing here is taken from the implementation's own output.
