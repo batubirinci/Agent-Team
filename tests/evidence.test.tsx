@@ -4,7 +4,7 @@ import { EV_BODY, EV_CHARS, EV_HEAD, clean, evCheck, evExt, evHomeOf, evLoad, ev
 import { evBarSvg, evDocSvg } from '../hooks/svg'
 import type { EvStat } from '../types'
 
-// Evidence view (design B). Expected values come from /Users/batuhan/agent-team-evidence/tasks/evidence-view: "A" = analyst-report.md, "F" = spec-fixes.md;
+// Evidence view (design B). Expected values come from <evidence root>/tasks/evidence-view: "A" = analyst-report.md, "F" = spec-fixes.md;
 // the section or criterion number is named at each group. Fixture root `/e`, home `/h` (invariant 7: no personal paths).
 const ZW = '\u200b'
 const LINE = {

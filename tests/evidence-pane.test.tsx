@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-// Evidence view (design B), through the pane. Expected values come from /Users/batuhan/agent-team-evidence/tasks/evidence-view: "A" = analyst-report.md,
+// Evidence view (design B), through the pane. Expected values come from <evidence root>/tasks/evidence-view: "A" = analyst-report.md,
 // "F" = spec-fixes.md; the criterion number is named at each test. Fixture root `/e`, home `/h` (invariant 7: no personal paths).
 const OPTS = { options: { teamFolders: '/', evidenceRoot: '/e' } }
 const NOW = 1_000_000
