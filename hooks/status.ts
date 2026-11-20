@@ -528,3 +528,7 @@ export function spinnerWord(s: Status | null | undefined): string | undefined {
   if (!first) return undefined
   return clip([[first.name.split(' · ')[0], first.state].filter(Boolean).join(' · '), rest.length && ` +${rest.length}`].filter(Boolean).join(''), 40)
 }
+
+// pane-groups red stubs (replaced in the next commit)
+export const finishes = (_prev: Status | null, _next: Status | null): { id: string; from: TaskState }[] => []
+export const sections = (tasks: readonly Task[], _fresh: readonly { id: string; at: number; from: TaskState }[], _now: number) => ({ running: tasks.filter(t => t.state === 'running'), waiting: tasks.filter(t => t.state !== 'running'), done: [] as Task[] })

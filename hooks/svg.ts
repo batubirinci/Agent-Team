@@ -48,3 +48,6 @@ export function stagesSvg(current: number, count = 5, blocked = false, running =
     : ''
   return svg(w, parts.join('') + band)
 }
+
+// pane-groups red stub (replaced in the next commit)
+export const doneStagesSvg = (_elapsed?: number): string => ''
