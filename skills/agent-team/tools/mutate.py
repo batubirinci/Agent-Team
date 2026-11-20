@@ -10,7 +10,8 @@ Usage:
 List: JSON array of {"id": str, "edits": [{"file": rel path, "find": str,
 "replace": str, "count": int}], "want": str}. `id` is [A-Za-z0-9._-]+ (not . or ..); `want` is a
 substring of the fail line the mutant should trip. Every edit file and every --rm path must stay
-inside the worktree after symlinks are resolved; a bad entry is refused (exit 2), nothing runs.
+inside the worktree after symlinks are resolved (for --rm: its parent directory; a symlink
+entry is removed as a link, never its target); a bad entry is refused (exit 2), nothing runs.
 
 Per mutant: every `find` must occur exactly `count` times in the original file, else the line
 is `<id>: PATTERN COUNT WRONG` and nothing runs. Edits are applied, the test command runs (its
@@ -70,6 +71,19 @@ def inside(wt, rel):
     if not full.startswith(root + os.sep):
         raise ValueError(f"path escapes the worktree: {rel}")
     return full
+
+
+def rm_target(wt, rel):
+    """Path of the --rm entry itself: its parent is resolved and must be in the worktree, the
+    entry is not (a symlink is removed as a link, never what it points to)."""
+    if os.path.isabs(rel):
+        raise ValueError(f"path must be relative to the worktree: {rel}")
+    root = os.path.realpath(wt)
+    parent = os.path.realpath(os.path.dirname(os.path.join(root, rel)))
+    name = os.path.basename(rel)
+    if name in ("", ".", "..") or not (parent == root or parent.startswith(root + os.sep)):
+        raise ValueError(f"path escapes the worktree: {rel}")
+    return os.path.join(parent, name)
 
 
 def git_out(wt, *args):
@@ -146,7 +160,7 @@ def run_share(wt, mutants, a, rm_paths, cmd_tokens, fail_re, w, stop, procs):
                     w(f"{mid}: ERROR; restore of {p} failed: {ex}", "ERROR")
             for rp in rm_paths:
                 try:
-                    fp = inside(wt, rp)
+                    fp = rm_target(wt, rp)
                     if os.path.lexists(fp):
                         os.remove(fp)
                 except (OSError, ValueError) as ex:
@@ -163,6 +177,8 @@ if 'big=yes' in s:
     out, rc = ('x' * 99 + '\\n') * 1100 + '(fail) test_big\\n', 1
 elif 'mode=boom' in s:
     out, rc = 'harness crashed\\n', 3
+elif 'mode=link' in s:
+    os.symlink('src.txt', wt + '/rmlink')
 elif 'mode=crlf' in s:
     out, rc = '(fail) test_crlf\\r\\n', 1
 elif 'color=blue' in s:
@@ -233,7 +249,8 @@ def _self_check(root):
         return m.group(1) if m else None
 
     def tree_ok():  # given tree: every tracked regular file byte-exact, nothing else changed
-        same = all(open(os.path.join(repo, k), "rb").read() == v.encode() for k, v in files.items())
+        same = all(os.path.exists(os.path.join(repo, k))
+                   and open(os.path.join(repo, k), "rb").read() == v.encode() for k, v in files.items())
         return same and not git_out(repo, "status", "--short").strip()
 
     checks = {}
@@ -282,6 +299,12 @@ def _self_check(root):
     r5, log5 = run([{"id": "crlf-out", "edits": ed("mode=ok", "mode=crlf"), "want": "test_crlf"}],
                    "--jobs", "1", "--fail-re", "test_crlf$")  # CRLF output, $-anchored pattern
     checks["CRLF output with a $-anchored --fail-re is KILLED"] = result(log5, "crlf-out") == "KILLED"
+
+    r7, log7 = run([{"id": "rmlink", "edits": ed("mode=ok", "mode=link"), "want": "x"}],
+                   "--jobs", "1", "--rm", "rmlink")  # the test run leaves an in-tree symlink to src.txt
+    checks["--rm of an in-tree symlink removes the link, not its target"] = (
+        r7.returncode == 0 and result(log7, "rmlink") == "SURVIVED"
+        and not os.path.lexists(os.path.join(repo, "rmlink")) and tree_ok())
 
     r6 = subprocess.run([sys.executable, os.path.abspath(__file__), "--worktree", root, "--list",
                          os.path.join(root, "list1.json"), "--log", os.path.join(root, "log-ng.txt"),
@@ -346,7 +369,7 @@ def main():
             for e in m["edits"]:
                 inside(wt, e["file"])
         for rp in rm_paths:
-            inside(wt, rp)
+            rm_target(wt, rp)
     except (ValueError, KeyError, TypeError) as ex:
         refuse(f"bad list or --rm entry: {type(ex).__name__}: {ex}")
     known = {m["id"] for m in mutants}
