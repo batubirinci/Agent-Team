@@ -1,6 +1,6 @@
 import type { EngineInterface } from 'claude-code'
 
-import type { BandSeg, BindView, Child, Decision, Forward, Other, Outbox, Role, RoleStatus, SessionLine, Task, TaskState } from '../types'
+import type { BandSeg, BindView, Child, Decision, Forward, Other, Outbox, Role, RoleStatus, SessionLine, Task, TaskState, TermEvRow, TermReaderView } from '../types'
 import { STAGE_LABELS, clip, cut, decisionTask, isBlocking, kidCaption, pickedAt, pushOf, sections } from './status'
 
 // The terminal drawing of the pane and the footer (approved design "Terminal arayüzü · şimdi ve öneri"):
@@ -282,8 +282,13 @@ export function termTasks(ui: UI, sec: ReturnType<typeof sections>, hasOn: boole
 
 // The detail: back/ask on one row, a summary box, ROLLER, TURLAR (newest first, a box each), KANIT. `link`: a task session's bind ("Oturum bağla", key g)
 // or unbind ("Bağı çöz", key u) and how it was bound (only b and s were taken here; a key on the list card would collide with the task keys).
+// `evidence` (one per `t.evidence` entry, same order; spec A §5.3 "Detail rows" and F §5.3): under KANIT each entry is exactly ONE row, `Box key="ev-<i>"
+// flexDirection="row" gap={1}`. A pressable entry: `Button key="ev-open-<i>"` (`{...hk(String(i + 1))}`, label = `label`, onPress = `evOpen(i)`), then ONE
+// `Text wrap="truncate-end"`: with a `chip`, the chip word (GO color success, NO-GO color error) and ` · <text>` only when `text` is not '' (an empty summary draws the
+// verdict alone); else `text`. A not pressable entry: a `Text wrap="truncate-end"` with `label` in place of the Button (the other digits do not shift), then the status
+// `Text wrap="truncate-end" dimColor` with `text`. The path is not drawn. With no `t.evidence` no KANIT section (as today). Every Button is plain (`hk`).
 export type DetailLink = { bind?: () => void; unbind?: () => void; by?: string }
-export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void, frame = 0, rows: readonly SessionLine[] = [], link: DetailLink = {}) {
+export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void, frame = 0, rows: readonly SessionLine[] = [], link: DetailLink = {}, evidence: readonly TermEvRow[] = [], evOpen: (i: number) => void = () => undefined) {
   const { Box, Button, Text } = ui
   const head = (s: string) => <Text weight="bold">{s}</Text>
   const where = [t.branch, t.candidate && `aday ${clip(t.candidate, 7)}`].filter(Boolean).join(' · ')
@@ -339,12 +344,72 @@ export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void, f
       {t.evidence && (
         <Box flexDirection="column">
           {head('KANIT')}
-          {t.evidence.map((e, i) => (
-            <Box key={`ev-${i}`} flexDirection="column">
-              <Text>{e.label}</Text>
-              <Text dimColor wrap="truncate-middle">{e.path}</Text>
+          {evidence.map((e, i) => (
+            <Box key={`ev-${i}`} flexDirection="row" gap={1}>
+              {e.pressable ? (
+                <Button key={`ev-open-${i}`} label={e.label} onPress={() => evOpen(i)} {...hk(String(i + 1))} />
+              ) : (
+                <Text wrap="truncate-end">{e.label}</Text>
+              )}
+              {/* A space, never '': an empty Text may collapse its row. */}
+              <Text wrap="truncate-end" dimColor={e.dim || !e.pressable || undefined}>
+                {e.chip && <Text color={e.chip === 'GO' ? 'success' : 'error'}>{e.chip}</Text>}
+                {e.chip ? (e.text !== '' && ` · ${e.text}`) : e.text || ' '}
+              </Text>
             </Box>
           ))}
+        </Box>
+      )}
+    </Box>
+  )
+}
+
+// The reader screen (spec A §5.3 "Reader screen", F §5.3), `Box flexDirection="column" gap={1}` (the caller adds padding and the error line). Rows, in order:
+//  1. `Box flexDirection="row" justifyContent="space-between" gap={2}`: `Button key="reader-back" label="‹ Görev"` hotkey b (`onBack`), `Button key="reader-ask"
+//     label="Lead'e sor"` hotkey s (`onAsk`).
+//  2. `Box key="reader-head" {...ROUND}` with three rows, each `wrap="truncate-end"` but the path: `v.label` (weight bold), `v.path` (dimColor, wrap
+//     "truncate-middle"), `${v.meta} · sayfa ${x}/${y}` (x = clamped page + 1; y = max(1, ceil(v.rows.length / 14))). Always three rows.
+//  3. `Box key="reader-page" flexDirection="column"` (no gap): EXACTLY 14 `Text wrap="truncate-end"`, the rows of the clamped page (page = min(v.page, y - 1)); `bold`
+//     and `dim` map to weight="bold" and dimColor; pad with ' ' (one space, never '') so the row count is equal on every page and for every entry.
+//  4. Row: `Button key="reader-next-page" label="sonraki"` hotkey n and `Button key="reader-prev-page" label="önceki"` hotkey p, always drawn. n calls
+//     `onPage(page + 1)` only when page < y - 1; p calls `onPage(page - 1)` only when page > 0 (clamped page); otherwise nothing is called (no atom write).
+//  5. Only when `v.nav`: row with `Button key="reader-next" label="sonraki kanıt"` hotkey k (`onNext`) and `Button key="reader-prev" label="önceki kanıt"` hotkey o (`onPrev`).
+// Every Button is plain (`hk`); no Svg, no Markdown, no clock call, no timer. The hotkeys drawn are exactly b s n p k o (k o only with `nav`).
+export type ReaderHandlers = { onBack: () => void; onAsk: () => void; onPage: (page: number) => void; onNext: () => void; onPrev: () => void }
+const PAGE_ROWS = 14
+export function termReader(ui: UI, v: TermReaderView, on: ReaderHandlers) {
+  const { Box, Button, Text } = ui
+  const y = Math.max(1, Math.ceil(v.rows.length / PAGE_ROWS))
+  const page = Math.min(Math.max(0, Math.floor(v.page) || 0), y - 1)
+  return (
+    <Box flexDirection="column" gap={1}>
+      <Box flexDirection="row" justifyContent="space-between" gap={2}>
+        <Button key="reader-back" label="‹ Görev" onPress={on.onBack} {...hk('b')} />
+        <Button key="reader-ask" label="Lead'e sor" onPress={on.onAsk} {...hk('s')} />
+      </Box>
+      <Box key="reader-head" {...ROUND}>
+        <Text weight="bold" wrap="truncate-end">{v.label}</Text>
+        <Text dimColor wrap="truncate-middle">{v.path}</Text>
+        <Text wrap="truncate-end">{`${v.meta} · sayfa ${page + 1}/${y}`}</Text>
+      </Box>
+      <Box key="reader-page" flexDirection="column">
+        {Array.from({ length: PAGE_ROWS }, (_, i) => {
+          const r = v.rows[page * PAGE_ROWS + i]
+          return (
+            <Text key={`reader-row-${i}`} wrap="truncate-end" weight={r?.bold ? 'bold' : undefined} dimColor={r?.dim || undefined}>
+              {r?.t || ' '}
+            </Text>
+          )
+        })}
+      </Box>
+      <Box flexDirection="row" gap={2}>
+        <Button key="reader-next-page" label="sonraki" onPress={() => page < y - 1 && on.onPage(page + 1)} {...hk('n')} />
+        <Button key="reader-prev-page" label="önceki" onPress={() => page > 0 && on.onPage(page - 1)} {...hk('p')} />
+      </Box>
+      {v.nav && (
+        <Box flexDirection="row" gap={2}>
+          <Button key="reader-next" label="sonraki kanıt" onPress={on.onNext} {...hk('k')} />
+          <Button key="reader-prev" label="önceki kanıt" onPress={on.onPrev} {...hk('o')} />
         </Box>
       )}
     </Box>

@@ -132,7 +132,9 @@ Fields:
   `BLOCKING` ones first, any case, then the rest in file order): `severity` (`BLOCKING`, `LOW`, ...), `origin` (`introduced` or `pre-existing`), `what`, `where` (`file:line`).
   A round without `verdict` and a finding without `what` are dropped.
 - `evidence` (optional, at most 6): `label` and an absolute `path` of a report; both are required.
-  The pane shows the path as text. Long texts are cut (a finding 300 characters, a note 400).
+  The pane previews the file (its first lines, or a report's `VERDICT: GO|NO-GO` as a chip) and opens any text file under the evidence root in a reader;
+  a path outside the root, a link, a folder, a binary or a file over 1 MiB is not shown. A path to a file that holds secrets (a `.env`, a config) will
+  show them to the owner: never put such a path here. Long texts are cut (a finding 300 characters, a note 400).
 - Pressing `Ayrıntı ›` on a task card opens its detail view: rounds, findings, notes and evidence.
   A task without `rounds` still opens, just without the Turlar section.
 

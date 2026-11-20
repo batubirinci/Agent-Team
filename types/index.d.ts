@@ -121,6 +121,46 @@ export type Fresh = { id: string; at: number; from: Exclude<TaskState, 'done'> }
 // One entry of $.fs.list.
 export type DirEntry = { name: string; kind: string; size: number; mtimeMs: number; isLink: boolean }
 
+// The evidence reader (design B): `task` and `path` say which file of which open detail is read (`path` null: the detail is drawn); `page` is the terminal's
+// page; `enter` / `left.at` are the desktop clock readings the one-shot motion is a function of (null: static; 0 is a real clock value); `rev` counts the redraws a
+// load asked for. Never a file's content: that lives in a module cache (the status file is untrusted data, a file it names is display only).
+export type Reader = { task: string | null; path: string | null; page: number; enter: number | null; left: { path: string; at: number | null } | null; rev: number }
+
+// What $.fs.stat answers with `{ resolve: true }`.
+export type EvStat = { kind: string; size: number; mtimeMs: number; isLink: boolean; realPath?: string }
+
+// A file's first lines for a detail row: a verdict chip with its summary and a second line, or two lines.
+export type Preview = { chip?: 'GO' | 'NO-GO'; summary?: string; l1?: string; l2?: string }
+
+// One evidence file as last loaded: `stat` is what the load saw (null: the stat rejected; absent: the file changed under the read, so the next step loads again).
+export type EvRec = {
+  stat?: EvStat | null
+  state: 'ok' | 'empty' | 'refused'
+  line?: string
+  size?: number
+  mtimeMs?: number
+  preview?: Preview
+  // The cleaned text of the first bytes of a read for the reader (absent: a preview read).
+  body?: string
+  // The file is longer than what was read.
+  more?: boolean
+}
+
+// One evidence entry as a row draws it: what the cache holds for its path (`loading`: nothing yet), or the line a refusal by spelling gives.
+export type EvRow = { label: string; ext: string; state: EvRec['state'] | 'loading'; line?: string; size?: number; mtimeMs?: number; preview?: Preview; body?: string; more?: boolean; rec?: EvRec }
+
+// The terminal's evidence views take strings that are already cleaned (one(), clean()) and cut: they only lay them out. Nothing here is a file's raw text.
+// One KANIT row of the terminal detail. `label`: the entry's label, cut to 20 code points. `pressable`: state ok (the row has a Button, hotkey = its 1-based index).
+// `chip`: a report's verdict (GO success, NO-GO error). `text`: the verdict's summary (may be ''), else the file's first line, else a status line ('boş dosya',
+// 'okunuyor…', a refusal line); `dim`: `text` is a status line (drawn dim).
+export type TermEvRow = { label: string; pressable: boolean; chip?: 'GO' | 'NO-GO'; text: string; dim: boolean }
+
+// The terminal reader screen. `label`, `path`: header rows 1 and 2 (cleaned). `meta`: header row 3 without the page part (`<ext> · <size> · <N> satır`, or `<ext>`
+// alone for a refused file; the view appends ` · sayfa <x>/<y>`). `rows`: every row of the body, already wrapped to the width (a refusal line, `okunuyor…`, `boş dosya`
+// or the cut notice are rows too; `bold`: a heading, `dim`: a status or notice row); the view draws 14 of them. `page`: the stored page (0-based; the view clamps it).
+// `nav`: two or more distinct evidence paths (the k / o Buttons exist).
+export type TermReaderView = { label: string; path: string; meta: string; rows: { t: string; bold?: boolean; dim?: boolean }[]; page: number; nav: boolean }
+
 declare module 'claude-code' {
   interface PluginState {
     'agent-team': {
@@ -140,6 +180,7 @@ declare module 'claude-code' {
       reopen: Shaped<Reopen>
       placed: Shaped<boolean>
       tick: Shaped<number>
+      reader: Shaped<Reader>
     }
   }
 }

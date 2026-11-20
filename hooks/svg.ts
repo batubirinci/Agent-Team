@@ -63,3 +63,21 @@ export function doneStagesSvg(elapsed = Number.NaN): string {
     : ''
   return svg(w, motion + parts.join(''))
 }
+
+// The reader's bar (320 x 4): a clay bar that fills once in 280 ms with a lighter band crossing it (520 ms, starting at 120 ms), as a function of `elapsed` ms since
+// the reader opened (the same one-shot pattern as doneStagesSvg: a redraw restarts an image's animation, so the delay is negative). Still outside 0 <= elapsed < EV_BAR_MS.
+export const EV_BAR_MS = 640
+export function evBarSvg(elapsed = Number.NaN): string {
+  const w = 320
+  const motion = elapsed >= 0 && elapsed < EV_BAR_MS
+    ? MOTION(`@keyframes fill{from{transform:scaleX(0)}to{transform:scaleX(1)}}@keyframes band{from{opacity:.9;transform:translateX(-40px)}to{opacity:0;transform:translateX(320px)}}.fill{transform-origin:left center;animation:fill 280ms cubic-bezier(.2,.7,.2,1) ${n(-elapsed)}ms 1 both}.band{animation:band 520ms ease-in-out ${n(120 - elapsed)}ms 1 both}`)
+    : ''
+  return svg(w, `${motion}${rect(0, w, TRACK)}${rect(0, w, CLAY).replace('/>', ' class="fill"/>')}<rect class="band" x="0" width="40" height="${H}" fill="rgba(255,255,255,0.45)" opacity="0"/>`)
+}
+
+// The document glyph of an evidence row (14 x 14, outline). `elapsed` ms since the reader was left: the outline fades from clay to muted once in 700 ms.
+export const EV_DOC_MS = 700
+export function evDocSvg(elapsed = Number.NaN): string {
+  const motion = elapsed >= 0 && elapsed < EV_DOC_MS ? MOTION(`@keyframes flash{from{stroke:${CLAY}}to{stroke:${MUTED}}}path{animation:flash 700ms ease-out ${n(-elapsed)}ms 1 both}`) : ''
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14">${motion}<path d="M3 1.5h5.5l3 3v8h-8.5zM8.5 1.5v3h3" fill="none" stroke="${MUTED}" stroke-width="1.2" stroke-linejoin="round"/></svg>`
+}
