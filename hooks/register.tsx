@@ -1,11 +1,11 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { BindView, Child, Decision, DirEntry, Forward, Fresh, Kid, Link, Mode, Other, Outbox, Press, Reopen, RoleStatus, SessionRecord, Status, StatusView, Task, TaskState } from '../types'
+import type { BindView, Child, Decision, DirEntry, EvRec, EvRow, Evidence, Forward, Fresh, Kid, Link, Mode, Other, Outbox, Press, Reader, Reopen, RoleStatus, SessionRecord, Status, StatusView, Task, TaskState, TermEvRow } from '../types'
 import type { Rec } from './status'
-import { ANNOUNCE, ASK_WHERE, KARAR, FRESH_MS, KEEP_MS, KIDS_MAX, MARKER, OPEN_ROW, PANE_HEAD, STAGE_LABELS, bandSegments, baseName, bindable, candidatesOf, childOf, clip, countStates, cut as shorten, decisionTask, detailScroll, expandHome, finishes, flat, isBlocking, isInside, isValid, joined, kararLine, kararLines, kidCaption, kidsOf, label, linksOf, markerOf, otherFiles, otherSession, othersOf, parentsOf, parseFolders, parseRecord, parseStatus, pushOf, readable, reopenLine, reportText, runningRoles, sections, sessionLines, spinnerWord, stamp, stopped, trimSlash, withKarar } from './status'
-import { AMBER, BAD, CLAY, MUTED, OK, TRACK, doneStagesSvg, dotSvg, meterSvg, stagesSvg } from './svg'
-import { BIND_EMPTY, BIND_LEAD, FRAMES, QUEUED, QUEUED_PUSH, TBOX, hk, termBand, termBanner, termBind, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termTasks, termUsage } from './terminal'
+import { ANNOUNCE, ASK_WHERE, EV_BODY, EV_HEAD, KARAR, FRESH_MS, KEEP_MS, KIDS_MAX, MARKER, OPEN_ROW, PANE_HEAD, REFUSED, STAGE_LABELS, bandSegments, baseName, bindable, candidatesOf, childOf, clip, countStates, cut as shorten, decisionTask, detailScroll, evCheck, evExt, fmtSize, evHomeOf, evLoad, evMeta, evPaths, evRootOf, evRows, evWidth, expandHome, finishes, flat, isBlocking, isInside, isMdPath, isValid, joined, kararLine, kararLines, kidCaption, kidsOf, label, linksOf, markerOf, md, mdCut, mdRaw, one, otherFiles, otherSession, othersOf, parentsOf, parseFolders, parseRecord, parseStatus, pushOf, readable, readerScroll, reopenLine, reportText, runningRoles, sameStat, sections, sessionLines, spinnerWord, stamp, stopped, trimSlash, withKarar } from './status'
+import { AMBER, BAD, CLAY, MUTED, OK, TRACK, doneStagesSvg, dotSvg, evBarSvg, evDocSvg, meterSvg, stagesSvg } from './svg'
+import { BIND_EMPTY, BIND_LEAD, FRAMES, QUEUED, QUEUED_PUSH, TBOX, hk, termBand, termBanner, termBind, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termReader, termTasks, termUsage } from './terminal'
 
 const PANE = 'agent-team'
 const PANE_OPEN = { id: PANE, title: 'Agent Team', columns: 48 } as const
@@ -36,6 +36,10 @@ const forwards = atom({ plugin: 'agent-team', key: 'forwards' } as const, [] as 
 // an unbind), and the bind view ("Bağla") when it is open.
 const links = atom({ plugin: 'agent-team', key: 'links' } as const, [] as Link[], { shape: 'links-1' })
 const bind = atom({ plugin: 'agent-team', key: 'bind' } as const, null as BindView | null, { shape: 'bind-1' })
+// The evidence reader (design B): which file of the open detail is read, the terminal's page, the desktop clock readings the one-shot motion is a function of,
+// and a redraw counter. Never a file's content (see `ev` below). Only the detail's own task counts: any other value draws the detail.
+const READER0: Reader = { task: null, path: null, page: 0, enter: null, left: null, rev: 0 }
+const reader = atom({ plugin: 'agent-team', key: 'reader' } as const, READER0, { shape: 'reader-1' })
 const othersOpen = atom({ plugin: 'agent-team', key: 'othersOpen' } as const, false, { shape: 'others-open-1' })
 // Tasks that just finished (id, when, the state they left): each stays in its section for FRESH_MS, then the poll drops it. And whether Biten is open.
 // Both are new: a value an older build stored has neither, and the `status` tag stays (an older parse has no `done`, which reads as not done).
@@ -122,6 +126,108 @@ async function drawnStatus($: EngineInterface, was?: StatusView) {
   const since = (await read($, reopened)).since
   const cut = since > 0 && all && view.mtime < since ? stopped(all) : undefined
   return { view, cut, data: cut?.data ?? all, joinedData: all, kids, links: ls }
+}
+
+// ---- Evidence files of the open task (the detail's previews and the reader's body). ----
+// A file a status row names is untrusted data and display only (T1): what it gave stays in this module (never an atom, a store value, a log, a toast or a line sent).
+// One cache per open detail, dropped whole when the detail closes or changes, the task leaves the file, team mode goes off or the session ends. `gen` counts those
+// drops: a load that lands after one is thrown away. `root`/`home` are the evidence rules' own values (set at session start; '' until then, which refuses everything).
+const ev = { root: '', home: '', cache: new Map<string, EvRec>(), flight: new Set<string>(), rootReal: undefined as string | undefined, rootBad: false, gen: 0 }
+function evDrop() {
+  ev.cache.clear()
+  ev.flight.clear()
+  ev.rootReal = undefined
+  ev.rootBad = false
+  ev.gen++
+}
+// One predicate for the drawing and the step: the reader is open only on a path the open task lists (a stale or foreign value draws the detail).
+const readerOpen = (r: Reader, open: string | null, paths: readonly string[]) => r.path !== null && r.task === open && paths.includes(r.path)
+
+// The one place an evidence file is stat'ed or read. It runs at the end of each poll and from each press that opens a detail, opens or leaves the reader or steps to
+// a neighbour. Gate: team mode on, the session not ended, no bind view, a detail open on a task of the drawn status (child evidence included). A quiet step is one stat per
+// path that passed the spelling rules; a changed stat (or no record yet, or the reader open on a file with no body read) loads again. Never throws.
+async function evStep($: EngineInterface) {
+  try {
+    const open = await read($, detail)
+    const task = open ? (await drawnStatus($)).data?.tasks.find(t => t.id === open) : undefined
+    if (!task || ended || !(await read($, mode)).isOn) return evDrop()
+    if (await read($, bind)) return
+    const paths = evPaths(task)
+    for (const p of [...ev.cache.keys()]) if (!paths.includes(p)) ev.cache.delete(p)
+    const rd = await read($, reader)
+    const reading = readerOpen(rd, open, paths)
+    if (rd.path !== null && !reading) await update($, reader, s => ({ ...s, path: null, page: 0, enter: null, left: null }))
+    const gen = ev.gen
+    const todo: string[] = []
+    const quiet: string[] = []
+    for (const p of reading ? [rd.path!] : paths) {
+      if (ev.flight.has(p) || !('p' in evCheck(ev.root, ev.home, p))) continue
+      const rec = ev.cache.get(p)
+      ;(!rec || rec.stat === undefined || (reading && rec.state === 'ok' && rec.body === undefined) ? todo : quiet).push(p)
+    }
+    await Promise.all(
+      quiet.map(async p => {
+        const now = await $.fs.stat(onDisk(p), { resolve: true }).catch(() => null)
+        if (!sameStat(ev.cache.get(p)?.stat ?? null, now)) todo.push(p)
+      }),
+    )
+    if (gen !== ev.gen) return
+    let changed = false
+    if (todo.length) {
+      if (ev.rootReal === undefined) {
+        const real = (await $.fs.stat(ev.root, { resolve: true }).catch(() => undefined))?.realPath
+        if (gen !== ev.gen) return
+        ev.rootReal = typeof real === 'string' && real.startsWith('/') ? real : undefined
+        const bad = ev.rootReal === undefined
+        if (bad !== ev.rootBad) {
+          ev.rootBad = bad
+          changed = true
+        }
+      }
+      const rootReal = ev.rootReal
+      if (rootReal !== undefined) {
+        await Promise.all(
+          todo.map(async p => {
+            ev.flight.add(p)
+            try {
+              const rec = await evLoad({ stat: (q, o) => $.fs.stat(q, o), read: (q, o) => $.fs.read(q, o) }, ev.root, rootReal, onDisk(p), reading ? EV_BODY : EV_HEAD)
+              if (gen !== ev.gen || !paths.includes(p)) return
+              if (JSON.stringify(ev.cache.get(p)) !== JSON.stringify(rec)) changed = true
+              ev.cache.set(p, rec)
+            } finally {
+              if (gen === ev.gen) ev.flight.delete(p)
+            }
+          }),
+        )
+      }
+    }
+    if (gen === ev.gen && changed) await update($, reader, s => ({ ...s, rev: s.rev + 1 }))
+  } catch {}
+}
+
+// The spelling a path is stat'ed and read under (`~` expanded, a trailing slash gone); the cache and the rows key a file by the path as the status file wrote it.
+const onDisk = (path: string) => {
+  const c = evCheck(ev.root, ev.home, path)
+  return 'p' in c ? c.p : path
+}
+
+// An evidence entry as a row draws it. The spelling rules come first (no cache, no fs call: a path outside the root is never even stat'ed), then the cache.
+function evRowOf(e: Evidence): EvRow {
+  const base = { label: one(e.label), ext: evExt(e.path) }
+  const c = evCheck(ev.root, ev.home, e.path)
+  if ('line' in c) return { ...base, state: 'refused', line: c.line }
+  if (ev.rootBad) return { ...base, state: 'refused', line: REFUSED.root }
+  const r = ev.cache.get(e.path)
+  return r ? { ...base, state: r.state, line: r.line, size: r.size, mtimeMs: r.mtimeMs, preview: r.preview, body: r.body, more: r.more, rec: r } : { ...base, state: 'loading' }
+}
+// The terminal's rows of a loaded body, kept per record and width (a redraw does not wrap 80 KiB again).
+const termMemo = new WeakMap<EvRec, { w: number; rows: ReturnType<typeof evRows> }>()
+function termRows(r: EvRow, path: string, w: number) {
+  const hit = r.rec && termMemo.get(r.rec)
+  if (hit && hit.w === w) return hit.rows
+  const rows = evRows(r.body ?? '', isMdPath(path), w)
+  if (r.rec) termMemo.set(r.rec, { w, rows })
+  return rows
 }
 
 async function syncPlaced($: EngineInterface) {
@@ -258,7 +364,11 @@ async function tidy($: EngineInterface, view: StatusView, parsed: boolean) {
   const ids = view.data?.decisions.map(d => d.id) ?? []
   await update($, outbox, s => ({ ...s, sent: parsed ? s.sent.filter(([id]) => ids.includes(id)) : s.sent, said: [] }))
   const open = await read($, detail)
-  if (open && !view.data?.tasks.some(t => t.id === open)) await update($, detail, () => null)
+  if (open && !view.data?.tasks.some(t => t.id === open)) {
+    evDrop()
+    await update($, detail, () => null)
+    await update($, reader, () => READER0)
+  }
 }
 
 // The own file is read only up to this size: the pane's state holds the parsed view (4 MiB at most), and a file this big is not a status.
@@ -763,6 +873,10 @@ export const register: Register = (on, options) => {
 
     const home = (await $.env.get('HOME')) ?? ''
     const root = trimSlash(expandHome(String(options.evidenceRoot || '~/agent-team-evidence'), home))
+    // The evidence reader's own copies of the two (its rules refuse a root or a home that is not an absolute clean path).
+    ev.home = evHomeOf(home)
+    ev.root = evRootOf(String(options.evidenceRoot || '~/agent-team-evidence'), ev.home)
+    evDrop()
     // One file per session: sessions in one folder (the SSH server's home) must not share a status.
     // A session keeps its first file whatever its id becomes: the one the atom holds (a reload), else the one in
     // this session's store record (a resume), if it is on disk; else a new one. No usable id (the call fails or
@@ -829,6 +943,7 @@ export const register: Register = (on, options) => {
         if (fourth) await refreshBind($)
       } catch {}
       await scanOthers($, dir, file, seen)
+      await evStep($)
       // Terminal only: whether the pane is placed (the band), and the glyph tick. Reads, and writes only a change.
       if (term) {
         await syncPlaced($).catch(() => undefined) // a failing pane list leaves `placed` as it was; the tick is still looked at
@@ -1019,6 +1134,7 @@ export const register: Register = (on, options) => {
     // The terminal draws no Svg (its table may still name one): there the bars stay text.
     const term = e.surface === 'terminal'
     const Svg = !term && 'Svg' in ui ? ui.Svg : undefined
+    const Markdown = !term && 'Markdown' in ui ? ui.Markdown : undefined
     // On the terminal every Button is plain with its key; a card is a single-line box in a theme color.
     const key = (k: string) => (term ? hk(k) : {})
     const card = term ? TBOX : CARD
@@ -1031,8 +1147,6 @@ export const register: Register = (on, options) => {
     const { view, cut: reopenCut, data, kids, links: ls } = await drawnStatus($)
     const bindView = await read($, bind)
     const { file, error } = view
-    // The glyph of a running role turns on the terminal only; the desktop never reads the tick.
-    const frame = term ? await read($, tick) : 0
     const now = await $.clock.now().catch(() => NaN)
     const stamps = await read($, fresh)
     const doneShown = await read($, doneOpen)
@@ -1058,14 +1172,47 @@ export const register: Register = (on, options) => {
     const note = (line: string) => (out.queue.some(q => q.line === line) ? 'sırada' : out.said.includes(line) ? 'gönderildi' : '')
     const labelled = (label: string, line: string) => (note(line) ? `${label} · ${note(line)}` : label)
     // A detail opens at its top; back lands on the card that was left. Desktop only: the terminal stays as it is.
+    // The evidence cache and the reader go with the detail: a late load of the old one is thrown away (evDrop), the reader starts closed.
     const show = async (id: string | null, from?: string) => {
+      evDrop()
       await update($, detail, () => id)
+      await update($, reader, () => ({ ...READER0, task: id }))
       if (!term) await $.ui.scroll(detailScroll(PANE, id, from)).catch(() => undefined)
+      if (id) await evStep($)
     }
     // The hover of a pressable card (the surface applies it, no hook runs); a card with its own edge (blocked, sent) lights its fill only.
     const hover = (edge: string) => (term ? undefined : { ...(edge === CARD.borderColor && { borderColor: 'rgba(128,128,128,0.55)' }), backgroundColor: 'rgba(128,128,128,0.16)' })
     const openId = await read($, detail)
     const open = openId ? data?.tasks.find(t => t.id === openId) : undefined
+    const rd = await read($, reader)
+    const evp = open ? evPaths(open) : []
+    const readerPath = open && readerOpen(rd, openId, evp) ? rd.path : null
+    // The reader's presses. Each writes its atom change before any await (the pane draws it at once); on the desktop the clock reading the one-shot motion is a function
+    // of comes second, and only if the atom still says what the press wrote (a quicker press wins). The terminal reads no clock for the reader and writes once.
+    const evOpen = async (t: Task, path: string) => {
+      await update($, reader, s => ({ ...s, task: t.id, path, page: 0, enter: null, left: null }))
+      if (!term) {
+        const at = await $.clock.now().catch(() => NaN)
+        if (Number.isFinite(at) && (await read($, reader)).enter === null) await update($, reader, s => (s.task === t.id && s.path === path && s.enter === null ? { ...s, enter: at } : s))
+        await $.ui.scroll(readerScroll(PANE)!).catch(() => undefined)
+      }
+      await evStep($)
+    }
+    const evBack = async (t: Task, path: string) => {
+      await update($, reader, s => ({ ...s, path: null, page: 0, enter: null, left: { path, at: null } }))
+      if (!term) {
+        const at = await $.clock.now().catch(() => NaN)
+        if (Number.isFinite(at)) await update($, reader, s => (s.path === null && s.left?.path === path && s.left.at === null ? { ...s, left: { path, at } } : s))
+        const back = readerScroll(PANE, (t.evidence ?? []).findIndex(e => e.path === path))
+        if (back) await $.ui.scroll(back).catch(() => undefined)
+      }
+      await evStep($)
+    }
+    const evNeighbour = (t: Task, from: string, by: number) => {
+      const ps = evPaths(t)
+      const to = ps[(ps.indexOf(from) + by + ps.length) % ps.length]
+      if (to !== undefined) void evOpen(t, to)
+    }
 
     const errorLine = error && <Text color="error" size="caption">{error}</Text>
 
@@ -1252,6 +1399,79 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
+    // An evidence entry in the detail (desktop): the document glyph and, beside it, the label with its meta (a Button holds strings and Text only; pressable only when
+    // the file loaded as text) and the first lines of the file or a report's verdict chip. The path moved to the reader's header.
+    const evEntry = (t: Task, e: Evidence, i: number) => {
+      const r = evRowOf(e)
+      const ok = r.state === 'ok'
+      const flash = rd.left && rd.left.at !== null && rd.left.path === e.path && (t.evidence ?? []).findIndex(x => x.path === e.path) === i ? now - rd.left.at : Number.NaN
+      const meta = evMeta(r)
+      const p = r.preview ?? {}
+      const status = r.state === 'refused' ? r.line : r.state === 'empty' || (ok && !p.chip && !p.l1) ? 'boş dosya' : r.state === 'loading' ? 'okunuyor…' : undefined
+      const chip = p.chip === 'GO' ? ([STATE_CHIP.done[1], STATE_CHIP.done[2]] as const) : ([CHIP_BLOCKING, 'error'] as const)
+      return (
+        <Box key={`ev-${i}`} {...CARD} flexDirection="row" alignItems="flex-start" hover={ok ? hover(CARD.borderColor) : undefined}>
+          {Svg && <Svg source={evDocSvg(flash)} alt="Belge" width={14} height={14} />}
+          <Box flexDirection="column" flexGrow={1}>
+            {ok ? (
+              <Button key={`ev-open-${i}`} onPress={() => void evOpen(t, e.path)}>
+                {r.label}
+                <Text size="caption" dimColor>{` ${meta}`}</Text>
+                {' ›'}
+              </Button>
+            ) : (
+              <Text wrap="truncate-end">{r.label}</Text>
+            )}
+            {!ok && <Text size="caption" dimColor>{meta}</Text>}
+            {status && <Text size="caption" dimColor wrap="truncate-end">{status}</Text>}
+            {ok && p.chip && (
+              <Box flexDirection="row" alignItems="center" gap="xs">
+                <Box key={`ev-chip-${i}`} backgroundColor={chip[0]} paddingX="xs">
+                  <Text size="caption" weight="medium" color={chip[1]}>{p.chip}</Text>
+                </Box>
+                {p.summary && <Text size="caption" wrap="truncate-end">{p.summary}</Text>}
+              </Box>
+            )}
+            {ok && !p.chip && p.l1 && <Text size="caption" wrap="truncate-end">{p.l1}</Text>}
+            {ok && p.l2 && <Text size="caption" dimColor wrap="truncate-end">{p.l2}</Text>}
+          </Box>
+        </Box>
+      )
+    }
+
+    // The reader (desktop): the whole file as the pane scrolls it. The text is clean() of the file; a Markdown file goes through md() so no link, image or HTML can
+    // form, and a press on a link that still forms answers nothing. Any other file is one mono Text.
+    const readerView = (t: Task, path: string) => {
+      const entry = (t.evidence ?? []).find(e => e.path === path)!
+      const r = evRowOf(entry)
+      const raw = r.body === undefined ? undefined : mdRaw(r.body)
+      const isMd = isMdPath(path)
+      const shown = raw === undefined ? undefined : mdCut(raw)
+      const note = r.state !== 'ok' || r.body === undefined ? undefined : r.more ? `ilk 80 KB gösteriliyor · toplam ${fmtSize(r.size ?? 0)}` : isMd && raw!.length > shown!.length ? `dosyanın başı gösteriliyor · toplam ${fmtSize(r.size ?? 0)}` : undefined
+      const dim = (text: string) => <Text size="caption" dimColor>{text}</Text>
+      return (
+        <Box flexDirection="column" gap="md" padding="sm">
+          <Button key="reader-back" label={`‹ ${shorten(one(t.title), 40)}`} onPress={() => void evBack(t, path)} />
+          {errorLine}
+          <Box flexDirection="column">
+            <Text size="heading" weight="semibold">{r.label}</Text>
+            <Text size="caption" mono dimColor wrap="truncate-middle">{one(path)}</Text>
+            <Text size="caption" dimColor>{evMeta(r, { reader: true, now })}</Text>
+          </Box>
+          {Svg && <Svg source={evBarSvg(rd.enter === null ? Number.NaN : now - rd.enter)} alt="Kanıt okuyucusu" />}
+          {r.state === 'refused' ? dim(r.line ?? '') : r.state === 'empty' ? dim('boş dosya') : r.body === undefined ? dim('okunuyor…') : isMd && Markdown ? <Markdown key="reader-md" text={shown!} onLinkPress={() => undefined} /> : <Text mono size="caption">{isMd ? mdCut(mdRaw(r.body)) : r.body}</Text>}
+          {note && dim(note)}
+          {evp.length > 1 && (
+            <Box flexDirection="row" gap="sm">
+              <Button key="reader-prev" label="‹ Önceki kanıt" onPress={() => evNeighbour(t, path, -1)} />
+              <Button key="reader-next" label="Sonraki kanıt ›" onPress={() => evNeighbour(t, path, 1)} />
+            </Box>
+          )}
+          <Button key="reader-ask" label={labelled("Lead'e sor", asked(t))} onPress={() => void press($, running, { line: asked(t) })} />
+        </Box>
+      )
+    }
+
     const asked = (t: Task) => flat(`${t.title} ne durumda?`)
     const detailView = (t: Task) => {
       const last = t.rounds?.at(-1)
@@ -1300,13 +1520,7 @@ export const register: Register = (on, options) => {
           {t.evidence && (
             <Box flexDirection="column" gap="xs">
               <Text weight="semibold">Kanıt</Text>
-              {t.evidence.map((e, i) => (
-                <Box key={`ev-${i}`} flexDirection="column">
-                  <Text>{e.label}</Text>
-                  {/* Not a Link: the desktop surface draws a non-https href as plain text (engine report in the test), so the path is mono text. */}
-                  <Text size="caption" mono dimColor wrap="truncate-middle">{e.path}</Text>
-                </Box>
-              ))}
+              {t.evidence.map((e, i) => evEntry(t, e, i))}
             </Box>
           )}
           {/* The composer is the app's own here (a fill is a draft the owner never sees): the question is a press, one line. */}
@@ -1340,7 +1554,38 @@ export const register: Register = (on, options) => {
       )
     }
 
+    // The reader replaces the detail while it is open on a file of the open task.
+    if (open && readerPath !== null) {
+      if (!term) return readerView(open, readerPath)
+      const r = evRowOf((open.evidence ?? []).find(e => e.path === readerPath)!)
+      const rows =
+        r.state === 'ok' && r.body !== undefined
+          ? [...termRows(r, readerPath, evWidth(e.props.bodyColumns)), ...(r.more ? [{ t: `… ilk 80 KB gösteriliyor · toplam ${fmtSize(r.size ?? 0)}`, dim: true }] : [])]
+          : [{ t: r.state === 'refused' ? r.line ?? '' : r.state === 'empty' ? 'boş dosya' : 'okunuyor…', dim: true }]
+      return (
+        <Box flexDirection="column" padding="sm">
+          {errorLine}
+          {termReader(ui, { label: r.label, path: one(readerPath), meta: evMeta(r, { reader: true }), rows, page: rd.page, nav: evp.length > 1 }, {
+            onBack: () => void evBack(open, readerPath),
+            onAsk: () => void $.prompt.fill({ text: `${open.title} hakkında: `, mode: 'replace' }),
+            onPage: page => void update($, reader, s => ({ ...s, page })),
+            onNext: () => evNeighbour(open, readerPath, 1),
+            onPrev: () => evNeighbour(open, readerPath, -1),
+          })}
+        </Box>
+      )
+    }
+    // The glyph of a running role turns on the terminal only; the desktop never reads the tick (nor does the reader or the bind view).
+    const frame = term ? await read($, tick) : 0
+
     if (open && term) {
+      const termEv = (open.evidence ?? []).map((x): TermEvRow => {
+        const r = evRowOf(x)
+        const p = r.preview ?? {}
+        const status = r.state === 'refused' ? r.line ?? '' : r.state === 'loading' ? 'okunuyor…' : 'boş dosya'
+        const text = r.state === 'ok' ? (p.chip ? p.summary ?? '' : p.l1 ?? 'boş dosya') : status
+        return { label: shorten(r.label, 20), pressable: r.state === 'ok', ...(r.state === 'ok' && p.chip && { chip: p.chip }), text, dim: r.state !== 'ok' || (!p.chip && !p.l1) }
+      })
       return (
         <Box flexDirection="column" padding="sm">
           {errorLine}
@@ -1352,6 +1597,8 @@ export const register: Register = (on, options) => {
             frame,
             rows(open),
             { bind: canBind(open) ? () => void openBind($, open.id) : undefined, unbind: boundBy(open) ? () => void unbindTask($, open.id) : undefined, by: boundBy(open) },
+            termEv,
+            i => void evOpen(open, open.evidence?.[i]?.path ?? ''),
           )}
         </Box>
       )

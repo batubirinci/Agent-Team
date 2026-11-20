@@ -394,8 +394,9 @@ test('a task card opens its detail view with rounds and evidence, back returns, 
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('env.get', () => ({ value: '/Users/x' }))
   on('fs.exists', () => ({ value: true }))
-  on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: 1, isLink: false } }))
-  on('fs.read', () => ({ value: DETAIL }))
+  // Design B: the evidence file is read too, so its stat answers where it landed (realPath = the asked path) and any other path reads a small text.
+  on('fs.stat', (_, e) => ({ value: { kind: 'file', size: 10, mtimeMs: 1, isLink: false, realPath: e.path } }))
+  on('fs.read', (_, e) => ({ value: e.path.endsWith('.json') ? DETAIL : 'ilk satır\nikinci' }))
   on('clock.every', () => ({ value: undefined }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('prompt.fill', (_, e) => {
@@ -424,10 +425,11 @@ test('a task card opens its detail view with rounds and evidence, back returns, 
       expect(await ui.find({ type: 'Text', text: re })).toBeDefined()
     }
     expect((await ui.findAll({ type: 'Text', text: /aaaaaaa$/ })).length).toBe(1)
-    // Evidence is mono text, not a Link: the engine draws a file:// href as plain text on desktop (seen in this test's first run).
+    // Design B: the path moved to the reader's header (no path Text in the detail), still no Link; each evidence row opens the reader (desktop: one document glyph Svg).
     expect(await ui.find({ type: 'Link' })).toBeUndefined()
-    expect(await ui.find({ type: 'Text', text: /^\/Users\/x\/agent-team-evidence\/qa report\.md$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Svg' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^\/Users\/x\/agent-team-evidence\/qa report\.md$/ })).toBeUndefined()
+    expect(await ui.find({ key: 'ev-open-0' })).toBeDefined()
+    expect((await ui.findAll({ type: 'Svg' })).length).toBe(surface === 'desktop' ? 1 : 0)
 
     await ui.press({ key: 'detail-ask' })
     await ui.press({ key: 'detail-back' })

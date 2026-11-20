@@ -1,4 +1,4 @@
-import type { BandCounts, BandSeg, Bound, Candidate, Child, Decision, DirEntry, EvRec, EvStat, Evidence, Finding, Forward, Fresh, Kid, Link, Mode, Other, Preview, Role, Round, RoleStatus, SessionLine, SessionRecord, Status, Task, TaskState } from '../types'
+import type { BandCounts, BandSeg, Bound, Candidate, Child, Decision, DirEntry, EvRec, EvRow, EvStat, Evidence, Finding, Forward, Fresh, Kid, Link, Mode, Other, Preview, Role, Round, RoleStatus, SessionLine, SessionRecord, Status, Task, TaskState } from '../types'
 
 export const STAGES = ['spec', 'build', 'review', 'revise', 'report'] as const
 export const STAGE_LABELS = ['Spec', 'Build', 'Review', 'Revise', 'Rapor'] as const
@@ -590,7 +590,7 @@ export const okPath = (p: string) => p.startsWith('/') && !p.includes('\\') && !
 export const evHomeOf = (home: string) => (home.startsWith('/') ? trimSlash(home) : '')
 export const evRootOf = (option: string, home: string) => (option.startsWith('~') && home === '' ? '' : trimSlash(expandHome(option, home)))
 
-const REFUSED = {
+export const REFUSED = {
   root: 'kanıt kökü okunamadı',
   bad: 'geçersiz yol: gösterilmiyor',
   outside: 'kanıt kökünün dışında: gösterilmiyor',
@@ -628,8 +628,8 @@ export const evExt = (p: string) => {
 
 // What a desktop Markdown element may be given: after clean(), nothing that can become a link, an image, HTML or a character reference (each mark gets a
 // zero width space after it), cut to EV_CHARS (never inside a surrogate pair).
-export function md(text: string) {
-  const s = text
+export const mdRaw = (text: string) =>
+  text
     .replace(/&(?=[#A-Za-z])/g, `&${ZW}`)
     .replace(/<(?=[A-Za-z0-9/!?])/g, `<${ZW}`)
     .replace(/!\[/g, `!${ZW}[`)
@@ -637,8 +637,8 @@ export function md(text: string) {
     .replace(/\]:/g, `]${ZW}:`)
     .replace(/:\//g, `:${ZW}/`)
     .replace(/www\./gi, m => `${m.slice(0, 3)}${ZW}.`)
-  return s.length <= EV_CHARS ? s : s.slice(0, /[\ud800-\udbff]/.test(s[EV_CHARS - 1]!) ? EV_CHARS - 1 : EV_CHARS)
-}
+export const mdCut = (s: string) => (s.length <= EV_CHARS ? s : s.slice(0, /[\ud800-\udbff]/.test(s[EV_CHARS - 1]!) ? EV_CHARS - 1 : EV_CHARS))
+export const md = (text: string) => mdCut(mdRaw(text))
 
 // The first lines of a file for a detail row. `text` is clean(); `partial`: it is the start of a longer file, so its last line may be cut (the text after the last
 // line break goes; with no break it stays). Markdown: marks stripped, a report's `VERDICT: GO` / `GÖREV x: NO-GO` among the first 8 lines becomes a chip.
@@ -782,4 +782,15 @@ export const evLines = (text: string) => {
 export const evRows = (text: string, isMd: boolean, W: number) => {
   const src = evLines(text).map(l => l.replace(/\t/g, '  '))
   return (isMd ? termText(src, W) : src.map((t): TLine => ({ t }))).flatMap(l => wrapLine(l.t, W, l.hang).map(t => ({ t: t || ' ', ...(l.bold && { bold: true as const }) })))
+}
+
+// "md · 3,8 KB · 4 satır · 12 dk önce": the extension always; the size and age only of a file that passed the size rule (ok or empty: a refused file's stat may be a link's
+// target's); the line count only with a body (`reader`: `N+` when the file is longer than the text read); the age only with a clock reading `now`.
+export function evMeta(r: Pick<EvRow, 'ext' | 'state' | 'size' | 'mtimeMs' | 'body' | 'more'>, o: { reader?: boolean; now?: number } = {}) {
+  const sized = r.state === 'ok' || r.state === 'empty'
+  const n = r.state === 'empty' ? 0 : r.body !== undefined ? evLines(r.body).length : undefined
+  const ms = o.now !== undefined && r.mtimeMs !== undefined ? o.now - r.mtimeMs : Number.NaN
+  return [r.ext, sized && r.size !== undefined && fmtSize(r.size), !!o.reader && n !== undefined && `${n}${r.more ? '+' : ''} satır`, sized && ms >= 0 && Number.isFinite(ms) && `${ago(ms)} önce`]
+    .filter(Boolean)
+    .join(' · ')
 }
