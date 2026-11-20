@@ -184,8 +184,8 @@ Opus; targeted re-checks of named scenarios may run on Sonnet (`model: "sonnet"`
   parallel worktrees; reviewers' own mutants found test gaps the Developer's 37 missed: 8 survivors,
   2 blocking, in one round; `claude plugin test` cuts piped stdout at 64 KiB, so the tool writes
   output to a file); focused re-check briefs (fix diff + Lead's disposition + Developer's ≤15-line
-  summary block) on Sonnet: 85-118k tokens per re-check against 184-246k for full-context ones; task
-  sessions offered for every independent task. Dropped: P2 context pack (QA 2 180k vs ≤115k
+  summary block) on Sonnet: 85-118k tokens per re-check against 184-246k for the Opus re-checks
+  before (246k with the context pack); task sessions offered for every independent task. Dropped: P2 context pack (QA 2 180k vs ≤115k
   target, security 246k vs ≤125k, reviewers read whole files anyway, the pack itself cost 180k).
   P4 executable invariants: not run. Lead hand-off limit ~600k → ~300k context (token study A + pilot
-  P6: the Lead reached 332k over three revision rounds; a task session ran to 400k).
+  P6: the Lead reached 332k over T4 rounds 5-7 plus pane-groups; a task session ran to 400k).

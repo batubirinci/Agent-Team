@@ -46,7 +46,7 @@ output-heavy, and Fable costs 2× Opus per token).
 | **Developer (Sonnet)** | Sonnet 5.5 · high | `Agent` → `team-developer-sonnet` — default developer |
 | **Developer (Opus)** | Opus 5.5 · medium | `Agent` → `team-developer` — hard work, implementing the Analyst's design contract |
 | **QA** | GPT-6 Astra · high (full / risky) · medium (focused) | Codex, `--sandbox workspace-write`, own review worktree |
-| **QA 2 (live check)** | Opus 5.5 · medium (round 1) · Sonnet 5.5 for re-checks | `Agent` → `team-qa2`, own review worktree — short live browser/UX/performance check when UI, interaction or speed changed; a targeted re-check of named scenarios on a later round may pass `model: "sonnet"` |
+| **QA 2 (live check)** | Opus 5.5 · medium (round 1) · Sonnet 5.5 for re-checks | `Agent` → `team-qa2`, own review worktree — short live browser/UX/performance check when UI, interaction or speed changed; a targeted re-check on a later round runs on Sonnet (`model: "sonnet"`) |
 | **Helper** | Haiku 5.5 · medium | `Agent` → `team-helper` — mechanical chores, prepared measurement runs, review evidence packages; never a GO, a review or an owner-facing document (the Lead writes those) |
 
 Model and effort of a Claude role come from its agent file's frontmatter; a brief cannot change
