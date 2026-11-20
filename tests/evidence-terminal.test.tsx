@@ -91,6 +91,16 @@ test('criterion 29 (A 5.3, F 5.3): a refused, empty or loading entry is a label 
   }
 })
 
+test('criterion 29 (A 5.3, F 5.3): a status Text is dim whenever its entry has no Button; a pressable entry with no chip and no text still draws a one-space Text, not an empty one', async () => {
+  const root = drawDetail([
+    { label: 'Dışarıda', pressable: false, text: 'dosya değil: gösterilmiyor', dim: false },
+    { label: 'Boş özet', pressable: true, text: '', dim: false },
+  ])
+  const status = (i: number) => (byKey(root, `ev-${i}`).children as Node[])[1] as Node
+  expect(status(0).props?.dimColor).toBe(true)
+  expect(textOf(status(1))).toBe(' ')
+})
+
 test('criterion 29 (A 5.3): pressing an entry calls evOpen with its index; every detail Button is plain; the detail keeps b s and one digit per pressable entry', async () => {
   const opened: number[] = []
   const root = drawDetail(EV, i => void opened.push(i))
@@ -186,6 +196,10 @@ test('criteria 29, 38 (F 5.3 "Paging"): page y = max(1, ceil(rows / 14)); a stor
   expect(pageOf(draw({ rows: rowsOf(30), page: 1 })).map(textOf)).toEqual(rowsOf(14).map((_, i) => `satır ${15 + i}`))
   // page 99 of 30 rows clamps to the last page: rows 29 and 30, then padding
   expect(pageOf(draw({ rows: rowsOf(30), page: 99 })).map(textOf)).toEqual(['satır 29', 'satır 30', ...Array(12).fill(' ')])
+  // a stored page below 0 (an old or damaged value) draws the first page
+  expect(meta({ rows: rowsOf(30), page: -3 })).toMatch(/sayfa 1\/3$/)
+  expect(pageOf(draw({ rows: rowsOf(30), page: -3 })).map(textOf)).toEqual(rowsOf(14).map((_, i) => `satır ${1 + i}`))
+  expect(meta({ rows: rowsOf(30), page: Number.NaN })).toMatch(/sayfa 1\/3$/)
   // a refused file: meta without counts, still three header rows
   const refused = draw({ meta: 'md', rows: [{ t: 'sembolik bağ ya da farklı yazım: gösterilmiyor', dim: true }] })
   expect((byKey(refused, 'reader-head').children as Node[]).map(textOf)[2]).toBe('md · sayfa 1/1')
@@ -204,6 +218,9 @@ test('criteria 29, 38 (F 5.3 "Paging"): n and p call onPage only when the page r
   // a stored page past the end acts as the last page
   press(three(99), 'reader-next-page'); expect(calls).toEqual([])
   press(three(99), 'reader-prev-page'); expect(calls).toEqual(['page 1'])
+  // a stored page below 0 acts as the first page
+  press(three(-1), 'reader-next-page'); expect(calls).toEqual(['page 1'])
+  press(three(-1), 'reader-prev-page'); expect(calls).toEqual([])
   // one page only: neither moves
   press(draw({ rows: rowsOf(14) }), 'reader-next-page'); expect(calls).toEqual([])
   press(draw({ rows: rowsOf(14) }), 'reader-prev-page'); expect(calls).toEqual([])
