@@ -1,4 +1,4 @@
-import type { BandCounts, BandSeg, Bound, Candidate, Child, Decision, DirEntry, Evidence, Finding, Forward, Kid, Link, Mode, Other, Role, Round, RoleStatus, SessionLine, SessionRecord, Status, Task, TaskState } from '../types'
+import type { BandCounts, BandSeg, Bound, Candidate, Child, Decision, DirEntry, Evidence, Finding, Forward, Fresh, Kid, Link, Mode, Other, Role, Round, RoleStatus, SessionLine, SessionRecord, Status, Task, TaskState } from '../types'
 
 export const STAGES = ['spec', 'build', 'review', 'revise', 'report'] as const
 export const STAGE_LABELS = ['Spec', 'Build', 'Review', 'Revise', 'Rapor'] as const
@@ -105,8 +105,10 @@ export function parseStatus(text: string): Status {
     const wait = short(t.wait, 120)
     const asked = own ? decisions.filter(d => d.task === own) : []
     const blocked = roles.find(r => r.status === 'blocked')
+    // `done` counts only as the boolean true, and not while a decision of this file names the task: the pane never folds away a task that asks something.
+    const finished = t.done === true && asked.length === 0
     const state: TaskState =
-      blocked || asked.some(d => d.stuck) ? 'blocked' : roles.some(r => r.status === 'running') ? 'running' : 'waiting'
+      blocked || asked.some(d => d.stuck) ? 'blocked' : roles.some(r => r.status === 'running') ? 'running' : finished ? 'done' : 'waiting'
     const reason =
       state === 'blocked' ? (asked.length ? `senden ${asked.length} karar bekliyor` : blocked?.state || undefined) : wait
     return [{
@@ -120,6 +122,7 @@ export function parseStatus(text: string): Status {
       blocking: num(t.blocking),
       followup: num(t.followup),
       wait,
+      ...(finished && { done: true as const }),
       state,
       reason,
       roles,
@@ -220,7 +223,29 @@ export const countStates = (tasks: readonly Task[]) => ({
   running: tasks.filter(t => t.state === 'running').length,
   blocked: tasks.filter(t => t.state === 'blocked').length,
   waiting: tasks.filter(t => t.state === 'waiting').length,
+  done: tasks.filter(t => t.state === 'done').length,
 })
+
+// What just finished: the tasks with a written id that `prev` (the status as drawn before a read) has as not done and `next` (as drawn after it) has as done,
+// each with the state it left (`from`). No `prev` (a first read, a /clear, a resume) gives none: a finished task that was already there never plays.
+export const finishes = (prev: Status | null, next: Status | null): Pick<Fresh, 'id' | 'from'>[] => {
+  const was = new Map(prev?.tasks.filter(t => !t.generatedId).map(t => [t.id, t.state]))
+  return (next?.tasks ?? []).flatMap(t => {
+    const from = was.get(t.id)
+    return !t.generatedId && t.state === 'done' && from && from !== 'done' ? [{ id: t.id, from }] : []
+  })
+}
+
+// A finished task stays in the section it left for this long (a poll ends it: no timer of its own).
+export const FRESH_MS = 5000
+
+// The tasks by section: Çalışan, Bekleyen (blocked first, then file order) and Biten. A done task with a live `fresh` entry (0 <= now - at < FRESH_MS; a clock that
+// is not a number or went back makes none live) goes where it came from, among the tasks of that state; every other task goes by its state.
+export function sections(tasks: readonly Task[], fresh: readonly Fresh[], now: number) {
+  const place = tasks.map(t => ({ t, at: (t.state === 'done' && !t.generatedId && fresh.find(f => f.id === t.id && now - f.at >= 0 && now - f.at < FRESH_MS)?.from) || t.state }))
+  const of = (...at: TaskState[]) => place.filter(p => at.includes(p.at)).map(p => p.t)
+  return { running: of('running'), waiting: [...of('blocked'), ...of('waiting')], done: of('done') }
+}
 
 // The task a decision names (if it is in the file): its title joins the kind line, a blocked one draws the card in error.
 export function decisionTask(d: Omit<Decision, 'push' | 'stuck'>, tasks: readonly Task[]) {
@@ -438,7 +463,11 @@ export function joined(own: Status | null, kids: readonly Child[]): Status | nul
       const c = t.generatedId ? undefined : mine.find(k => k.task === t.id)
       const k = c?.card
       if (!c) return t
-      return { ...t, ...(k && { stage: k.stage, round: k.round, candidate: k.candidate, blocking: k.blocking, followup: k.followup, roles: k.roles, moreRoles: k.moreRoles, rounds: k.rounds, evidence: k.evidence, state: k.state, reason: k.reason, branch: t.branch ?? k.branch }), session: { name: c.name } }
+      // A child's own `done` counts as waiting, and the child's state wins, so a child never finishes a task and live work is never folded away. Only the parent's
+      // own flag (`t.done`) finishes it, and only while the child asks nothing (`count` is compared with 0: anything else, also a missing count, keeps it waiting).
+      const s = k && (k.state === 'done' ? 'waiting' : k.state)
+      const fin = !!t.done && s === 'waiting' && c.count === 0
+      return { ...t, ...(k && { stage: k.stage, round: k.round, candidate: k.candidate, blocking: k.blocking, followup: k.followup, roles: k.roles, moreRoles: k.moreRoles, rounds: k.rounds, evidence: k.evidence, state: fin ? ('done' as const) : s!, reason: fin ? t.wait : k.reason, branch: t.branch ?? k.branch }), ...(!k && t.state === 'done' && c.count !== 0 && { state: 'waiting' as const }), session: { name: c.name } }
     }),
   }
 }
@@ -468,7 +497,9 @@ export function sessionLines(t: Task, l: Link | undefined, c: Child | undefined,
     : c.card?.state === 'running' && o.now - c.mtimeMs > STALE_MS
       ? [{ text: `⚠ ${ago(o.now - c.mtimeMs)} önce yazdı · durmuş olabilir`, color: 'warning' }]
       : [{ text: term ? `◇ ayrı oturum · ${t.id} · ${id8} · ${when}` : `ayrı oturum · ${t.id} · ${id8} · son yazım ${when}` }]
-  return [...first, ...(c.more > 0 ? [{ text: `+${c.more} görev o oturumda` }] : [])]
+  // A task its own row calls finished while its session keeps it live (it stays out of Biten: live work is never hidden).
+  const marked = t.done && t.state !== 'done' ? [{ text: '✓ bitti işaretli · oturum sürüyor' }] : []
+  return [...first, ...marked, ...(c.more > 0 ? [{ text: `+${c.more} görev o oturumda` }] : [])]
 }
 
 // The one caption row of a child's decision card (Turkish, exact): push, sent, failed, or the idle line; `f` is the answer's state, if any.
@@ -528,7 +559,3 @@ export function spinnerWord(s: Status | null | undefined): string | undefined {
   if (!first) return undefined
   return clip([[first.name.split(' · ')[0], first.state].filter(Boolean).join(' · '), rest.length && ` +${rest.length}`].filter(Boolean).join(''), 40)
 }
-
-// pane-groups red stubs (replaced in the next commit)
-export const finishes = (_prev: Status | null, _next: Status | null): { id: string; from: TaskState }[] => []
-export const sections = (tasks: readonly Task[], _fresh: readonly { id: string; at: number; from: TaskState }[], _now: number) => ({ running: tasks.filter(t => t.state === 'running'), waiting: tasks.filter(t => t.state !== 'running'), done: [] as Task[] })

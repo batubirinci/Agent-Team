@@ -49,5 +49,17 @@ export function stagesSvg(current: number, count = 5, blocked = false, running =
   return svg(w, parts.join('') + band)
 }
 
-// pane-groups red stub (replaced in the next commit)
-export const doneStagesSvg = (_elapsed?: number): string => ''
+// A finished task's stage line: five green segments. `elapsed` (ms since the finish, 0 <= elapsed < DONE_MS) adds the one-shot light-up, each segment 0.25 -> 1 in
+// 300 ms, 150 ms apart, left to right. The Svg is a function of elapsed time: the desktop rebuilds an image on every redraw and a new image with the same source
+// restarts its animation (measured), so the delay is `i * 150 - elapsed` (negative: the animation resumes where it was). From DONE_MS on, or without a clock, it is still.
+export const DONE_MS = 1200
+export function doneStagesSvg(elapsed = Number.NaN): string {
+  const w = 320
+  const gap = 4
+  const seg = (w - gap * 4) / 5
+  const parts = Array.from({ length: 5 }, (_, i) => rect(i * (seg + gap), seg, OK).replace('/>', ` class="s${i}"/>`))
+  const motion = elapsed >= 0 && elapsed < DONE_MS
+    ? MOTION(`@keyframes lit{from{opacity:0.25}to{opacity:1}}${parts.map((_, i) => `.s${i}{animation:lit 300ms ease-out ${n(i * 150 - elapsed)}ms 1 both}`).join('')}`)
+    : ''
+  return svg(w, motion + parts.join(''))
+}

@@ -1,7 +1,7 @@
 import type { EngineInterface } from 'claude-code'
 
 import type { BandSeg, BindView, Child, Decision, Forward, Other, Outbox, Role, RoleStatus, SessionLine, Task, TaskState } from '../types'
-import { STAGE_LABELS, clip, cut, decisionTask, isBlocking, kidCaption, pickedAt, pushOf } from './status'
+import { STAGE_LABELS, clip, cut, decisionTask, isBlocking, kidCaption, pickedAt, pushOf, sections } from './status'
 
 // The terminal drawing of the pane and the footer (approved design "Terminal arayüzü · şimdi ve öneri"):
 // text and theme colors only, no card fill, no Svg; state is a glyph, never a color alone; every press has a key.
@@ -165,15 +165,16 @@ export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], 
 const stageLine = ({ Text }: UI, t: Task) => (
   <Text>
     {STAGE_LABELS.map((_, i) =>
-      i === t.stage ? <Text color="claude" weight="bold">━━━ </Text> : <Text color={i < t.stage ? 'text' : 'inactive'}>━━━ </Text>,
+      t.state === 'done' ? <Text color="success">━━━ </Text> : i === t.stage ? <Text color="claude" weight="bold">━━━ </Text> : <Text color={i < t.stage ? 'text' : 'inactive'}>━━━ </Text>,
     )}
   </Text>
 )
 
-// "◐ çalışıyor" / "✗ TAKILDI" / "⏸ bekliyor", then the reason (task-state design).
+// "◐ çalışıyor" / "✗ TAKILDI" / "✓ bitti" / "⏸ bekliyor", then the reason (task-state design).
 const STATE: Record<TaskState, [string, string]> = {
   running: ['◐ çalışıyor', 'claude'],
   blocked: ['✗ TAKILDI', 'error'],
+  done: ['✓ bitti', 'success'],
   waiting: ['⏸ bekliyor', 'warning'],
 }
 
@@ -216,38 +217,60 @@ const counts = ({ Text }: UI, t: Task) =>
     </Text>
   )
 
-// hasOn: pane-team-on is drawn and owns "o", so no task takes it.
-export function termTasks(ui: UI, tasks: Task[], n: { running: number; blocked: number; waiting: number }, hasOn: boolean, open: (id: string) => void, frame = 0, rows: (t: Task) => SessionLine[] = () => []) {
+// hasOn: pane-team-on is drawn and owns "o", so no task takes it. The sections (`sections`): Çalışan, Bekleyen (blocked first), Biten (one row, `z`; open, one
+// Button row per task). A task key runs in drawn order over the cards and the open Biten rows; a folded row takes none.
+export function termTasks(ui: UI, sec: ReturnType<typeof sections>, hasOn: boolean, open: (id: string) => void, frame = 0, rows: (t: Task) => SessionLine[] = () => [], doneOpen = false, toggle: () => void = () => undefined) {
   const { Box, Button, Text } = ui
   const keys = hasOn ? TASK_KEYS.slice(0, -1) : TASK_KEYS
+  let at = 0
+  const key = () => {
+    const k = keys[at++]
+    return k ? hk(k) : { plain: true as const }
+  }
+  const card = (t: Task) => {
+    const tur = [t.round !== undefined && `Tur ${t.round}`, t.candidate && `aday ${clip(t.candidate, 7)}`].filter(Boolean).join(' · ')
+    return (
+      <Box key={`t-${t.id}`} {...ROUND} borderColor={t.state === 'blocked' ? 'error' : ROUND.borderColor}>
+        <Button key={`detail-${t.id}`} label={t.title} onPress={() => open(t.id)} {...key()}>
+          <Text weight="bold" wrap="truncate-end">{t.title}</Text>
+        </Button>
+        {stateLine(ui, t)}
+        {sessionRows(ui, `t-${t.id}`, rows(t))}
+        {tur && <Text dimColor>{tur}</Text>}
+        {stageLine(ui, t)}
+        {stageName(ui, t)}
+        {roleRows(ui, `t-${t.id}`, t.roles, frame)}
+        {moreRoles(ui, t)}
+        {counts(ui, t)}
+      </Box>
+    )
+  }
+  const blocked = sec.waiting.filter(t => t.state === 'blocked').length
   return (
     <Box flexDirection="column">
-      <Box flexDirection="row" justifyContent="space-between" gap={2}>
-        <Text weight="bold">
-          {`${'Görevler'.toLocaleUpperCase('tr')} · ${n.running} çalışıyor`}
-          {n.blocked > 0 && <Text color="error" weight="bold">{` · ${n.blocked} takıldı`}</Text>}
-          {n.waiting > 0 && ` · ${n.waiting} bekliyor`}
+      {sec.running.length > 0 && <Text key="sec-running" weight="bold">{`${'Çalışan'.toLocaleUpperCase('tr')} · ${sec.running.length}`}</Text>}
+      {sec.running.map(card)}
+      {sec.waiting.length > 0 && (
+        <Text key="sec-waiting" weight="bold">
+          {`${'Bekleyen'.toLocaleUpperCase('tr')} · ${sec.waiting.length}`}
+          {blocked > 0 && <Text color="error" weight="bold">{` · ${blocked} takıldı`}</Text>}
         </Text>
-        <Text dimColor>{`${tasks.length} görev`}</Text>
-      </Box>
-      {tasks.map((t, ti) => {
-        const tur = [t.round !== undefined && `Tur ${t.round}`, t.candidate && `aday ${clip(t.candidate, 7)}`].filter(Boolean).join(' · ')
-        return (
-          <Box key={`t-${t.id}`} {...ROUND} borderColor={t.state === 'blocked' ? 'error' : ROUND.borderColor}>
-            <Button key={`detail-${t.id}`} label={t.title} onPress={() => open(t.id)} {...(keys[ti] ? hk(keys[ti]) : { plain: true as const })}>
-              <Text weight="bold" wrap="truncate-end">{t.title}</Text>
-            </Button>
-            {stateLine(ui, t)}
-            {sessionRows(ui, `t-${t.id}`, rows(t))}
-            {tur && <Text dimColor>{tur}</Text>}
-            {stageLine(ui, t)}
-            {stageName(ui, t)}
-            {roleRows(ui, `t-${t.id}`, t.roles, frame)}
-            {moreRoles(ui, t)}
-            {counts(ui, t)}
-          </Box>
-        )
-      })}
+      )}
+      {sec.waiting.map(card)}
+      {sec.done.length > 0 && (
+        <Box key="sec-done" flexDirection="row" justifyContent="space-between" gap={2}>
+          <Text>
+            <Text color="success">✓ </Text>
+            <Text weight="bold">{`${'Biten'.toLocaleUpperCase('tr')} · ${sec.done.length}`}</Text>
+          </Text>
+          <Button key="done-toggle" label={doneOpen ? 'gizle' : 'göster'} onPress={toggle} {...hk('z')} />
+        </Box>
+      )}
+      {doneOpen && sec.done.map(t => (
+        <Button key={`detail-${t.id}`} label={t.title} onPress={() => open(t.id)} {...key()}>
+          <Text wrap="truncate-end">{t.title}</Text>
+        </Button>
+      ))}
     </Box>
   )
 }
@@ -354,9 +377,9 @@ export function termBanner({ Box, Button, Text }: UI, text: string, note: string
   )
 }
 
-export function termHint({ Text }: UI, hasOthers = false, hasAsk = false) {
+export function termHint({ Text }: UI, hasOthers = false, hasAsk = false, hasDone = false) {
   const k = (s: string) => <Text color="claude">{s}</Text>
-  return <Text dimColor>{k('a-o')} ayrıntı  {k('1-9')} karar seç  {hasOthers && <Text>{k('v')} diğer  </Text>}{hasAsk && <Text>{k('r')} nerede kaldık  </Text>}{k('p')} pause  {k('esc')} çık</Text>
+  return <Text dimColor>{k('a-o')} ayrıntı  {k('1-9')} karar seç  {hasOthers && <Text>{k('v')} diğer  </Text>}{hasAsk && <Text>{k('r')} nerede kaldık  </Text>}{hasDone && <Text>{k('z')} biten  </Text>}{k('p')} pause  {k('esc')} çık</Text>
 }
 
 // Other team sessions' decisions, read-only: no number keys, options as dim text; "v" opens and closes (approved design "Diğer oturumların kararları").

@@ -253,7 +253,7 @@ dead-child steps are in `references/task-sessions.md` (read it before the first 
   owner and not proof. `git -C <checkout> rev-parse <branch>` must equal the SHA in the note; read the report and
   the verdict files in the evidence folder; GO per Flow 4 for that exact SHA. Then "Landing and release" as
   written (the owner's standing rule there is what allows a local merge of a branch another session made).
-  Stage `report`, and the task row goes with the Flow-5 report: that removes the card and the link. The child
+  Stage `report` and `done: true` with the Flow-5 report (not in a task session): the card folds under `Biten` and keeps the link. If the child still shows a running or blocked role or an open decision, the card stays in its group. The child
   session stays as it is; the report says how to close it (`claude stop <id8>` then `claude rm <id8>`, or archive
   the row); closing needs the owner's yes.
 - **Watch and dead children.** At each long-run check also look at every task session (`claude agents --json`

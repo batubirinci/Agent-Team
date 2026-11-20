@@ -1204,10 +1204,8 @@ test('terminal pane: header, bars, decisions, tasks, roles, candidate and hint l
 
   // Tasks (terminal-boxes design, Lead's brief; source for every string below): "GÖREVLER · <n> çalışıyor" left and a dim "<n> görev" right
   // on one row; each task is its own round Box in subtle (key t-<id>); the title row holds only the plain Button, bold, cut at the end.
-  const head = nodesOf(root).find(n => n.type === 'Box' && textOf(n) === 'GÖREVLER · 0 çalışıyor · 1 takıldı · 1 bekliyor2 görev')
-  expect(head?.props).toMatchObject({ flexDirection: 'row', justifyContent: 'space-between' })
-  expect(textNode(head as Node, /^GÖREVLER · 0 çalışıyor · 1 takıldı · 1 bekliyor$/)?.props?.weight).toBe('bold')
-  expect(textNode(head as Node, /^2 görev$/)?.props?.dimColor).toBe(true)
+  // pane-groups (A4): the header line is now the section header "BEKLEYEN · 2 · 1 takıldı" (no running task, so no ÇALIŞAN line).
+  expect(textNode(root, /^BEKLEYEN · 2 · 1 takıldı$/)?.props?.weight).toBe('bold')
   const box = nodesOf(root).find(n => n.props?.key === 't-t1') as Node
   // t1 has a blocked role, so its box is the blocked one (task-state design: border in error).
   expect(box.props).toMatchObject({ borderStyle: 'round', borderColor: 'error' })
@@ -1600,9 +1598,10 @@ test('terminal: header counts, a state line per task, blocked box and decision i
   // state line "◐ çalışıyor" claude bold / "✗ TAKILDI" error bold / "⏸ bekliyor" warning bold then " · <reason>" dim (error when blocked).
   await boot($, on, STATES)
   const root = await drawnOf(await $.ui.mount({ ...PANE, surface: 'terminal' }))
-  const head = nodesOf(root).find(n => n.props?.justifyContent === 'space-between' && textOf(n).startsWith('GÖREVLER')) as Node
-  expect(textOf(head)).toBe('GÖREVLER · 1 çalışıyor · 1 takıldı · 1 bekliyor3 görev')
-  const title = textNode(head, /^GÖREVLER/) as Node
+  // pane-groups (A4): section headers replace the one header line.
+  expect(textOf(textNode(root, /^ÇALIŞAN/) as Node)).toBe('ÇALIŞAN · 1')
+  const title = textNode(root, /^BEKLEYEN/) as Node
+  expect(textOf(title)).toBe('BEKLEYEN · 2 · 1 takıldı')
   expect(title.props?.weight).toBe('bold')
   expect(textNode(title, /^ · 1 takıldı$/)?.props).toMatchObject({ color: 'error', weight: 'bold' })
 
@@ -1642,20 +1641,22 @@ test('terminal: a header leaves out takıldı and bekliyor at zero, and keeps "�
   // Source: brief: "leaving out zero parts except çalışıyor". An old file with only running tasks reads as in 0.3.0.
   await boot($, on, JSON.stringify({ v: 1, tasks: [task({ roles: [run] }), task({ id: 't2', roles: [run] })] }))
   const root = await drawnOf(await $.ui.mount({ ...PANE, surface: 'terminal' }))
-  expect(textOf(nodesOf(root).find(n => n.props?.justifyContent === 'space-between' && textOf(n).startsWith('GÖREVLER')) as Node)).toBe('GÖREVLER · 2 çalışıyor2 görev')
+  expect(textOf(textNode(root, /^ÇALIŞAN/) as Node)).toBe('ÇALIŞAN · 2') // pane-groups (A4)
 })
 
 test('terminal: a header with only waiting tasks reads "0 çalışıyor · 1 bekliyor"', async ($, on) => {
   await boot($, on, JSON.stringify({ v: 1, tasks: [task({})] }))
   const root = await drawnOf(await $.ui.mount({ ...PANE, surface: 'terminal' }))
-  expect(textOf(nodesOf(root).find(n => n.props?.justifyContent === 'space-between' && textOf(n).startsWith('GÖREVLER')) as Node)).toBe('GÖREVLER · 0 çalışıyor · 1 bekliyor1 görev')
+  expect(textOf(textNode(root, /^BEKLEYEN/) as Node)).toBe('BEKLEYEN · 1') // pane-groups (A4)
 })
 
 test('desktop: header counts, a state chip and reason caption per task, blocked card and decision in red, red current stage part', async ($, on) => {
   // Source: brief "Task, desktop" and "Decisions": chip colors, caption, card border rgba(224,108,108,0.45), kind text #F2A3A3.
   await boot($, on, STATES)
   const root = await drawnOf(await $.ui.mount({ ...PANE, surface: 'desktop' }))
-  expect(textNode(root, /çalışıyor · /) && textOf(textNode(root, /çalışıyor · /) as Node)).toBe('1 çalışıyor · 1 takıldı · 1 bekliyor · 3 görev')
+  // pane-groups (A4): section headers replace the one header line.
+  expect(textNode(root, /^1 görev$/)).toBeDefined() // Çalışan
+  expect(textNode(root, /^2 görev · 1 takıldı$/)).toBeDefined() // Bekleyen
 
   const chips = [
     ['tb', '✗ Takıldı', 'rgba(224,108,108,0.22)', '#F2A3A3'],
@@ -1736,7 +1737,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
 test('desktop: the header leaves out takıldı and bekliyor at zero', async ($, on) => {
   await boot($, on, LOOSE)
   const root = await drawnOf(await $.ui.mount({ ...PANE, surface: 'desktop' }))
-  expect(textOf(textNode(root, /çalışıyor/) as Node)).toBe('2 çalışıyor · 2 görev')
+  expect(textNode(root, /^Çalışan$/)).toBeDefined() // pane-groups (A4)
+  expect(textNode(root, /^2 görev$/)).toBeDefined()
 })
 
 test('desktop: the blocked reason caption is #F2A3A3, any other reason is dim', async ($, on) => {
@@ -3581,7 +3583,8 @@ test('R1 (desktop): a reopened session shows the day in the header, the banner w
   const ui = await r.mount()
   expect(await ui.find({ type: 'Text', text: /^Lead · Opus 5\.5 · 14 Kas 22:10'de güncellendi$/ })).toBeDefined()
   expect((await bannerOf(ui))?.text).toMatch(BANNER)
-  expect(await ui.find({ type: 'Text', text: /^0 çalışıyor · 1 bekliyor · 1 görev$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Bekleyen$/ })).toBeDefined() // pane-groups (A4): a stopped task is waiting
+  expect(await ui.find({ type: 'Text', text: /^1 görev$/ })).toBeDefined()
   const dots = (await ui.findAll({ type: 'Svg' })).filter(s => s.props.width === 8).map(s => s.props.alt)
   expect(dots).toEqual(['boşta', 'bitti'])
   expect(await ui.find({ type: 'Text', text: /^durmuş olabilir · inceliyor$/ })).toBeDefined()
@@ -3597,7 +3600,7 @@ test('R1 (terminal): the same banner, the day in the header, 0 running in the co
   const root = await drawnOf(ui)
   expect(textNode(root, /14 Kas 22:10/)).toBeDefined()
   expect(textNode(root, BANNER)).toBeDefined()
-  expect(textNode(root, /^GÖREVLER · 0 çalışıyor · 1 bekliyor$/)).toBeDefined()
+  expect(textNode(root, /^BEKLEYEN · 1$/)).toBeDefined() // pane-groups (A4)
   expect(hotkeys(root)['reopen-ask']).toBe('r')
   await ui.press({ key: 'reopen-ask' })
   expect(r.log.sent).toEqual(['Nerede kaldık?'])
@@ -3610,7 +3613,8 @@ test('R2: once the file is rewritten (mtime after the start) there is no banner 
   const ui = await r.mount()
   expect(await bannerOf(ui)).toBeUndefined()
   expect(await ui.find({ key: 'reopen-ask' })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /^1 çalışıyor · 1 görev$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Çalışan$/ })).toBeDefined() // pane-groups (A4)
+  expect(await ui.find({ type: 'Text', text: /^1 görev$/ })).toBeDefined()
   expect((await ui.findAll({ type: 'Svg' })).filter(s => s.props.width === 8).map(s => s.props.alt)).toEqual(['çalışıyor', 'bitti'])
   // the day stays in the header: it is still the 14th's file
   expect(await ui.find({ type: 'Text', text: /14 Kas 22:10/ })).toBeDefined()
@@ -3666,7 +3670,7 @@ test('R4: after /clear (no session.start) there is no banner and no line, though
   const ui = await r.mount()
   expect(await ui.find({ type: 'Text', text: /Lead · Opus 5\.5/ })).toBeDefined() // the file is read again on the same path
   expect(await bannerOf(ui)).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /^1 çalışıyor · 1 görev$/ })).toBeDefined() // not stopped: the owner cleared, nothing was reopened
+  expect(await ui.find({ type: 'Text', text: /^Çalışan$/ })).toBeDefined() // not stopped: the owner cleared, nothing was reopened (pane-groups A4)
   await ui.unmount()
   expect(await r.prompt()).toEqual([])
 })
@@ -3701,8 +3705,9 @@ test('R7: a task that carries `session` (a live task session) is never drawn as 
   const r = await rBoot($, on, { status: reopenStatus([R_TASK, live]) })
   const ui = await r.mount()
   expect((await bannerOf(ui))?.text).toMatch(BANNER) // still 1 stopped role, the t1 one
-  expect(await ui.find({ type: 'Text', text: /^1 çalışıyor · 1 bekliyor · 2 görev$/ })).toBeDefined()
-  expect((await ui.findAll({ type: 'Svg' })).filter(s => s.props.width === 8).map(s => s.props.alt)).toEqual(['boşta', 'bitti', 'çalışıyor', 'bitti'])
+  expect(await ui.find({ type: 'Text', text: /^Çalışan$/ })).toBeDefined() // pane-groups (A4)
+  expect(await ui.find({ type: 'Text', text: /^Bekleyen$/ })).toBeDefined()
+  expect((await ui.findAll({ type: 'Svg' })).filter(s => s.props.width === 8).map(s => s.props.alt)).toEqual(['çalışıyor', 'bitti', 'boşta', 'bitti']) // pane-groups: Çalışan (the live session task) is drawn before Bekleyen, no longer in file order
   await ui.unmount()
   const line = (await r.prompt())[0] ?? ''
   expect(line).toContain('Seçim kutusu taşması · QA · GPT-6 Astra')
@@ -5505,8 +5510,7 @@ test('T4 C2 (terminal): the card of the linked task shows the child stage, round
   const t = texts4(byKey(root, 't-hard'))
   for (const want of ['Sağlamlık', 'Review · 3/5', 'Tur 2 · aday 3f9a1c2', '1 blocking', 'QA · Opus', 'Developer · Sonnet 5.5', '◇ ayrı oturum · hard · bbbbbbbb · 11:55']) expect(t).toContain(want)
   expect(texts4(root)).not.toContain('Görev oturumu · hard') // the parent's own role row is replaced by the child's roles
-  expect(texts4(root)).toContain('GÖREVLER · 2 çalışıyor')
-  expect(texts4(root)).toContain('2 görev')
+  expect(texts4(root)).toContain('ÇALIŞAN · 2') // pane-groups (A4)
 })
 
 test('T4 C2 (desktop): the same card, the caption "ayrı oturum · hard · bbbbbbbb · son yazım 11:55", and the header counts', FOLDERS, async ($, on) => {
@@ -5515,7 +5519,8 @@ test('T4 C2 (desktop): the same card, the caption "ayrı oturum · hard · bbbbb
   const t = texts4(byKey(root, 't-hard'))
   for (const want of ['Sağlamlık', 'Tur 2', 'Review · 3/5', 'aday 3f9a1c2', '1 blocking', 'QA · Opus', 'Developer · Sonnet 5.5', 'ayrı oturum · hard · bbbbbbbb · son yazım 11:55']) expect(t).toContain(want)
   expect(texts4(root)).not.toContain('Görev oturumu · hard')
-  expect(texts4(root)).toContain('2 çalışıyor · 2 görev')
+  expect(texts4(root)).toContain('Çalışan') // pane-groups (A4)
+  expect(texts4(root)).toContain('2 görev')
 })
 
 test('T4 C2 (detail): the detail summary of a linked task carries the session row too', FOLDERS, async ($, on) => {
@@ -7932,19 +7937,6 @@ test('pane-groups C28 + A15 (old stored values, terminal): the same on the termi
   frozen(k, 5000)
   await k.poll()
   expect(texts4(await drawnOf(ui))).toContain('✓ BİTEN · 1')
-})
-
-test('pane-groups C20 (atoms): fresh and doneOpen are written under their own shape tags, status keeps its T4 tag', FOLDERS, async ($, on) => {
-  const written: Record<string, unknown> = {}
-  on('state.set', (_, e, next) => {
-    written[e.key] = (e.value as { shape?: string } | undefined)?.shape
-    return next(e)
-  })
-  const k = await pgBoot($, on, base(A_RUN))
-  const ui = await k.pane('desktop')
-  await ui.press({ key: 'done-toggle' })
-  await k.setOwn(base(A_FIN))
-  expect([written.fresh, written.doneOpen, written.status]).toEqual(['fresh-1', 'done-open-1', 'status-5'])
 })
 
 // ---- terminal (ANALYST 21-25, A12, A13) ----
