@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Decision, DirEntry, Mode, Other, Outbox, Press, Reopen, RoleStatus, SessionRecord, Status, StatusView, Task, TaskState } from '../types'
+import type { Child, Decision, DirEntry, Mode, Other, Outbox, Press, Reopen, RoleStatus, SessionRecord, Status, StatusView, Task, TaskState } from '../types'
 import { ANNOUNCE, ASK_WHERE, KARAR, OPEN_ROW, STAGE_LABELS, bandSegments, baseName, clip, countStates, decisionTask, detailScroll, expandHome, flat, isBlocking, isInside, isPush, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, reopenLine, runningRoles, spinnerWord, stamp, stopped, trimSlash, withKarar } from './status'
 import { AMBER, BAD, CLAY, MUTED, OK, TRACK, dotSvg, meterSvg, stagesSvg } from './svg'
 import { FRAMES, QUEUED, QUEUED_PUSH, TBOX, hk, termBand, termBanner, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termTasks, termUsage } from './terminal'
@@ -406,6 +406,9 @@ async function syncTick($: EngineInterface) {
     } catch {} // a failed read or write skips this beat; the next one tries again
   })
 }
+
+// ponytail: stub, replaced after the red test run
+export async function forward(_$: EngineInterface, _c: Child, _d: Decision, _o: string) {}
 
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {

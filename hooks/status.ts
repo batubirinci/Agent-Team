@@ -1,4 +1,4 @@
-import type { BandCounts, BandSeg, Decision, DirEntry, Evidence, Finding, Mode, Other, Role, Round, RoleStatus, SessionRecord, Status, Task, TaskState } from '../types'
+import type { BandCounts, BandSeg, Child, Decision, DirEntry, Evidence, Finding, Mode, Other, Role, Round, RoleStatus, SessionLine, SessionRecord, Status, Task, TaskState } from '../types'
 
 export const STAGES = ['spec', 'build', 'review', 'revise', 'report'] as const
 export const STAGE_LABELS = ['Spec', 'Build', 'Review', 'Revise', 'Rapor'] as const
@@ -338,3 +338,15 @@ export function spinnerWord(s: Status | null | undefined): string | undefined {
   if (!first) return undefined
   return clip([[first.name.split(' · ')[0], first.state].filter(Boolean).join(' · '), rest.length && ` +${rest.length}`].filter(Boolean).join(''), 40)
 }
+
+// ponytail: stubs, replaced by the implementation after the red test run
+export const KEEP_MS = 30 * 86_400_000
+export const STALE_MS = 1_800_000
+export const PANE_HEAD = "[Agent Team pane · ana oturum] Sahip ana oturumun pane'inde bastı:"
+export const childFiles = (_e: readonly DirEntry[], _d: string, _o: string, _n: number): DirEntry[] => []
+export const linkChildren = (_f: readonly { e: DirEntry; s: Status }[], _o: string, _t: readonly Task[]): { kids: Child[]; claimed: string[] } => ({ kids: [], claimed: [] })
+export const kidsOf = (_o: Status | null, _k: readonly Child[]): Child[] => []
+export const joined = (own: Status | null, _k: readonly Child[]): Status | null => own
+export const ago = (_ms: number) => ''
+export const sessionLines = (_t: Task, _c: Child | undefined, _o: { failed: boolean; now: number; term: boolean }): SessionLine[] => []
+export const reportText = (_a: string, _r: string, _t: string, _f: string): string | undefined => undefined

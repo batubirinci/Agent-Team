@@ -45,6 +45,8 @@ export type Decision = {
 
 export type Status = {
   updatedAt?: string
+  // A task session's file names the file and the task of the session that started it (the parent's pane joins the two).
+  parent?: { file: string; task: string }
   lead?: string
   paused: boolean
   limits?: { fiveHourPct?: number; weeklyPct?: number }
@@ -68,6 +70,16 @@ export type OtherDecision = { kind?: string; text: string; options: string[]; st
 
 // `count` and `stuckCount` count all the file's decisions; `decisions` keeps the first few, cut.
 export type Other = { file: string; project: string; name: string; when: string; count: number; stuckCount: number; decisions: OtherDecision[] }
+
+// A task session (a child) linked to one of this session's tasks, from its own status file: `card` is its task of that id (else its first), `more` its
+// other tasks, `decisions` its first 10 (cut), `count` all of them.
+export type Child = { file: string; task: string; name: string; mtimeMs: number; updatedAt?: string; card?: Task; more: number; decisions: Decision[]; count: number }
+
+// A main-pane press on a child's decision: delivered (`sent`) or not (`failed`, until the child's file changes: `mtimeMs` is its mtime then).
+export type Forward = { file: string; id: string; option: string; state: 'sent' | 'failed'; mtimeMs: number }
+
+// One row under a joined task's state row; no `color` is the dim caption.
+export type SessionLine = { text: string; color?: 'warning' | 'error' }
 
 // A pane press on its way to the Lead: its line, the decision it answers (id, option) and whether it is an approval of an irreversible action.
 export type Press = { line: string; id?: string; option?: string; push?: boolean }
@@ -94,6 +106,8 @@ declare module 'claude-code' {
       status: Shaped<StatusView>
       detail: Shaped<string | null>
       others: Shaped<Other[]>
+      children: Shaped<Child[]>
+      forwards: Shaped<Forward[]>
       othersOpen: Shaped<boolean>
       karar: Shaped<string[]>
       outbox: Shaped<Outbox>

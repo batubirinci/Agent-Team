@@ -1,7 +1,8 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { bandSegments, decisionTask, detailScroll, isInside, isPush, isStuck, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseStatus, pickedAt, spinnerWord, stamp, summary, withKarar } from '../hooks/status'
+import { forward } from '../hooks/register'
+import { ago, bandSegments, childFiles, decisionTask, detailScroll, isInside, isPush, isStuck, joined, kararLine, kararLines, linkChildren, otherFiles, otherSession, parseFolders, parseStatus, pickedAt, spinnerWord, stamp, summary, withKarar } from '../hooks/status'
 import { CLAY, MUTED, STUCK, TRACK, dotSvg, meterSvg, stagesSvg } from '../hooks/svg'
 
 const fills = (svg: string) => [...svg.matchAll(/<rect [^>]*fill="([^"]+)"/g)].map(m => m[1])
@@ -5245,3 +5246,662 @@ test('R4, T1-1 (reopen day): a reopened header with the written day keeps the te
   expect(shapeOf(head)).not.toContain('~wrap')
   expect(textNode(head, /^Lead · Opus 5\.5 · 17 Kas 15:30$/)).toBeDefined()
 })
+
+// ===== T4: task sessions in the main pane. Criteria C1-C17 of /Users/batuhan/agent-team-evidence/tasks/terminal/t4-spec.md (§3 design, §5 fixture). =====
+// Source of every expected string and number below: that spec (§3.4 strings table, §5 fixture), computed by hand: 5 min = 300 000 ms, 31 min = 1 860 000 ms,
+// 125 min = 7 500 000 ms, 49 h = 176 400 000 ms; NOW is 2026-11-20 12:00 local (the times in the files are local too, so no test depends on the time zone).
+const C4D = '/Users/x/agent-team-evidence/status'
+const C4_OWN = `${C4D}/main--aaaaaaaa.json`
+const C4_SID = 'aaaaaaaa-0000-4000-8000-000000000000'
+const C4_KID_SID = 'bbbbbbbb-0000-4000-8000-000000000001'
+const C4_KID = 'hard--bbbbbbbb.json'
+const C4_OTHER = 'other--cccccccc.json'
+const C4_NOW = new Date(2026, 10, 20, 12, 0).getTime()
+const MIN4 = 60_000
+const HOUR4 = 3_600_000
+const DAY4 = 86_400_000
+const SHA4 = '3f9a1c2d4e5f60718293a4b5c6d7e8f901234567'
+const PANE_HEAD4 = "[Agent Team pane · ana oturum] Sahip ana oturumun pane'inde bastı:"
+const FAILED_CAPTION = 'Gönderilemedi · oturum açık değil, cevabı o oturumda ver'
+const hourAt = (h: number) => new Date(2026, 10, 20, h, 0).getTime()
+
+const own4 = (o: { tasks?: unknown[]; decisions?: unknown[]; session?: boolean } = {}) =>
+  JSON.stringify({
+    v: 1,
+    updatedAt: '2026-11-20T11:59:00',
+    lead: 'Opus 5.5',
+    decisions: o.decisions ?? [{ id: 'd1', kind: 'Ürün kararı', text: 'Hangisi sayılsın?', options: ['Evet', 'Hayır'] }],
+    tasks: o.tasks ?? [
+      { id: 'hard', title: 'Sağlamlık', stage: 'build', ...(o.session !== false && { session: { name: 'hard' } }), roles: [tRole('Görev oturumu · hard', 'başlatıldı', 'running')] },
+      { id: 't2', title: 'Başka iş', stage: 'spec', roles: [tRole('Analyst · Fable 5.2', 'yazıyor', 'running')] },
+    ],
+  })
+const K1 = { id: 'k1', kind: 'Ürün kararı', task: 'hard', text: 'Hangisi?', options: ['A', 'B'] }
+const P1 = { id: 'p1', kind: 'Push onayı', task: 'hard', text: "main'e itelim mi?", options: ['Onayla', 'Reddet'] }
+const KID_ROLES = [tRole('QA · Opus', 'inceliyor', 'running'), tRole('Developer · Sonnet 5.5', 'teslim etti', 'done')]
+const kid4 = (o: { parent?: unknown; decisions?: unknown[]; tasks?: unknown[]; updatedAt?: string; sha?: string; roles?: unknown[] } = {}) =>
+  JSON.stringify({
+    v: 1,
+    updatedAt: o.updatedAt ?? '2026-11-20T11:55:00',
+    parent: o.parent === undefined ? { file: 'main--aaaaaaaa.json', task: 'hard' } : o.parent,
+    decisions: o.decisions ?? [K1, P1],
+    tasks: o.tasks ?? [{ id: 'hard', title: 'Görev', stage: 'review', round: 2, candidate: o.sha ?? SHA4, blocking: 1, roles: o.roles ?? KID_ROLES }],
+  })
+const other4 = JSON.stringify({ v: 1, decisions: [{ id: 'o1', text: 'Başka oturumun sorusu', options: ['Tamam'] }], tasks: [] })
+const sess4 = (id: string, file: string, ms: number): [string, unknown] => [`session:${id}`, rec(`${C4D}/${file}`, SWITCH, {}, ms)]
+const KID_REC = Object.fromEntries([sess4(C4_KID_SID, C4_KID, hourAt(11))])
+
+type F4 = { text: string; age: number; size?: number; unreadable?: boolean }
+const defaultFiles4 = (): Record<string, F4> => ({ [C4_KID]: { text: kid4(), age: 5 * MIN4 }, [C4_OTHER]: { text: other4, age: HOUR4 } })
+
+const cBoot = async (
+  $: Parameters<TestBody>[0],
+  on: Parameters<TestBody>[1],
+  o: { surface?: 'desktop' | 'terminal' | null; own?: string; cwd?: string; sid?: string; files?: Record<string, F4>; store?: Record<string, unknown>; ownAge?: number; deliver?: (id: string) => boolean | 'throw' } = {},
+) => {
+  const sid = o.sid ?? C4_SID
+  const cwd = o.cwd ?? '/Users/x/Projeler/main'
+  const ownName = `${cwd.split('/').pop()}--${sid.slice(0, 8)}.json`
+  const disk = { own: o.own ?? own4(), ownAge: o.ownAge ?? MIN4, rev: 0 }
+  const files = o.files ?? defaultFiles4()
+  const gate = { deliver: o.deliver ?? (() => true as boolean | 'throw') }
+  const log = { sends: [] as { to: string; text: string }[], reads: [] as string[], fills: [] as string[], submits: [] as { text: string; context?: readonly string[] }[], sets: [] as string[], writes: [] as string[] }
+  const store = new Map<string, unknown>(Object.entries(o.store ?? {}))
+  on('store.get', (_, e) => ({ value: store.get(e.key) }))
+  on('store.set', (_, e) => {
+    store.set(e.key, JSON.parse(JSON.stringify(e.value)))
+    return { value: undefined }
+  })
+  on('store.delete', () => ({ value: undefined }))
+  on('store.keys', () => ({ value: [...store.keys()] }))
+  on('session.id', () => ({ value: sid }))
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true as const } }))
+  on('ui.close', () => ({ value: undefined }))
+  on('ui.panes', () => ({ value: [{ id: 'agent-team', title: 'Agent Team', isShown: false, isFocused: false, isPlaced: false }] }))
+  on('env.get', () => ({ value: '/Users/x' }))
+  const ownMtime = () => C4_NOW - disk.ownAge + disk.rev * 1000
+  on('fs.exists', (_, e) => ({ value: e.path === `${C4D}/${ownName}` }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: ownMtime(), isLink: false } }))
+  on('fs.write', (_, e) => {
+    log.writes.push(e.path)
+    return { value: undefined } as never
+  })
+  on('fs.list', () => ({
+    value: [
+      { name: ownName, kind: 'file' as const, size: 500, mtimeMs: ownMtime(), isLink: false },
+      ...Object.entries(files).map(([name, f]) => ({ name, kind: 'file' as const, size: f.size ?? f.text.length, mtimeMs: C4_NOW - f.age, isLink: false })),
+    ],
+  }))
+  on('fs.read', (_, e) => {
+    if (e.path === `${C4D}/${ownName}`) return { value: disk.own }
+    const name = e.path.slice(C4D.length + 1)
+    log.reads.push(name)
+    const f = files[name]
+    if (!f || f.unreadable) throw new Error('okunamadı')
+    return { value: f.text }
+  })
+  // Manual clock: `now` never moves; every clock.every period is held until fire() releases it (one poll = fire(500)).
+  const held: { ms: number; fire: () => void }[] = []
+  on('clock.now', () => ({ value: C4_NOW }))
+  on('clock.every', (_, e) => new Promise(go => held.push({ ms: e.ms, fire: () => go({ value: undefined }) })) as never)
+  on('clock.after', () => new Promise(() => undefined) as never)
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.end', (_, e) => ({ sessionId: e.sessionId }))
+  on('session.append', (_, e, next) => next(e))
+  on('session.send', (_, e) => {
+    const to = (e.to as { sessionId: string }).sessionId
+    log.sends.push({ to, text: e.text })
+    const r = gate.deliver(to)
+    if (r === 'throw') return { deny: 'boom' } as never
+    return r ? { isDelivered: true as const } : { isDelivered: false as const, reason: 'no live session on this machine' }
+  })
+  on('state.set', (_, e, next) => {
+    log.sets.push(e.key)
+    return next(e)
+  })
+  on('prompt.read', () => ({ value: { text: '', cursor: 0 } }))
+  on('prompt.fill', (_, e) => {
+    log.fills.push(e.text)
+    return { isFilled: true }
+  })
+  on('prompt.submit', (_, e) => {
+    log.submits.push({ text: e.text, context: e.context })
+    return { text: e.text }
+  })
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('tool.call', () => ({ result: 'ok', text: 'ok' }) as never)
+  on('ui.render', ($$, e) => {
+    const { Text } = $$.ui.resolve(e)
+    return <Text>engine</Text>
+  })
+  await $.session.start({ cwd, surface: o.surface === undefined ? 'terminal' : o.surface, isInteractive: true })
+  const settle = async () => {
+    for (let i = 0; i < 8; i++) await new Promise(r => (globalThis as unknown as { setTimeout: (f: () => void, ms: number) => void }).setTimeout(() => r(undefined), 0))
+  }
+  const fire = async (ms: number) => {
+    for (const h of held.filter(x => x.ms === ms)) {
+      held.splice(held.indexOf(h), 1)
+      h.fire()
+    }
+    await settle()
+  }
+  const poll = () => fire(500)
+  const setOwn = async (text: string) => {
+    disk.own = text
+    disk.rev++
+    await poll()
+  }
+  const pane = (surface: 'desktop' | 'terminal') => $.ui.mount({ ...PANE, surface })
+  const band = () => $.ui.mount({ ...BAND, surface: 'terminal' })
+  return { files, disk, store, log, gate, settle, fire, poll, setOwn, pane, band, ownName }
+}
+const texts4 = (root: Node) => nodesOf(root).filter(n => n.type === 'Text').map(textOf)
+const byKey = (root: Node, key: string) => {
+  const n = nodesOf(root).find(x => x.props?.key === key)
+  expect(n === undefined ? `no node keyed ${key}` : 'found').toBe('found') // an assertion, not a crash, when the node is missing
+  return n as Node
+}
+// A press on a key that must be drawn: absent is an assertion failure.
+const press4 = async (ui: { find: (q: { key: string }) => Promise<unknown>; press: (q: { key: string }) => Promise<unknown> }, key: string) => {
+  expect(await ui.find({ key }) === undefined ? `no Button keyed ${key}` : 'drawn').toBe('drawn')
+  await ui.press({ key })
+}
+const keysWith = (root: Node, prefix: string) => nodesOf(root).filter(n => n.type !== 'Text' && String(n.props?.key).startsWith(prefix)).map(n => String(n.props?.key))
+const stripOf = (root: Node) => texts4(root).filter(t => /^Diğer oturumlarda \d+ karar/.test(t))
+const sent4 = (k: { log: { sends: { to: string; text: string }[] } }) => k.log.sends.map(s => [s.to, s.text])
+const KARAR_A = [[C4_KID_SID, `${PANE_HEAD4}\nKarar (k1): A`]]
+
+// ---- C1: parseStatus keeps `parent` only when well formed (spec §3.1). ----
+test('T4 C1: parseStatus keeps a well formed parent and drops every other form', async () => {
+  const withParent = (parent: unknown) => parseStatus(JSON.stringify({ v: 1, parent })).parent
+  expect(withParent({ file: 'main--aaaaaaaa.json', task: 'hard' })).toEqual({ file: 'main--aaaaaaaa.json', task: 'hard' })
+  for (const file of ['a/b.json', 'a\\b.json', 'b.txt', '', `${'x'.repeat(251)}.json`, 7, null]) expect(withParent({ file, task: 'hard' })).toBeUndefined()
+  expect(withParent({ file: `${'x'.repeat(250)}.json`, task: 'hard' })?.file.length).toBe(255) // 255 characters is the longest name kept
+  for (const task of ['', 'x y', 'x'.repeat(65), 5, undefined]) expect(withParent({ file: 'main--aaaaaaaa.json', task })).toBeUndefined()
+  expect(withParent('main--aaaaaaaa.json')).toBeUndefined()
+  expect(withParent(undefined)).toBeUndefined()
+  expect(parseStatus(kid4()).parent).toEqual({ file: 'main--aaaaaaaa.json', task: 'hard' })
+})
+
+// ---- pure functions (spec §6): candidate filter, ago, linkage order, join ----
+test('T4 pure: childFiles are regular .json files, not own, under 30 days, at most 256 KiB, the newest 40', async () => {
+  const names = (l: ReturnType<typeof entry>[]) => childFiles(l, C4D, `${C4D}/main--aaaaaaaa.json`, C4_NOW).map(x => x.name)
+  const e = (name: string, over: Parameters<typeof entry>[1] = {}) => entry(name, { mtimeMs: C4_NOW - HOUR4, ...over })
+  expect(names([e('a--1.json'), e('main--aaaaaaaa.json'), e('notes.txt'), e('d.json', { kind: 'dir' }), e('l.json', { isLink: true })])).toEqual(['a--1.json'])
+  expect(names([e('in.json', { mtimeMs: C4_NOW - 30 * DAY4 + 1 }), e('out.json', { mtimeMs: C4_NOW - 30 * DAY4 })])).toEqual(['in.json']) // exactly 30 days is out
+  expect(names([e('fit.json', { size: KIB256 }), e('big.json', { size: KIB256 + 1 })])).toEqual(['fit.json'])
+  const many = Array.from({ length: 41 }, (_, i) => e(`f${i}.json`, { mtimeMs: C4_NOW - 1000 * (i + 1) }))
+  const got = names([...many].reverse())
+  expect(got.length).toBe(40)
+  expect(got[0]).toBe('f0.json')
+  expect(got).not.toContain('f40.json')
+})
+
+test('T4 pure: ago is minutes under 60 min, hours under 48 h, else days, each floored', async () => {
+  expect([31 * MIN4, 59 * MIN4 + 59_999, 60 * MIN4, 125 * MIN4, 47 * HOUR4 + 59 * MIN4, 48 * HOUR4, 49 * HOUR4, 3 * DAY4 + HOUR4].map(ago)).toEqual(['31 dk', '59 dk', '1 sa', '2 sa', '47 sa', '2 gün', '2 gün', '3 gün'])
+})
+
+test('T4 pure: linkChildren links by parent file and written task id, the newest file wins a task (ties by name), at most 8 children', async () => {
+  const f = (name: string, ageMin: number, task = 'hard', file = 'main--aaaaaaaa.json', sha = SHA4) => ({ e: entry(name, { mtimeMs: C4_NOW - ageMin * MIN4 }), s: parseStatus(kid4({ parent: { file, task }, sha })) })
+  const tasks = parseStatus(own4()).tasks
+  const one = linkChildren([f(C4_KID, 5)], 'main--aaaaaaaa.json', tasks)
+  expect(one.claimed).toEqual([])
+  expect(one.kids).toMatchObject([{ file: C4_KID, task: 'hard', name: 'hard', mtimeMs: C4_NOW - 5 * MIN4, updatedAt: '2026-11-20T11:55:00', more: 0, count: 2, card: { id: 'hard', round: 2 } }])
+  expect(one.kids[0]?.decisions.map(d => d.id)).toEqual(['k1', 'p1'])
+  // Not linked: another parent file, an unknown task, a made-up task id (the own row has no id: its id is #1).
+  expect(linkChildren([f(C4_KID, 5, 'hard', 'other.json'), f('b--bbbbbbbb.json', 5, 'nope')], 'main--aaaaaaaa.json', tasks)).toEqual({ kids: [], claimed: [] })
+  expect(linkChildren([f(C4_KID, 5)], 'main--aaaaaaaa.json', parseStatus(own4({ tasks: [{ title: 'Sağlamlık', stage: 'build' }] })).tasks).kids).toEqual([])
+  // A name: the own task's session name, else the project part of the file name.
+  expect(linkChildren([f('proj--bbbbbbbb.json', 5)], 'main--aaaaaaaa.json', tasks).kids[0]?.name).toBe('hard')
+  expect(linkChildren([f('proj--bbbbbbbb.json', 5)], 'main--aaaaaaaa.json', parseStatus(own4({ session: false })).tasks).kids[0]?.name).toBe('proj')
+  // Two files claim one task: the newer is the child, the other is claimed; equal mtimes: the first by name.
+  const two = linkChildren([f('hard--aaaaaaa1.json', 5), f('hard--ddddddd4.json', 3)], 'main--aaaaaaaa.json', tasks)
+  expect([two.kids.map(k => k.file), two.claimed]).toEqual([['hard--ddddddd4.json'], ['hard--aaaaaaa1.json']])
+  const tie = linkChildren([f('hard--bbbbbbb2.json', 5), f('hard--aaaaaaa1.json', 5)], 'main--aaaaaaaa.json', tasks)
+  expect([tie.kids.map(k => k.file), tie.claimed]).toEqual([['hard--aaaaaaa1.json'], ['hard--bbbbbbb2.json']])
+  // Nine tasks, nine children: the eight newest are joined, the ninth only claimed.
+  const nine = Array.from({ length: 9 }, (_, i) => ({ id: `t${i + 1}`, title: `G${i + 1}`, stage: 'build' }))
+  const nineKids = nine.map((t, i) => f(`k${i + 1}--0000000${i + 1}.json`, i + 1, t.id))
+  const r = linkChildren([...nineKids].reverse(), 'main--aaaaaaaa.json', parseStatus(own4({ tasks: nine })).tasks)
+  expect(r.kids.map(k => k.task)).toEqual(['t1', 't2', 't3', 't4', 't5', 't6', 't7', 't8'])
+  expect(r.claimed).toEqual(['k9--00000009.json'])
+})
+
+test('T4 pure: joined takes stage, round, candidate, counts, roles, state and rounds from the child and keeps id, title, wait and the order', async () => {
+  const [kid] = linkChildren([{ e: entry(C4_KID, { mtimeMs: C4_NOW - 5 * MIN4 }), s: parseStatus(kid4()) }], 'main--aaaaaaaa.json', parseStatus(own4({ session: false })).tasks).kids
+  const own = parseStatus(own4({ session: false }))
+  const j = joined(own, kid ? [kid] : [])
+  expect(j?.tasks.map(t => t.id)).toEqual(['hard', 't2'])
+  expect(j?.tasks[0]).toMatchObject({ id: 'hard', title: 'Sağlamlık', stage: 2, round: 2, candidate: SHA4, blocking: 1, state: 'running', session: { name: 'hard' } })
+  expect(j?.tasks[0]?.roles.map(r => r.name)).toEqual(['QA · Opus', 'Developer · Sonnet 5.5'])
+  expect(j?.tasks[1]).toEqual(own.tasks[1]) // a task without a child is untouched
+  expect(joined(own, [])).toEqual(own)
+  expect(joined(null, kid ? [kid] : [])).toBeNull()
+})
+
+// ---- C2, C6, C7: what the owner sees (spec §3.4; fixture §5) ----
+test('T4 C2 (terminal): the card of the linked task shows the child stage, round, candidate and roles, one session row, and the counts', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on)
+  const root = await drawnOf(await k.pane('terminal'))
+  const t = texts4(byKey(root, 't-hard'))
+  for (const want of ['Sağlamlık', 'Review · 3/5', 'Tur 2 · aday 3f9a1c2', '1 blocking', 'QA · Opus', 'Developer · Sonnet 5.5', '◇ ayrı oturum · hard · 11:55']) expect(t).toContain(want)
+  expect(texts4(root)).not.toContain('Görev oturumu · hard') // the parent's own role row is replaced by the child's roles
+  expect(texts4(root)).toContain('GÖREVLER · 2 çalışıyor')
+  expect(texts4(root)).toContain('2 görev')
+})
+
+test('T4 C2 (desktop): the same card, the caption "ayrı oturum · hard · son yazım 11:55", and the header counts', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on)
+  const root = await drawnOf(await k.pane('desktop'))
+  const t = texts4(byKey(root, 't-hard'))
+  for (const want of ['Sağlamlık', 'Tur 2', 'Review · 3/5', 'aday 3f9a1c2', '1 blocking', 'QA · Opus', 'Developer · Sonnet 5.5', 'ayrı oturum · hard · son yazım 11:55']) expect(t).toContain(want)
+  expect(texts4(root)).not.toContain('Görev oturumu · hard')
+  expect(texts4(root)).toContain('2 çalışıyor · 2 görev')
+})
+
+test('T4 C2 (detail): the detail summary of a linked task carries the session row too', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on)
+  const ui = await k.pane('terminal')
+  await ui.press({ key: 'detail-hard' })
+  const root = await drawnOf(ui)
+  expect(texts4(byKey(root, 'detail-summary'))).toContain('◇ ayrı oturum · hard · 11:55')
+  expect(texts4(root)).toContain('QA · Opus')
+})
+
+test('T4 C6 (strip and band): a linked child is never in the other sessions: the strip and the band count only the unrelated file', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on)
+  expect(stripOf(await drawnOf(await k.pane('desktop')))).toEqual(['Diğer oturumlarda 1 karar bekliyor'])
+  expect(stripOf(await drawnOf(await k.pane('terminal')))).toEqual(['Diğer oturumlarda 1 karar'])
+  // Band (pane not placed): 3 decisions (own d1 + the child's two), 2 running tasks, 1 other session decision.
+  expect(bandRow(await drawnOf(await k.band()))).toBe('◆ 3 karar · ◐ 2 çalışıyor · ◇ 1 diğer  t: pane')
+})
+
+test('T4 C7 (terminal): Senin sıran lists own then child decisions, digits run on, a push decision takes none', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on)
+  const root = await drawnOf(await k.pane('terminal'))
+  expect(texts4(root)).toContain('◆ SENİN SIRAN · 3 karar')
+  expect(keysWith(root, 'd-d1').concat(keysWith(root, 'kd-')).filter(x => !/-\d$/.test(x))).toEqual(['d-d1', 'kd-hard-k1', 'kd-hard-p1'])
+  expect(texts4(root)).toContain('Ürün kararı · Sağlamlık · ◇ hard')
+  expect(texts4(root)).toContain('Push onayı · Sağlamlık · ◇ hard')
+  expect(hotkeys(root)).toMatchObject({ 'd-d1-0': '1', 'd-d1-1': '2', 'kd-hard-k1-0': '3', 'kd-hard-k1-1': '4' })
+  expect(Object.keys(hotkeys(root)).filter(x => x.startsWith('kd-hard-p1'))).toEqual([])
+  expect(texts4(byKey(root, 'kd-hard-k1'))).toContain('1-9 ile seç · hard oturumuna hemen gider')
+})
+
+test('T4 C7 (desktop): the same three decisions in the same order, the header counts 3', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on)
+  const root = await drawnOf(await k.pane('desktop'))
+  expect(texts4(root)).toContain('3 karar')
+  expect(keysWith(root, 'd-d1').concat(keysWith(root, 'kd-')).filter(x => !/-\d$/.test(x))).toEqual(['d-d1', 'kd-hard-k1', 'kd-hard-p1'])
+  expect(texts4(root)).toContain('Ürün kararı · Sağlamlık · ◇ hard')
+  expect(texts4(root)).toContain('Push onayı · Sağlamlık · ◇ hard')
+  expect(texts4(byKey(root, 'kd-hard-k1'))).toContain('Bir seçeneğe bas · hard oturumuna gider')
+})
+
+// ---- C3, C4, C5: which files link (spec §3.2) ----
+test('T4 C3: a file that names another parent file, an unknown task or a made-up own task id is an ordinary other session', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, {
+    files: { [C4_KID]: { text: kid4({ parent: { file: 'other-main--99999999.json', task: 'hard' } }), age: 5 * MIN4 }, 'nope--dddddddd.json': { text: kid4({ parent: { file: 'main--aaaaaaaa.json', task: 'nope' } }), age: 4 * MIN4 } },
+  })
+  const root = await drawnOf(await k.pane('terminal'))
+  expect(stripOf(root)).toEqual(['Diğer oturumlarda 4 karar']) // two files, two decisions each, drawn under today's rules
+  expect(texts4(byKey(root, 't-hard'))).toContain('Build · 2/5') // the own row as written
+  expect(texts4(byKey(root, 't-hard'))).toContain('◇ ayrı oturum · hard · durum dosyası bekleniyor')
+  expect(keysWith(root, 'kd-')).toEqual([])
+})
+
+test('T4 C3 (made-up id): an own task with no written id is never linked', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { own: own4({ tasks: [{ title: 'Sağlamlık', stage: 'build', session: { name: 'hard' } }] }) })
+  const root = await drawnOf(await k.pane('terminal'))
+  expect(stripOf(root)).toEqual(['Diğer oturumlarda 3 karar'])
+  expect(keysWith(root, 'kd-')).toEqual([])
+})
+
+test('T4 C3 (later row): the link appears one poll after the own file gains the row, with no new read of the child file', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { own: own4({ tasks: [{ id: 't2', title: 'Başka iş', stage: 'spec', roles: [tRole('Analyst · Fable 5.2', 'yazıyor', 'running')] }] }) })
+  const ui = await k.pane('terminal')
+  expect(stripOf(await drawnOf(ui))).toEqual(['Diğer oturumlarda 3 karar'])
+  await k.setOwn(own4())
+  const root = await drawnOf(ui)
+  expect(stripOf(root)).toEqual(['Diğer oturumlarda 1 karar'])
+  expect(texts4(byKey(root, 't-hard'))).toContain('Review · 3/5')
+  expect(k.log.reads.filter(n => n === C4_KID)).toEqual([C4_KID]) // read once, at the start; the join is recomputed from the cached parse
+})
+
+test('T4 C4 (another day): a child 49 h old is linked and drawn, an unrelated file 25 h old is not in the strip', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { files: { [C4_KID]: { text: kid4(), age: 49 * HOUR4 }, [C4_OTHER]: { text: other4, age: 25 * HOUR4 } } })
+  const root = await drawnOf(await k.pane('terminal'))
+  expect(texts4(byKey(root, 't-hard'))).toContain('Review · 3/5')
+  expect(stripOf(root)).toEqual([])
+  expect(keysWith(root, 'kd-hard-k1')).toContain('kd-hard-k1')
+})
+
+test('T4 C4 (31 days): a child file older than 30 days is not linked; the card is the own row waiting for a status file', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { files: { [C4_KID]: { text: kid4(), age: 31 * DAY4 } } })
+  const root = await drawnOf(await k.pane('terminal'))
+  expect(texts4(byKey(root, 't-hard'))).toContain('◇ ayrı oturum · hard · durum dosyası bekleniyor')
+  expect(texts4(byKey(root, 't-hard'))).toContain('Görev oturumu · hard')
+  expect(stripOf(root)).toEqual([])
+  expect(keysWith(root, 'kd-')).toEqual([])
+  expect(texts4(byKey(await drawnOf(await k.pane('desktop')), 't-hard'))).toContain('ayrı oturum · hard · durum dosyası bekleniyor')
+})
+
+test('T4 C5 (two claims): the newer file is the child, the other appears nowhere', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, {
+    files: { 'hard--aaaaaaa1.json': { text: kid4({ sha: 'aaaaaaa0000000000000000000000000000000aa' }), age: 5 * MIN4 }, 'hard--ddddddd4.json': { text: kid4({ sha: 'bbbbbbb0000000000000000000000000000000bb' }), age: 3 * MIN4 } },
+  })
+  const root = await drawnOf(await k.pane('terminal'))
+  expect(texts4(byKey(root, 't-hard'))).toContain('Tur 2 · aday bbbbbbb')
+  expect(texts4(root)).not.toContain('Tur 2 · aday aaaaaaa')
+  expect(stripOf(root)).toEqual([])
+  expect(keysWith(root, 'kd-hard-k1').filter(x => !/-\d$/.test(x))).toEqual(['kd-hard-k1']) // one child's decisions, not two
+  expect(texts4(root)).toContain('◆ SENİN SIRAN · 3 karar')
+})
+
+test('T4 C5 (nine children): eight are joined, the ninth task is drawn as written and its file is not in the strip', FOLDERS, async ($, on) => {
+  const tasks = Array.from({ length: 9 }, (_, i) => ({ id: `t${i + 1}`, title: `Görev ${i + 1}`, stage: 'build' }))
+  const files = Object.fromEntries(tasks.map((t, i) => [`k${i + 1}--0000000${i + 1}.json`, { text: kid4({ parent: { file: 'main--aaaaaaaa.json', task: t.id }, decisions: [], tasks: [{ id: t.id, title: 'K', stage: 'review', roles: [] }] }), age: (i + 1) * MIN4 }]))
+  const k = await cBoot($, on, { own: own4({ decisions: [], tasks }), files })
+  const root = await drawnOf(await k.pane('terminal'))
+  for (const i of [1, 8]) expect(texts4(byKey(root, `t-t${i}`))).toContain('Review · 3/5')
+  expect(texts4(byKey(root, 't-t9'))).toContain('Build · 2/5')
+  expect(stripOf(root)).toEqual([])
+})
+
+// ---- C8, C9: forwarding a press (spec §3.5) ----
+for (const surface of ['terminal', 'desktop'] as const)
+  test(`T4 C8 (${surface}): a press on a child decision is one session.send to the child's id, never a fill, a submit or the outbox; the card says so; one answer per decision`, FOLDERS, async ($, on) => {
+    const k = await cBoot($, on, { store: KID_REC, surface })
+    const ui = await k.pane(surface)
+    const before = k.log.sets.length
+    await press4(ui, 'kd-hard-k1-0')
+    await k.settle()
+    expect(sent4(k)).toEqual(KARAR_A)
+    expect([k.log.fills, k.log.submits]).toEqual([[], []])
+    expect(k.log.sets.slice(before)).not.toContain('outbox')
+    const root = await drawnOf(ui)
+    expect(texts4(byKey(root, 'kd-hard-k1'))).toContain('Gönderildi: A · hard oturumuna')
+    if (surface === 'desktop') expect(byKey(root, 'kd-hard-k1-0').props?.label).toBe('✓ A')
+    await press4(ui, 'kd-hard-k1-0')
+    await press4(ui, 'kd-hard-k1-1')
+    await k.settle()
+    expect(sent4(k)).toEqual(KARAR_A)
+  })
+
+test('T4 C9: a child Push onayı has no Button on either surface, a fixed caption, and forward sends nothing for it (any case or spacing of the kind)', FOLDERS, async ($, on) => {
+  const kinds = ['Push onayı', 'push onayi', 'PUSH ONAYI x', ' Push onayı']
+  const decisions = kinds.map((kind, i) => ({ id: `p${i}`, kind, task: 'hard', text: 'Push?', options: ['Onayla', 'Reddet'] }))
+  const k = await cBoot($, on, { store: KID_REC, files: { [C4_KID]: { text: kid4({ decisions }), age: 5 * MIN4 } } })
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const root = await drawnOf(await k.pane(surface))
+    for (const [i] of kinds.entries()) {
+      const card = byKey(root, `kd-hard-p${i}`)
+      expect(buttons(card)).toEqual([])
+      expect(texts4(card)).toContain('Push onayı yalnız o oturumda verilir')
+      expect(texts4(card)).toContain(surface === 'terminal' ? 'Onayla / Reddet' : 'Onayla · Reddet')
+    }
+  }
+  const child = { file: C4_KID, task: 'hard', name: 'hard', mtimeMs: C4_NOW, more: 0, count: 4, decisions: [] }
+  for (const [i, kind] of kinds.entries()) await forward($, child, { id: `p${i}`, kind, text: 'Push?', options: ['Onayla'] }, 'Onayla')
+  await k.settle()
+  expect(k.log.sends).toEqual([])
+})
+
+// ---- C10, C11: a press that cannot be delivered (spec §3.5, §3.6) ----
+test('T4 C10 (terminal): an undelivered press says so on the card and the task row, a later press sends again, delivered shows Gönderildi, a changed child file clears the failure', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { store: KID_REC, deliver: () => false })
+  const ui = await k.pane('terminal')
+  await press4(ui, 'kd-hard-k1-0')
+  await k.settle()
+  let root = await drawnOf(ui)
+  expect(texts4(byKey(root, 'kd-hard-k1'))).toContain(FAILED_CAPTION)
+  expect(texts4(byKey(root, 't-hard'))).toContain('✗ oturum açık değil')
+  expect(texts4(byKey(root, 't-hard'))).toContain('claude attach hard')
+  expect(texts4(byKey(root, 't-hard'))).not.toContain('◇ ayrı oturum · hard · 11:55')
+  await press4(ui, 'kd-hard-k1-1')
+  await k.settle()
+  expect(k.log.sends.length).toBe(2) // nothing waits in a queue: a later press tries again
+  k.gate.deliver = () => true
+  await press4(ui, 'kd-hard-k1-0')
+  await k.settle()
+  root = await drawnOf(ui)
+  expect(texts4(byKey(root, 'kd-hard-k1'))).toContain('Gönderildi: A · hard oturumuna')
+  expect(texts4(byKey(root, 't-hard'))).toContain('◇ ayrı oturum · hard · 11:55')
+  expect(k.log.sends.length).toBe(3)
+})
+
+test('T4 C10 (desktop): the failed press reads "oturum açık değil · o oturumu aç" on the task row and the caption on the card', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { store: KID_REC, deliver: () => false, surface: 'desktop' })
+  const ui = await k.pane('desktop')
+  await press4(ui, 'kd-hard-k1-0')
+  await k.settle()
+  const root = await drawnOf(ui)
+  expect(texts4(byKey(root, 'kd-hard-k1'))).toContain(FAILED_CAPTION)
+  expect(texts4(byKey(root, 't-hard'))).toContain('oturum açık değil · o oturumu aç')
+  expect(texts4(byKey(root, 't-hard'))).not.toContain('ayrı oturum · hard · son yazım 11:55')
+  expect(byKey(root, 'kd-hard-k1-0').props?.label).toBe('A') // no check mark: nothing was delivered
+})
+
+test('T4 C10 (throwing send): a send that throws is a failed press, nothing breaks', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { store: KID_REC, deliver: () => 'throw' })
+  const ui = await k.pane('terminal')
+  await press4(ui, 'kd-hard-k1-0')
+  await k.settle()
+  expect(texts4(byKey(await drawnOf(ui), 'kd-hard-k1'))).toContain(FAILED_CAPTION)
+})
+
+test('T4 C10 (no record): when no store record names the child file nothing is sent at all and the press fails', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { store: {} })
+  const ui = await k.pane('terminal')
+  await press4(ui, 'kd-hard-k1-0')
+  await k.settle()
+  expect(k.log.sends).toEqual([])
+  expect(texts4(byKey(await drawnOf(ui), 'kd-hard-k1'))).toContain(FAILED_CAPTION)
+})
+
+test('T4 C10 (mtime): a failed press is cleared by the next write of the child file, no press needed', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { store: KID_REC, deliver: () => false })
+  const ui = await k.pane('terminal')
+  await press4(ui, 'kd-hard-k1-0')
+  await k.settle()
+  expect(texts4(byKey(await drawnOf(ui), 't-hard'))).toContain('✗ oturum açık değil')
+  await k.poll() // the file did not change: the failure stays
+  expect(texts4(byKey(await drawnOf(ui), 't-hard'))).toContain('✗ oturum açık değil')
+  ;(k.files[C4_KID] as F4).age = 4 * MIN4 // the child wrote again: a new mtime
+  await k.poll()
+  const root = await drawnOf(ui)
+  expect(texts4(byKey(root, 't-hard'))).toContain('◇ ayrı oturum · hard · 11:55')
+  expect(texts4(byKey(root, 'kd-hard-k1'))).toContain('1-9 ile seç · hard oturumuna hemen gider')
+})
+
+test('T4 C10 (decision gone): the answer state of a decision goes when the decision leaves the child file', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { store: KID_REC })
+  const ui = await k.pane('terminal')
+  await press4(ui, 'kd-hard-k1-0')
+  await k.settle()
+  ;(k.files[C4_KID] as F4).text = kid4({ decisions: [P1] })
+  ;(k.files[C4_KID] as F4).age = 4 * MIN4
+  await k.poll()
+  ;(k.files[C4_KID] as F4).text = kid4({ decisions: [K1, P1] }) // the same id asked again
+  ;(k.files[C4_KID] as F4).age = 3 * MIN4
+  await k.poll()
+  expect(texts4(byKey(await drawnOf(ui), 'kd-hard-k1'))).toContain('1-9 ile seç · hard oturumuna hemen gider')
+  await press4(ui, 'kd-hard-k1-1')
+  await k.settle()
+  expect(k.log.sends.length).toBe(2) // answered again: a new question
+})
+
+test('T4 C11: the newest record of the child file is tried first, the next when it is not delivered, never the own id or another file, at most 3 per press', FOLDERS, async ($, on) => {
+  const ids = ['bbbbbbbb-0000-4000-8000-00000000000a', 'bbbbbbbb-0000-4000-8000-00000000000b', 'bbbbbbbb-0000-4000-8000-00000000000c', 'bbbbbbbb-0000-4000-8000-00000000000d', 'bbbbbbbb-0000-4000-8000-00000000000e']
+  const [a, b, c, d, e] = ids as [string, string, string, string, string]
+  const store = Object.fromEntries([sess4(a, C4_KID, hourAt(10)), sess4(b, C4_KID, hourAt(11))])
+  const k = await cBoot($, on, { store, deliver: id => id === a })
+  // After the start, so the own record (which the start writes) is replaced: the own id names the child file as the newest, another file's id is newer still.
+  k.store.set(`session:${C4_SID}`, rec(`${C4D}/${C4_KID}`, SWITCH, {}, hourAt(12)))
+  k.store.set('session:cccccccc-0000-4000-8000-000000000009', rec(`${C4D}/${C4_OTHER}`, SWITCH, {}, hourAt(12) + 30 * MIN4))
+  const ui = await k.pane('terminal')
+  await press4(ui, 'kd-hard-k1-0')
+  await k.settle()
+  expect(k.log.sends.map(s => s.to)).toEqual([b, a]) // 11:00 first, then 10:00, delivered there
+  // Five records, none delivered: three tries, newest first.
+  for (const [i, id] of [c, d, e].entries()) k.store.set(`session:${id}`, rec(`${C4D}/${C4_KID}`, SWITCH, {}, hourAt(9 - i)))
+  k.gate.deliver = () => false
+  k.log.sends.length = 0
+  await press4(ui, 'kd-hard-k1-1')
+  await k.settle()
+  expect(k.log.sends.map(s => s.to)).toEqual([b, a, c])
+})
+
+// ---- C12: stale children (spec §3.6) ----
+for (const surface of ['terminal', 'desktop'] as const)
+  test(`T4 C12 (${surface}): a running child silent for more than 30 minutes is marked with its age; exactly 30 minutes and a child that is not running are not`, FOLDERS, async ($, on) => {
+    const k = await cBoot($, on, { surface })
+    const ui = await k.pane(surface)
+    const normal = surface === 'terminal' ? '◇ ayrı oturum · hard · 11:55' : 'ayrı oturum · hard · son yazım 11:55'
+    const rowOf = async () => texts4(byKey(await drawnOf(ui), 't-hard'))
+    const at = async (ms: number) => {
+      ;(k.files[C4_KID] as F4).age = ms
+      await k.poll()
+      return rowOf()
+    }
+    expect(await at(31 * MIN4)).toContain('⚠ 31 dk önce yazdı · durmuş olabilir')
+    expect(await at(30 * MIN4)).toContain(normal)
+    expect(await at(125 * MIN4)).toContain('⚠ 2 sa önce yazdı · durmuş olabilir')
+    expect(await at(49 * HOUR4)).toContain('⚠ 2 gün önce yazdı · durmuş olabilir')
+    expect(await at(49 * HOUR4)).not.toContain(normal)
+    ;(k.files[C4_KID] as F4).text = kid4({ roles: [tRole('QA · Opus', 'bitti', 'done')] })
+    ;(k.files[C4_KID] as F4).age = 49 * HOUR4 - 1000
+    await k.poll()
+    const idle = await rowOf()
+    expect(idle).toContain(normal)
+    expect(idle.some(t => t.startsWith('⚠'))).toBe(false)
+  })
+
+// ---- C13: a reopened session (R7) ----
+test('T4 C13: a reopened parent counts only its own running roles; the child roles are not drawn stopped and the reopen line names only the own task', FOLDERS, async ($, on) => {
+  // The own `hard` row has no `session` field (as the pilot's): only the join makes it a task session's.
+  const k = await cBoot($, on, { own: own4({ session: false }), store: { [`session:${C4_SID}`]: rec(C4_OWN, SWITCH, { announced: C4_OWN }, hourAt(9)), ...KID_REC }, ownAge: 3 * DAY4 })
+  const root = await drawnOf(await k.pane('desktop'))
+  expect(texts4(root)).toContain('Oturum yeniden açıldı · durum önceki oturumdan · çalışıyor görünen 1 rol durmuş olabilir')
+  const hard = texts4(byKey(root, 't-hard'))
+  expect(hard).toContain('QA · Opus')
+  expect(hard).toContain('inceliyor')
+  expect(hard.join('|')).not.toContain('durmuş olabilir')
+  expect(texts4(byKey(root, 't-t2'))).toContain('durmuş olabilir · yazıyor')
+  await $.prompt.submit({ wait: false, origin: { kind: 'composer' }, text: 'merhaba' } as never)
+  const line = (k.log.submits.at(-1)?.context ?? []).find(c => c.startsWith(R_PREFIX)) ?? ''
+  expect(line).toContain('Başka iş · Analyst · Fable 5.2')
+  expect(line).not.toContain('Sağlamlık')
+  expect(line).not.toContain('QA · Opus')
+})
+
+// ---- C14: the child reports to its parent (spec §3.7) ----
+const kidBoot = (
+  $: Parameters<TestBody>[0],
+  on: Parameters<TestBody>[1],
+  o: { surface?: 'desktop' | 'terminal' | null; own?: string; deliver?: (id: string) => boolean | 'throw' } = {},
+) =>
+  cBoot($, on, { sid: C4_KID_SID, cwd: '/Users/x/Projeler/hard', own: o.own ?? kid4(), files: {}, surface: o.surface, deliver: o.deliver, store: Object.fromEntries([sess4(C4_SID, 'main--aaaaaaaa.json', hourAt(11))]) })
+const done4 = async ($: Parameters<TestBody>[0], k: { settle: () => Promise<void> }, over: Record<string, unknown> = {}) => {
+  await $.turn.complete({ answer: 'Bekliyorum.', durationMs: 1, isAborted: false, reason: 'answer', turnId: 'c1', ...over } as never)
+  await k.settle()
+}
+const KID_PATH = `${C4D}/${C4_KID}`
+
+test('T4 C14: a child on the terminal sends the first 400 code points of a GÖREV final message to the parent; nothing for other answers or another loop; an error turn sends BLOCKED', FOLDERS, async ($, on) => {
+  const k = await kidBoot($, on)
+  const long = `GÖREV hard: GO · aday 3f9a… · rapor /x/r.md\n\n${'😀'.repeat(500)}`
+  await done4($, k, { answer: long })
+  expect(sent4(k)).toEqual([[C4_SID, Array.from(long).slice(0, 400).join('')]])
+  expect(Array.from(sent4(k)[0]?.[1] ?? '').length).toBe(400)
+  await done4($, k, { answer: '**GÖREV hard: KARAR**' })
+  expect(sent4(k).at(-1)).toEqual([C4_SID, '**GÖREV hard: KARAR**'])
+  const n = k.log.sends.length
+  await done4($, k, { answer: 'Bekliyorum.' })
+  await done4($, k, { answer: 'GÖREV hard: GO', agentId: 'a1' })
+  expect(k.log.sends.length).toBe(n)
+  await done4($, k, { answer: 'Bekliyorum.', reason: 'error' })
+  expect(sent4(k).at(-1)).toEqual([C4_SID, `GÖREV hard: BLOCKED · görev oturumunun turu hata ile bitti · durum ${KID_PATH}`])
+  expect(k.log.sends.length).toBe(n + 1)
+})
+
+for (const surface of ['desktop', null] as const)
+  test(`T4 C14 (surface ${surface}): the desktop host reports for itself, so the plugin sends nothing`, FOLDERS, async ($, on) => {
+    const k = await kidBoot($, on, { surface })
+    await done4($, k, { answer: 'GÖREV hard: GO' })
+    expect(k.log.sends).toEqual([])
+  })
+
+test('T4 C14 (no parent): a session whose own file has no parent sends nothing', FOLDERS, async ($, on) => {
+  const k = await kidBoot($, on, { own: kid4({ parent: null }) })
+  await done4($, k, { answer: 'GÖREV hard: GO' })
+  expect(k.log.sends).toEqual([])
+})
+
+test('T4 C14 (team mode off): with team mode off nothing is sent', async ($, on) => {
+  const k = await kidBoot($, on)
+  await done4($, k, { answer: 'GÖREV hard: GO' })
+  expect(k.log.sends).toEqual([])
+})
+
+test('T4 C14 (throwing send): a send that throws breaks nothing', FOLDERS, async ($, on) => {
+  const k = await kidBoot($, on, { deliver: () => 'throw' })
+  await done4($, k, { answer: 'GÖREV hard: GO' })
+  expect(k.log.sends.length).toBe(1)
+  await done4($, k, { answer: 'GÖREV hard: GO again' }) // the next turn still works
+  expect(k.log.sends.length).toBe(2)
+})
+
+// ---- C15: the plugin's own session.send runs through tool.call as SendMessage (spec §3.8) ----
+test('T4 C15: a tool.call of SendMessage returns core\'s result with no context and the press stays queued; the next Bash call carries it', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { surface: 'desktop' })
+  const ui = await k.pane('desktop')
+  await $.turn.start({ text: 'x', turnId: 't1' })
+  await ui.press({ key: 'd-d1-0' }) // a turn runs: the press waits in the outbox
+  await k.settle()
+  const call = (tool: string) => $.tool.call({ tool, command: 'ls' } as never) as Promise<{ context?: readonly string[] }>
+  const msg = await call('SendMessage')
+  expect(msg.context).toBeUndefined()
+  expect(texts4(byKey(await drawnOf(ui), 'd-d1'))).toContain(QUEUED)
+  expect((await call('Bash')).context).toEqual([`${HEAD}\nKarar (d1): Evet`])
+})
+
+// ---- C16, C17: safety and limits (spec §2, §3.9) ----
+test('T4 C16: an unreadable, oversized or invalid child file is skipped, the own view renders, and nothing is ever written', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, {
+    store: KID_REC,
+    files: {
+      [C4_KID]: { text: kid4(), age: 5 * MIN4, unreadable: true },
+      'big--dddddddd.json': { text: kid4(), age: 4 * MIN4, size: KIB256 + 1 },
+      'junk--eeeeeeee.json': { text: 'not json', age: 3 * MIN4 },
+    },
+  })
+  const ui = await k.pane('terminal')
+  const root = await drawnOf(ui)
+  expect(texts4(byKey(root, 't-hard'))).toContain('Sağlamlık')
+  expect(texts4(byKey(root, 't-hard'))).toContain('◇ ayrı oturum · hard · durum dosyası bekleniyor')
+  expect(texts4(root)).toContain('◆ SENİN SIRAN · 1 karar')
+  expect(k.log.reads).not.toContain('big--dddddddd.json')
+  await ui.press({ key: 'd-d1-0' })
+  await k.settle()
+  expect(k.log.writes).toEqual([])
+})
+
+for (const surface of ['terminal', 'desktop'] as const)
+  test(`T4 C17 (${surface}): eleven child decisions are ten cards and "+1 karar daha · o oturumda"; an option is sent cut to 200 code points and drawn cut to 60; a second task shows "+1 görev o oturumda"`, FOLDERS, async ($, on) => {
+    const decisions = Array.from({ length: 11 }, (_, i) => ({ id: `q${i + 1}`, kind: 'Soru', task: 'hard', text: `Soru ${i + 1}`, options: i === 0 ? ['Ö'.repeat(250), 'B'] : ['A'] }))
+    const tasks = [{ id: 'hard', title: 'Görev', stage: 'review', roles: KID_ROLES }, { id: 'x2', title: 'İkinci', stage: 'build' }]
+    const k = await cBoot($, on, { surface, store: KID_REC, own: own4({ decisions: [] }), files: { [C4_KID]: { text: kid4({ decisions, tasks }), age: 5 * MIN4 } } })
+    const ui = await k.pane(surface)
+    const root = await drawnOf(ui)
+    expect(keysWith(root, 'kd-hard-').filter(x => !/-\d+$/.test(x)).length).toBe(10)
+    expect(texts4(root)).toContain('+1 karar daha · o oturumda')
+    expect(texts4(root)).toContain(surface === 'terminal' ? '◆ SENİN SIRAN · 11 karar' : '11 karar')
+    expect(texts4(byKey(root, 't-hard'))).toContain('+1 görev o oturumda')
+    expect(byKey(root, 'kd-hard-q1-0').props?.label).toBe(`${'Ö'.repeat(59)}…`)
+    await press4(ui, 'kd-hard-q1-0')
+    await k.settle()
+    expect(sent4(k)).toEqual([[C4_KID_SID, `${PANE_HEAD4}\nKarar (q1): ${'Ö'.repeat(200)}`]])
+  })
