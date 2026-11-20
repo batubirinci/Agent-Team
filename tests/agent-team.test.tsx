@@ -6480,8 +6480,10 @@ test('T4 E1a (forwards-1): an answer stored by r1 (forwards-1, no time) is decli
 test('T4 R-cheap (sendTo empty id): with session.id() answering "" after the start, the own record is still never a target', FOLDERS, async ($, on) => {
   const k = await cBoot($, on, { store: KID_REC })
   const ui = await k.pane('terminal')
-  // After the start (which rewrites the own record): the own id's record presents the code for the child file and is the newest, so only the own-id rule keeps it out.
-  k.store.set(...sess4(C4_SID, C4_KID, hourAt(12), { ...kidsOf4(), ...boundOf4('hard', CODE4, 'tok-own') }))
+  // After the start (which rewrites the own record): the own id's record presents the code and is the newest, so only the own-id rule keeps it out (without
+  // it the own record is a second file presenting the code: a conflict, nothing sent). Revision 5: its own file, as every record of a session has (one session =
+  // one status file); with the child's file it would be the child's session.
+  k.store.set(...sess4(C4_SID, 'main--aaaaaaaa.json', hourAt(12), { ...kidsOf4(), ...boundOf4('hard', CODE4, 'tok-own') }))
   k.gate.sid = ''
   await press4(ui, 'kd-hard-k1-0')
   await k.settle()
