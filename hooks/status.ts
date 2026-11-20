@@ -1,4 +1,4 @@
-import type { BandCounts, BandSeg, Child, Decision, DirEntry, Evidence, Finding, Mode, Other, Role, Round, RoleStatus, SessionLine, SessionRecord, Status, Task, TaskState } from '../types'
+import type { BandCounts, BandSeg, Child, Decision, DirEntry, Evidence, Finding, Forward, Mode, Other, Role, Round, RoleStatus, SessionLine, SessionRecord, Status, Task, TaskState } from '../types'
 
 export const STAGES = ['spec', 'build', 'review', 'revise', 'report'] as const
 export const STAGE_LABELS = ['Spec', 'Build', 'Review', 'Revise', 'Rapor'] as const
@@ -124,7 +124,12 @@ export function parseStatus(text: string): Status {
     ? { fiveHourPct: num(raw.limits.fiveHourPct), weeklyPct: num(raw.limits.weeklyPct) }
     : undefined
 
-  return { updatedAt: str(raw.updatedAt), lead: str(raw.lead), paused: raw.paused === true, limits, decisions, tasks }
+  // A task session names the file (a bare name) and the task of the session that started it: anything else is no parent.
+  const p = isObj(raw.parent) ? raw.parent : undefined
+  const parentTask = idOf(p?.task)
+  const parent = typeof p?.file === 'string' && p.file.length <= 255 && /^[^/\\]*\.json$/.test(p.file) && parentTask ? { file: p.file, task: parentTask } : undefined
+
+  return { updatedAt: str(raw.updatedAt), lead: str(raw.lead), paused: raw.paused === true, limits, decisions, tasks, ...(parent && { parent }) }
 }
 
 export const expandHome = (p: string, home: string) => (p === '~' ? home : p.startsWith('~/') ? home + p.slice(1) : p)
@@ -257,22 +262,28 @@ export function parseRecord(raw: unknown, statusDir: string): SessionRecord | un
 
 // Other team sessions' files in the status folder (the pane's read-only strip): a regular .json file that is not this
 // session's own, written in the last 24 h (exactly 24 h old is out), at most 256 KiB; the newest 20 of them.
+// A task session (child) of this session is looked for among the files of the last 30 days (KEEP_MS: after that its store record is swept), the newest 40.
+export const KEEP_MS = 30 * 86_400_000
 const OTHER_DAY_MS = 86_400_000
 const OTHER_MAX_BYTES = 256 * 1024
 const OTHER_MAX_FILES = 20
+const CHILD_FILES = 40
 
-export const otherFiles = (entries: readonly DirEntry[], dir: string, own: string, now: number) =>
+const recent = (entries: readonly DirEntry[], dir: string, own: string, now: number, span: number, max: number) =>
   entries
-    .filter(e => e.kind === 'file' && !e.isLink && e.name.endsWith('.json') && `${dir}/${e.name}` !== own && now - e.mtimeMs < OTHER_DAY_MS && e.size <= OTHER_MAX_BYTES)
+    .filter(e => e.kind === 'file' && !e.isLink && e.name.endsWith('.json') && `${dir}/${e.name}` !== own && now - e.mtimeMs < span && e.size <= OTHER_MAX_BYTES)
     .sort((a, b) => b.mtimeMs - a.mtimeMs || a.name.localeCompare(b.name))
-    .slice(0, OTHER_MAX_FILES)
+    .slice(0, max)
+
+export const otherFiles = (entries: readonly DirEntry[], dir: string, own: string, now: number) => recent(entries, dir, own, now, OTHER_DAY_MS, OTHER_MAX_FILES)
+export const childFiles = (entries: readonly DirEntry[], dir: string, own: string, now: number) => recent(entries, dir, own, now, KEEP_MS, CHILD_FILES)
 
 // The file is untrusted and the result goes in a state atom (4 MiB limit) and on the pane: cut what is drawn.
 const OTHER_KIND = 120
 const OTHER_TEXT = 400
 const OTHER_OPTION = 60
 const OTHER_DECISIONS = 10
-const cut = (x: string, n: number) => (Array.from(x).length > n ? `${clip(x, n - 1)}…` : x)
+export const cut = (x: string, n: number) => (Array.from(x).length > n ? `${clip(x, n - 1)}…` : x)
 
 // One other session from its parsed file, or undefined when it asks nothing. <project>--<id8>.json is "<project> · <id8>",
 // <project>.json is "<project>"; the time is the file's updatedAt, else its mtime (local). `count` and `stuckCount` are of ALL
@@ -299,6 +310,101 @@ export function otherSession(e: DirEntry, s: Status): Other | undefined {
     })),
   }
 }
+
+// Task sessions (children). A file is a child of this session when its `parent.file` is the own file's name and the own file has a task, with a written id,
+// that is `parent.task`. Computed at every poll from the parsed files, never cached as "linked". Several files for one task: the newest is the child (ties by
+// name) and the others are claimed (drawn nowhere); at most 8 children, the rest are claimed only.
+const CHILDREN = 8
+const CHILD_OPTION = 200
+export const STALE_MS = 1_800_000 // a guess from the skill's 20/40 minute watch, not a measured value
+
+const childOf = (e: DirEntry, s: Status, own: Task): Child => {
+  const task = s.parent?.task ?? ''
+  const card = s.tasks.find(t => t.id === task) ?? s.tasks[0]
+  const base = e.name.replace(/\.json$/, '')
+  return {
+    file: e.name,
+    task,
+    name: own.session?.name ?? base.match(/^(.+)--([^-]{8})$/)?.[1] ?? base,
+    mtimeMs: e.mtimeMs,
+    updatedAt: s.updatedAt,
+    card,
+    more: card ? s.tasks.length - 1 : 0,
+    // The option is sent back to the child: kept to 200 code points, cut to 60 only where it is drawn.
+    decisions: s.decisions.slice(0, OTHER_DECISIONS).map(d => ({ ...d, text: cut(d.text, OTHER_TEXT), kind: d.kind && cut(d.kind, OTHER_KIND), meta: d.meta && cut(d.meta, OTHER_KIND), options: d.options.map(o => clip(o, CHILD_OPTION)) })),
+    count: s.decisions.length,
+  }
+}
+
+export function linkChildren(found: readonly { e: DirEntry; s: Status }[], ownName: string, tasks: readonly Task[]) {
+  const mine = found
+    .filter(({ s }) => s.parent?.file === ownName && tasks.some(t => t.id === s.parent?.task && !t.generatedId))
+    .sort((a, b) => b.e.mtimeMs - a.e.mtimeMs || a.e.name.localeCompare(b.e.name))
+  const taken = new Set<string>()
+  const kids: Child[] = []
+  const claimed: string[] = []
+  for (const { e, s } of mine) {
+    const own = tasks.find(t => t.id === s.parent?.task)
+    if (!own || taken.has(own.id) || kids.length >= CHILDREN) claimed.push(e.name)
+    else (taken.add(own.id), kids.push(childOf(e, s, own)))
+  }
+  return { kids, claimed }
+}
+
+// The children whose task is a written task of `own`, and `own` as the pane draws it: such a task keeps its id, title and wait, takes the child's stage,
+// round, candidate, counts, roles, rounds, evidence, state and reason, and carries `session` (so a reopen never draws it stopped). The count and the order of the tasks never change.
+export const kidsOf = (own: Status | null, kids: readonly Child[]) => kids.filter(c => own?.tasks.some(t => t.id === c.task && !t.generatedId))
+export function joined(own: Status | null, kids: readonly Child[]): Status | null {
+  const mine = kidsOf(own, kids)
+  if (!own || !mine.length) return own
+  return {
+    ...own,
+    tasks: own.tasks.map((t): Task => {
+      const c = t.generatedId ? undefined : mine.find(k => k.task === t.id)
+      const k = c?.card
+      if (!c) return t
+      return { ...t, ...(k && { stage: k.stage, round: k.round, candidate: k.candidate, blocking: k.blocking, followup: k.followup, roles: k.roles, rounds: k.rounds, evidence: k.evidence, state: k.state, reason: k.reason, branch: t.branch ?? k.branch }), session: { name: c.name } }
+    }),
+  }
+}
+
+// "31 dk" under 60 minutes, "2 sa" under 48 hours, else "2 gün" (each floored).
+export const ago = (ms: number) => (ms < 3_600_000 ? `${Math.floor(ms / 60_000)} dk` : ms < 172_800_000 ? `${Math.floor(ms / 3_600_000)} sa` : `${Math.floor(ms / 86_400_000)} gün`)
+
+// The rows under a task's state row (Turkish, exact). `c`: its child, if linked; `failed`: a press on one of its decisions was not delivered.
+// A running child silent for more than STALE_MS is marked; the task still counts as running (the pane cannot know more).
+export function sessionLines(t: Task, c: Child | undefined, o: { failed: boolean; now: number; term: boolean }): SessionLine[] {
+  const { term } = o
+  if (!c) return t.session ? [{ text: `${term ? '◇ ' : ''}ayrı oturum · ${t.session.name} · durum dosyası bekleniyor` }] : []
+  const d = new Date(c.mtimeMs)
+  const when = stamp(c.updatedAt, o.now).text ?? `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+  const first: SessionLine[] = o.failed
+    ? term
+      ? [{ text: '✗ oturum açık değil', color: 'error' }, { text: `claude attach ${c.name}` }]
+      : [{ text: 'oturum açık değil · o oturumu aç', color: 'error' }]
+    : c.card?.state === 'running' && o.now - c.mtimeMs > STALE_MS
+      ? [{ text: `⚠ ${ago(o.now - c.mtimeMs)} önce yazdı · durmuş olabilir`, color: 'warning' }]
+      : [{ text: term ? `◇ ayrı oturum · ${c.name} · ${when}` : `ayrı oturum · ${c.name} · son yazım ${when}` }]
+  return [...first, ...(c.more > 0 ? [{ text: `+${c.more} görev o oturumda` }] : [])]
+}
+
+// The one caption row of a child's decision card (Turkish, exact): push, sent, failed, or the idle line; `f` is the answer's state, if any.
+export function kidCaption(c: Child, d: Decision, f: Forward | undefined, term: boolean): SessionLine | undefined {
+  if (isPush(d.kind)) return { text: 'Push onayı yalnız o oturumda verilir' }
+  if (f?.state === 'sent') return { text: `Gönderildi: ${cut(f.option, 60)} · ${c.name} oturumuna`, color: 'success' }
+  if (f?.state === 'failed') return { text: 'Gönderilemedi · oturum açık değil, cevabı o oturumda ver', color: 'error' }
+  return d.options.length ? { text: term ? `1-9 ile seç · ${c.name} oturumuna hemen gider` : `Bir seçeneğe bas · ${c.name} oturumuna gider` } : undefined
+}
+
+// What a main-pane press and a child's report are told in: the first line names the sender (the receiving Lead treats it as the owner's press, never a push approval).
+export const PANE_HEAD = "[Agent Team pane · ana oturum] Sahip ana oturumun pane'inde bastı:"
+
+// The report a child's plugin sends its parent at the end of a main-loop turn (terminal only): the first 400 code points of a final message that starts
+// "GÖREV " (after white space and any of * # > `), or BLOCKED when the turn ended in an error; else nothing.
+export const reportText = (answer: string, reason: string, task: string, file: string) =>
+  reason === 'error'
+    ? `GÖREV ${task}: BLOCKED · görev oturumunun turu hata ile bitti · durum ${file}`
+    : /^[\s*#>`]*GÖREV /.test(answer) ? clip(answer, 400) : undefined
 
 // Where the pane scrolls once a detail opens (its top) or closes (the card that was left, moved the least that shows it).
 export const detailScroll = (pane: string, open: string | null, left?: string) =>
@@ -338,15 +444,3 @@ export function spinnerWord(s: Status | null | undefined): string | undefined {
   if (!first) return undefined
   return clip([[first.name.split(' · ')[0], first.state].filter(Boolean).join(' · '), rest.length && ` +${rest.length}`].filter(Boolean).join(''), 40)
 }
-
-// ponytail: stubs, replaced by the implementation after the red test run
-export const KEEP_MS = 30 * 86_400_000
-export const STALE_MS = 1_800_000
-export const PANE_HEAD = "[Agent Team pane · ana oturum] Sahip ana oturumun pane'inde bastı:"
-export const childFiles = (_e: readonly DirEntry[], _d: string, _o: string, _n: number): DirEntry[] => []
-export const linkChildren = (_f: readonly { e: DirEntry; s: Status }[], _o: string, _t: readonly Task[]): { kids: Child[]; claimed: string[] } => ({ kids: [], claimed: [] })
-export const kidsOf = (_o: Status | null, _k: readonly Child[]): Child[] => []
-export const joined = (own: Status | null, _k: readonly Child[]): Status | null => own
-export const ago = (_ms: number) => ''
-export const sessionLines = (_t: Task, _c: Child | undefined, _o: { failed: boolean; now: number; term: boolean }): SessionLine[] => []
-export const reportText = (_a: string, _r: string, _t: string, _f: string): string | undefined => undefined

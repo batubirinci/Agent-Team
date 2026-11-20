@@ -78,8 +78,8 @@ export type Child = { file: string; task: string; name: string; mtimeMs: number;
 // A main-pane press on a child's decision: delivered (`sent`) or not (`failed`, until the child's file changes: `mtimeMs` is its mtime then).
 export type Forward = { file: string; id: string; option: string; state: 'sent' | 'failed'; mtimeMs: number }
 
-// One row under a joined task's state row; no `color` is the dim caption.
-export type SessionLine = { text: string; color?: 'warning' | 'error' }
+// One row under a joined task's state row, or a child decision card's caption; no `color` is dim.
+export type SessionLine = { text: string; color?: 'warning' | 'error' | 'success' }
 
 // A pane press on its way to the Lead: its line, the decision it answers (id, option) and whether it is an approval of an irreversible action.
 export type Press = { line: string; id?: string; option?: string; push?: boolean }

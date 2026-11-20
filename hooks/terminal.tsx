@@ -1,7 +1,7 @@
 import type { EngineInterface } from 'claude-code'
 
-import type { BandSeg, Decision, Other, Outbox, Role, RoleStatus, Task, TaskState } from '../types'
-import { STAGE_LABELS, clip, decisionTask, isBlocking, pickedAt } from './status'
+import type { BandSeg, Child, Decision, Forward, Other, Outbox, Role, RoleStatus, SessionLine, Task, TaskState } from '../types'
+import { STAGE_LABELS, clip, cut, decisionTask, isBlocking, isPush, isStuck, kidCaption, pickedAt } from './status'
 
 // The terminal drawing of the pane and the footer (approved design "Terminal arayüzü · şimdi ve öneri"):
 // text and theme colors only, no card fill, no Svg; state is a glyph, never a color alone; every press has a key.
@@ -92,11 +92,14 @@ export function termUsage({ Text }: UI, rows: readonly (readonly [string, number
 }
 
 // A press writes the decision's line into the prompt box (`lines`: the decision lines now in it); `out`: what went through the outbox instead.
-export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], tasks: Task[], press: (d: Decision, o: string) => void, lines: readonly string[], out: Outbox) {
+// A task session's decisions (`kids`, each with its task's title and the answers forwarded to it): after the own ones, digits run on, a push takes none;
+// a press is `pressKid` (sent at once to that session).
+export type KidView = { child: Child; title?: string; fwd: readonly Forward[] }
+export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], tasks: Task[], press: (d: Decision, o: string) => void, lines: readonly string[], out: Outbox, kids: readonly KidView[] = [], pressKid: (c: Child, d: Decision, o: string) => void = () => undefined) {
   let n = 0
   return (
     <Box flexDirection="column" gap={1}>
-      <Text color="claude">{`◆ ${'Senin sıran'.toLocaleUpperCase('tr')} · ${decisions.length} karar`}</Text>
+      <Text color="claude">{`◆ ${'Senin sıran'.toLocaleUpperCase('tr')} · ${decisions.length + kids.reduce((t, k) => t + k.child.count, 0)} karar`}</Text>
       {decisions.map(d => {
         const { kind, blocked } = decisionTask(d, tasks)
         const at = pickedAt(lines, d)
@@ -129,6 +132,31 @@ export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], 
         </Box>
         )
       })}
+      {kids.flatMap(({ child: c, title, fwd }) => [
+        ...c.decisions.map(d => {
+          const stuck = isStuck(d.kind)
+          const cap = kidCaption(c, d, fwd.find(x => x.file === c.file && x.id === d.id), true)
+          return (
+            <Box key={`kd-${c.task}-${d.id}`} {...TBOX} borderColor={stuck ? 'error' : TBOX.borderColor}>
+              <Text color={stuck ? 'error' : 'claude'}>{[d.kind, title, `◇ ${c.name}`].filter(Boolean).join(' · ')}</Text>
+              <Text>{d.text}</Text>
+              {d.meta && <Text dimColor>{d.meta}</Text>}
+              {d.options.length > 0 &&
+                (isPush(d.kind) ? (
+                  <Text dimColor>{d.options.map(o => cut(o, 60)).join(' / ')}</Text>
+                ) : (
+                  <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+                    {d.options.map((o, i) => (
+                      <Button key={`kd-${c.task}-${d.id}-${i}`} label={cut(o, 60)} onPress={() => pressKid(c, d, o)} {...(n < 9 ? hk(String(++n)) : { plain: true as const })} />
+                    ))}
+                  </Box>
+                ))}
+              {cap && <Text color={cap.color} dimColor={!cap.color}>{cap.text}</Text>}
+            </Box>
+          )
+        }),
+        ...(c.count > c.decisions.length ? [<Text key={`kd-${c.task}-more`} dimColor>{`+${c.count - c.decisions.length} karar daha · o oturumda`}</Text>] : []),
+      ])}
     </Box>
   )
 }
@@ -156,6 +184,10 @@ const stateLine = ({ Text }: UI, t: Task) => (
   </Text>
 )
 
+// The rows of a task session under the state row (`sessionLines`).
+const sessionRows = ({ Text }: UI, id: string, rows: readonly SessionLine[]) =>
+  rows.map((l, i) => <Text key={`${id}-s-${i}`} color={l.color} dimColor={!l.color}>{l.text}</Text>)
+
 const stageName = ({ Text }: UI, t: Task) => <Text dimColor>{`${STAGE_LABELS[t.stage]} · ${t.stage + 1}/5`}</Text>
 
 const roleRows = ({ Box, Text }: UI, id: string, roles: Role[], frame: number) =>
@@ -182,7 +214,7 @@ const counts = ({ Text }: UI, t: Task) =>
   )
 
 // hasOn: pane-team-on is drawn and owns "o", so no task takes it.
-export function termTasks(ui: UI, tasks: Task[], n: { running: number; blocked: number; waiting: number }, hasOn: boolean, open: (id: string) => void, frame = 0) {
+export function termTasks(ui: UI, tasks: Task[], n: { running: number; blocked: number; waiting: number }, hasOn: boolean, open: (id: string) => void, frame = 0, rows: (t: Task) => SessionLine[] = () => []) {
   const { Box, Button, Text } = ui
   const keys = hasOn ? TASK_KEYS.slice(0, -1) : TASK_KEYS
   return (
@@ -203,6 +235,7 @@ export function termTasks(ui: UI, tasks: Task[], n: { running: number; blocked: 
               <Text weight="bold" wrap="truncate-end">{t.title}</Text>
             </Button>
             {stateLine(ui, t)}
+            {sessionRows(ui, `t-${t.id}`, rows(t))}
             {tur && <Text dimColor>{tur}</Text>}
             {stageLine(ui, t)}
             {stageName(ui, t)}
@@ -216,7 +249,7 @@ export function termTasks(ui: UI, tasks: Task[], n: { running: number; blocked: 
 }
 
 // The detail: back/ask on one row, a summary box, ROLLER, TURLAR (newest first, a box each), KANIT.
-export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void, frame = 0) {
+export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void, frame = 0, rows: readonly SessionLine[] = []) {
   const { Box, Button, Text } = ui
   const head = (s: string) => <Text weight="bold">{s}</Text>
   const where = [t.branch, t.candidate && `aday ${clip(t.candidate, 7)}`].filter(Boolean).join(' · ')
@@ -229,6 +262,7 @@ export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void, f
       <Box key="detail-summary" {...ROUND}>
         <Text weight="bold">{t.title}</Text>
         {stateLine(ui, t)}
+        {sessionRows(ui, 'detail', rows)}
         {where && <Text dimColor>{where}</Text>}
         <Text>{stageLine(ui, t)}{stageName(ui, t)}</Text>
         {counts(ui, t)}

@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Child, Decision, DirEntry, Mode, Other, Outbox, Press, Reopen, RoleStatus, SessionRecord, Status, StatusView, Task, TaskState } from '../types'
-import { ANNOUNCE, ASK_WHERE, KARAR, OPEN_ROW, STAGE_LABELS, bandSegments, baseName, clip, countStates, decisionTask, detailScroll, expandHome, flat, isBlocking, isInside, isPush, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, reopenLine, runningRoles, spinnerWord, stamp, stopped, trimSlash, withKarar } from './status'
+import type { Child, Decision, DirEntry, Forward, Mode, Other, Outbox, Press, Reopen, RoleStatus, SessionRecord, Status, StatusView, Task, TaskState } from '../types'
+import { ANNOUNCE, ASK_WHERE, KARAR, KEEP_MS, OPEN_ROW, PANE_HEAD, STAGE_LABELS, bandSegments, baseName, childFiles, clip, countStates, cut as shorten, decisionTask, detailScroll, expandHome, flat, isBlocking, isInside, isPush, isStuck, joined, kararLine, kararLines, kidCaption, kidsOf, linkChildren, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, reopenLine, reportText, runningRoles, sessionLines, spinnerWord, stamp, stopped, trimSlash, withKarar } from './status'
 import { AMBER, BAD, CLAY, MUTED, OK, TRACK, dotSvg, meterSvg, stagesSvg } from './svg'
 import { FRAMES, QUEUED, QUEUED_PUSH, TBOX, hk, termBand, termBanner, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termTasks, termUsage } from './terminal'
 
@@ -11,7 +11,6 @@ const PANE_OPEN = { id: PANE, title: 'Agent Team', columns: 48 } as const
 const POLL_MS = 500
 const SOON_MS = 500
 const TICK_MS = 1000
-const KEEP_MS = 30 * 86_400_000
 
 // Change a tag when that value's fields change: it declines what an earlier version stored.
 const mode = atom({ plugin: 'agent-team', key: 'mode' } as const, { isOn: false, source: 'off' } as Mode, {
@@ -26,6 +25,9 @@ const status = atom(
 const detail = atom({ plugin: 'agent-team', key: 'detail' } as const, null as string | null, { shape: 'detail-1' })
 // Other team sessions' pending decisions (read-only strip) and whether it is open. Session state, starts collapsed.
 const others = atom({ plugin: 'agent-team', key: 'others' } as const, [] as Other[], { shape: 'others-2' })
+// The task sessions (children) linked to this session's tasks, from their own status files, and the main-pane presses forwarded to them. Session state.
+const children = atom({ plugin: 'agent-team', key: 'children' } as const, [] as Child[], { shape: 'children-1' })
+const forwards = atom({ plugin: 'agent-team', key: 'forwards' } as const, [] as Forward[], { shape: 'forwards-1' })
 const othersOpen = atom({ plugin: 'agent-team', key: 'othersOpen' } as const, false, { shape: 'others-open-1' })
 // The decision lines now in the owner's prompt box (kararLines of the draft): on the terminal a button writes one and the box shows it picked.
 const karar = atom({ plugin: 'agent-team', key: 'karar' } as const, [] as string[], { shape: 'karar-1' })
@@ -95,13 +97,16 @@ const DOT: Record<RoleStatus, string> = {
   idle: 'inactive',
 }
 
-// The status as the pane draws it: a reopened session's file older than the start has its running roles drawn stopped (`cut`), until the Lead writes again.
+// The status as the pane draws it: the tasks that have a task session joined to it (`kids`; the join runs first, so a reopen never counts a child's roles), and a
+// reopened session's file older than the start has its running roles drawn stopped (`cut`), until the Lead writes again.
 // The pane, the band, the spinner word and the tick all read this one answer.
 async function drawnStatus($: EngineInterface) {
   const view = await read($, status)
+  const kids = kidsOf(view.data, await read($, children))
+  const all = joined(view.data, kids)
   const since = (await read($, reopened)).since
-  const cut = since > 0 && view.data && view.mtime < since ? stopped(view.data) : undefined
-  return { view, cut, data: cut?.data ?? view.data }
+  const cut = since > 0 && all && view.mtime < since ? stopped(all) : undefined
+  return { view, cut, data: cut?.data ?? all, joinedData: all, kids }
 }
 
 async function syncPlaced($: EngineInterface) {
@@ -272,36 +277,53 @@ async function refresh($: EngineInterface, file: string) {
   await tidy($, view)
 }
 
-// The other files of the status folder (see otherFiles): untrusted data, read-only; what fails to list, read or parse is skipped.
-// `seen` keeps the parse of a file by its size and mtime, so a quiet poll is one listing and no reads.
-type Seen = Map<string, { size: number; mtimeMs: number; other?: Other }>
+// The other files of the status folder: untrusted data, read-only; what fails to list, read or parse is skipped. A file of the last 30 days that names
+// this session's file and one of its tasks is a task session (child) of it (see linkChildren): it joins that task's card and is in no strip. The rest
+// are the strip's "other sessions" (see otherFiles). `seen` keeps the parse of a file by its size and mtime, so a quiet poll is one listing and no reads.
+type Seen = Map<string, { size: number; mtimeMs: number; s?: Status }>
 async function scanOthers($: EngineInterface, dir: string, own: string, seen: Seen) {
-  const one = async (e: DirEntry) => {
+  const unread = new Set<string>() // a file that failed to read is not tried again in this scan (and not cached: the next poll tries again)
+  const parsed = async (e: DirEntry) => {
     const hit = seen.get(e.name)
-    if (hit && hit.size === e.size && hit.mtimeMs === e.mtimeMs) return hit.other
+    if (hit && hit.size === e.size && hit.mtimeMs === e.mtimeMs) return { e, s: hit.s }
     let text: unknown
     try {
+      if (unread.has(e.name)) throw new Error('unread')
       text = await $.fs.read(`${dir}/${e.name}`)
     } catch {
-      return undefined
+      unread.add(e.name)
+      return { e, s: undefined }
     }
-    let other: Other | undefined
+    let s: Status | undefined
     try {
-      other = otherSession(e, parseStatus(typeof text === 'string' ? text : ''))
+      s = parseStatus(typeof text === 'string' ? text : '')
     } catch {}
-    seen.set(e.name, { size: e.size, mtimeMs: e.mtimeMs, other })
-    return other
+    seen.set(e.name, { size: e.size, mtimeMs: e.mtimeMs, s })
+    return { e, s }
   }
   // Nothing in here may throw out: another session's file must not stop this session's poll or start.
   let next: Other[] = []
+  let kids: Child[] = []
   try {
-    const files = otherFiles(await $.fs.list(dir), dir, own, await $.clock.now())
-    const names = new Set(files.map(f => f.name))
+    const entries = await $.fs.list(dir)
+    const now = await $.clock.now()
+    const cands = childFiles(entries, dir, own, now)
+    const link = linkChildren((await Promise.all(cands.map(parsed))).filter((c): c is { e: DirEntry; s: Status } => !!c.s), baseName(own), (await read($, status)).data?.tasks ?? [])
+    kids = link.kids
+    const joinedNames = new Set([...link.claimed, ...kids.map(c => c.file)])
+    const files = otherFiles(entries.filter(e => !joinedNames.has(e.name)), dir, own, now)
+    const names = new Set([...cands, ...files].map(f => f.name))
     for (const name of seen.keys()) if (!names.has(name)) seen.delete(name)
-    next = (await Promise.all(files.map(one))).filter((o): o is Other => !!o)
+    next = (await Promise.all(files.map(parsed))).flatMap(({ e, s }) => (s ? otherSession(e, s) ?? [] : []))
   } catch {}
   try {
     if (JSON.stringify(await read($, others)) !== JSON.stringify(next)) await update($, others, () => next)
+  } catch {}
+  try {
+    if (JSON.stringify(await read($, children)) !== JSON.stringify(kids)) await update($, children, () => kids)
+    // An answer's state goes when its decision leaves the child's file; a failed one also when the file changes.
+    const gone = (f: Forward) => !kids.some(c => c.file === f.file && c.decisions.some(d => d.id === f.id) && (f.state === 'sent' || c.mtimeMs === f.mtimeMs))
+    if ((await read($, forwards)).some(gone)) await update($, forwards, fs => fs.filter(f => !gone(f)))
   } catch {}
 }
 
@@ -321,6 +343,51 @@ async function sweep($: EngineInterface) {
   }
 }
 
+// Where a message for another team session goes: the ids of the store records (one per team session, machine-wide per plugin, read live) whose file is `file`
+// in the status folder, newest first, at most 3, never this session's own. The message goes to the first that delivers; a send that throws or is refused is the next try.
+async function sendTo($: EngineInterface, file: string, text: string) {
+  const mine = String(await $.session.id().catch(() => ''))
+  const ids: { id: string; at: number }[] = []
+  for (const key of await $.store.keys()) {
+    const r = key.startsWith('session:') ? parseRecord(await $.store.get(key), followed.dir) : undefined
+    if (r && r.file === `${followed.dir}/${file}` && key.slice(8) !== mine) ids.push({ id: key.slice(8), at: Date.parse(r.at) || 0 })
+  }
+  for (const { id } of ids.sort((a, b) => b.at - a.at).slice(0, 3)) {
+    try {
+      if ((await $.session.send({ to: { sessionId: id }, text })).isDelivered) return true
+    } catch {}
+  }
+  return false
+}
+
+// A main-pane press on a child's decision: one send to the child's session, never the box, the outbox or the Lead (the line must not reach this session's Lead).
+// A push approval is never forwarded (the card has no button for it either); one answer per decision; nothing waits in a queue: a failure is shown and the next press tries again.
+const sending = new Set<string>()
+export async function forward($: EngineInterface, c: Child, d: Decision, option: string) {
+  const key = `${c.file}\n${d.id}`
+  if (isPush(d.kind) || sending.has(key)) return
+  try {
+    if ((await read($, forwards)).some(f => f.file === c.file && f.id === d.id && f.state === 'sent')) return
+    sending.add(key)
+    const ok = await sendTo($, c.file, `${PANE_HEAD}\n${kararLine(d.id, option)}`).catch(() => false)
+    await update($, forwards, fs => [...fs.filter(f => f.file !== c.file || f.id !== d.id), { file: c.file, id: d.id, option, state: ok ? ('sent' as const) : ('failed' as const), mtimeMs: c.mtimeMs }])
+  } catch {} finally {
+    sending.delete(key)
+  }
+}
+
+// A task session reports to the session that started it (terminal only: the desktop host sends the starter the first 400 characters itself, and a second
+// message would wake it twice). Never throws.
+let surface: string | null = null
+async function report($: EngineInterface, e: { answer: string; reason: string }) {
+  try {
+    if (surface !== 'terminal' || !(await read($, mode)).isOn) return
+    const { file, data } = await read($, status)
+    const text = data?.parent && reportText(e.answer, e.reason, data.parent.task, file)
+    if (text && data?.parent) await sendTo($, data.parent.file, text)
+  } catch {}
+}
+
 // /clear: a new id, no session.start, every atom reset. `follow` sees the id change, carries the record over to the new
 // id and puts the mode and the path back; the poll, a prompt and /team all run it before they read the atoms.
 // `followed` is what session.start settled on: the status folder, the file it reads, the last session id seen.
@@ -337,8 +404,8 @@ async function takeReopen($: EngineInterface) {
       return s.line ? { ...s, line: false } : s
     })
     if (since < 0) return undefined
-    const { data, mtime } = await read($, status)
-    return mtime < since ? reopenLine(data, await $.clock.now()) : undefined
+    const { view, joinedData } = await drawnStatus($)
+    return view.mtime < since ? reopenLine(joinedData, await $.clock.now()) : undefined
   } catch {
     return undefined
   }
@@ -407,13 +474,11 @@ async function syncTick($: EngineInterface) {
   })
 }
 
-// ponytail: stub, replaced after the red test run
-export async function forward(_$: EngineInterface, _c: Child, _d: Decision, _o: string) {}
-
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     stopBeat()
     ended = false
+    surface = e.surface
     await $.command.register({ name: 'team', description: 'Agent Team modunu aç ya da kapat' })
     await $.command.register({ name: 'team-pane', description: "Agent Team pane'ini aç" })
 
@@ -460,7 +525,9 @@ export const register: Register = (on, options) => {
     // Independent: one failing stops neither the other nor the clock.
     const term = e.surface === 'terminal'
     const poll = async () => {
-      const done = await Promise.allSettled([follow($), refresh($, file), scanOthers($, dir, file, seen)])
+      // The other files are read after this session's own: the join reads the own tasks as they are now.
+      const done = await Promise.allSettled([follow($), refresh($, file)])
+      await scanOthers($, dir, file, seen)
       // Terminal only: whether the pane is placed (the band), and the glyph tick. Reads, and writes only a change.
       if (term) {
         await syncPlaced($).catch(() => undefined) // a failing pane list leaves `placed` as it was; the tick is still looked at
@@ -518,6 +585,7 @@ export const register: Register = (on, options) => {
       if (e.agentId === undefined) {
         running.delete(e.turnId)
         if (!running.size) void submitOut($)
+        void report($, e)
       }
     }
   })
@@ -525,7 +593,8 @@ export const register: Register = (on, options) => {
   // nothing pending, team mode off, or a role agent's call, or a deny, core's result is returned as it is; nothing here throws or waits.
   on('tool.call', async ($, e, next) => {
     const r = await next(e)
-    if (e.agentId !== undefined || r.deny !== undefined) return r
+    // A plugin's own `$.session.send` (the pane's forward, a child's report) runs through here as SendMessage: no model reads its result, so nothing is taken out of the outbox for it.
+    if (e.agentId !== undefined || r.deny !== undefined || e.tool === 'SendMessage') return r
     try {
       // Team mode off: pass through; what is left goes out as an owner submit at the turn end (or the next press).
       if (!(await read($, outbox)).queue.some(q => !q.push) || !(await read($, mode)).isOn) return r
@@ -590,10 +659,10 @@ export const register: Register = (on, options) => {
   // While the pane is not drawn: one row above the prompt with this session's counts and a key (after ctrl+x tab) that opens the pane. Terminal only.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.surface !== 'terminal' || e.props.hasSurvey || !(await read($, mode)).isOn || (await read($, placed))) return next(e)
-    const { cut, data } = await drawnStatus($)
+    const { cut, data, kids } = await drawnStatus($)
     const n = countStates(data?.tasks ?? [])
     const total = (await read($, others)).reduce((t, o) => t + o.count, 0)
-    const segs = bandSegments({ stale: !!cut, decisions: data?.decisions.length ?? 0, running: n.running, blocked: n.blocked, others: total }, e.props.bodyColumns)
+    const segs = bandSegments({ stale: !!cut, decisions: (data?.decisions.length ?? 0) + kids.reduce((t, c) => t + c.count, 0), running: n.running, blocked: n.blocked, others: total }, e.props.bodyColumns)
     return segs ? termBand($.ui.resolve(e), segs, () => void $.ui.open({ ...PANE_OPEN, focus: true })) : next(e)
   })
 
@@ -619,13 +688,22 @@ export const register: Register = (on, options) => {
     const other = await read($, others)
     const otherOpen = await read($, othersOpen)
     const otherTotal = other.reduce((n, o) => n + o.count, 0)
-    const { view, cut, data } = await drawnStatus($)
+    const { view, cut: reopenCut, data, kids } = await drawnStatus($)
     const { file, error } = view
     // The glyph of a running role turns on the terminal only; the desktop never reads the tick.
     const frame = term ? await read($, tick) : 0
     const now = await $.clock.now().catch(() => NaN)
     const lines = await read($, karar)
     const out = await read($, outbox)
+    // The task sessions: the rows under a joined task's state row, and the child decisions after the own ones (the answers forwarded to them: `fwd`).
+    const fwd = await read($, forwards)
+    const kidTotal = kids.reduce((t, c) => t + c.count, 0)
+    const rows = (t: Task) => {
+      const c = kids.find(k => k.task === t.id && !t.generatedId)
+      return sessionLines(t, c, { failed: !!c && fwd.some(f => f.file === c.file && f.state === 'failed'), now, term })
+    }
+    const rowColor = { warning: '#E5CC7A', error: BLOCKED_INK, success: undefined } as const
+    const sessionRows = (t: Task) => rows(t).map((l, i) => <Text key={`t-${t.id}-s-${i}`} size="caption" color={l.color && rowColor[l.color]} dimColor={!l.color}>{l.text}</Text>)
     // What a Pause / Devam button adds to its label: queued behind a running turn, or already submitted as the owner (until the file changes).
     const note = (line: string) => (out.queue.some(q => q.line === line) ? 'sırada' : out.said.includes(line) ? 'gönderildi' : '')
     const labelled = (label: string, line: string) => (note(line) ? `${label} · ${note(line)}` : label)
@@ -674,6 +752,35 @@ export const register: Register = (on, options) => {
           (queued || d.options.length > 0) && <Text size="caption" dimColor>{queued ? (queued.push ? QUEUED_PUSH : QUEUED) : "Bir seçeneğe bas · Lead'e gider"}</Text>
         )}
       </Box>
+      )
+    }
+
+    // A task session's decision: the same card, an answer is sent at once to that session; a push approval has no button (it is answered only there).
+    const kidCard = (c: Child, d: Decision) => {
+      const f = fwd.find(x => x.file === c.file && x.id === d.id)
+      const at = f?.state === 'sent' ? d.options.indexOf(f.option) : -1
+      const stuck = isStuck(d.kind)
+      const edge = f?.state === 'sent' ? 'success' : stuck ? BLOCKED_EDGE : CARD.borderColor
+      const cap = kidCaption(c, d, f, false)
+      return (
+        <Box key={`kd-${c.task}-${d.id}`} {...CARD} borderColor={edge} hover={hover(edge)}>
+          <Box flexDirection="column">
+            <Text size="caption" weight="medium" color={stuck ? BLOCKED_INK : 'claude'}>{[d.kind, data?.tasks.find(t => t.id === c.task)?.title, `◇ ${c.name}`].filter(Boolean).join(' · ')}</Text>
+            <Text>{d.text}</Text>
+            {d.meta && <Text size="caption" mono dimColor>{d.meta}</Text>}
+          </Box>
+          {d.options.length > 0 &&
+            (isPush(d.kind) ? (
+              <Text size="caption" dimColor>{d.options.map(o => shorten(o, 60)).join(' · ')}</Text>
+            ) : (
+              <Box flexDirection="row" gap="xs" flexWrap="wrap">
+                {d.options.map((o, i) => (
+                  <Button key={`kd-${c.task}-${d.id}-${i}`} label={i === at ? `✓ ${shorten(o, 60)}` : shorten(o, 60)} variant={i === Math.max(at, 0) ? 'primary' : 'secondary'} onPress={() => void forward($, c, d, o)} />
+                ))}
+              </Box>
+            ))}
+          {cap && <Text size="caption" color={cap.color} dimColor={!cap.color}>{cap.text}</Text>}
+        </Box>
       )
     }
 
@@ -740,6 +847,7 @@ export const register: Register = (on, options) => {
             </Box>
           </Box>
           {reason(t)}
+          {sessionRows(t)}
           {t.branch && <Text size="caption" mono dimColor wrap="truncate-end">{t.branch}</Text>}
         </Box>
         <Box flexDirection="column">
@@ -801,6 +909,7 @@ export const register: Register = (on, options) => {
               {stateChip(t)}
               {reason(t)}
             </Box>
+            {sessionRows(t)}
             {t.branch && <Text size="caption" mono dimColor wrap="truncate-end">{t.branch}</Text>}
             {t.candidate && <Text size="caption" mono dimColor>{clip(t.candidate, 7)}</Text>}
             {last && <Text size="caption" dimColor>{`${last.verdict} · ${last.n} tur`}</Text>}
@@ -857,6 +966,7 @@ export const register: Register = (on, options) => {
             () => void show(null, open.id),
             () => void $.prompt.fill({ text: `${open.title} hakkında: `, mode: 'replace' }),
             frame,
+            rows(open),
           )}
         </Box>
       )
@@ -865,7 +975,7 @@ export const register: Register = (on, options) => {
 
     const written = stamp(data?.updatedAt, now)
     const updated = written.text
-    const reopenText = cut && `Oturum yeniden açıldı · durum ${written.days ? `${written.days} gün önceki` : 'önceki oturumdan'}${cut.count ? ` · çalışıyor görünen ${cut.count} rol durmuş olabilir` : ''}`
+    const reopenText = reopenCut && `Oturum yeniden açıldı · durum ${written.days ? `${written.days} gün önceki` : 'önceki oturumdan'}${reopenCut.count ? ` · çalışıyor görünen ${reopenCut.count} rol durmuş olabilir` : ''}`
     const askWhere = () => void press($, running, { line: ASK_WHERE })
     const lim = data?.limits
     const usage = (
@@ -1005,20 +1115,24 @@ export const register: Register = (on, options) => {
             </Text>
           ))}
 
-        {term && data && data.decisions.length > 0 && termDecisions(ui, data.decisions, data.tasks, (d, o) => void pick($, running, d, o, true), lines, out)}
+        {term && data && data.decisions.length + kidTotal > 0 && termDecisions(ui, data.decisions, data.tasks, (d, o) => void pick($, running, d, o, true), lines, out, kids.map(child => ({ child, title: data.tasks.find(t => t.id === child.task)?.title, fwd })), (c, d, o) => void forward($, c, d, o))}
 
-        {term && data && data.tasks.length > 0 && termTasks(ui, data.tasks, n, showOn, id => void show(id), frame)}
+        {term && data && data.tasks.length > 0 && termTasks(ui, data.tasks, n, showOn, id => void show(id), frame, rows)}
 
         {term && data && termHint(ui, otherTotal > 0, !!reopenText)}
 
-        {!term && data && data.decisions.length > 0 && (
+        {!term && data && data.decisions.length + kidTotal > 0 && (
           <Box flexDirection="column" gap="sm">
             <Box flexDirection="row" alignItems="center" gap="xs">
               {dot(CLAY, 'claude', 'karar bekliyor')}
               <Text weight="semibold">Senin sıran</Text>
-              <Text dimColor size="caption">{`${data.decisions.length} karar`}</Text>
+              <Text dimColor size="caption">{`${data.decisions.length + kidTotal} karar`}</Text>
             </Box>
             {data.decisions.map(decisionCard)}
+            {kids.flatMap(c => [
+              ...c.decisions.map(d => kidCard(c, d)),
+              ...(c.count > c.decisions.length ? [<Text key={`kd-${c.task}-more`} size="caption" dimColor>{`+${c.count - c.decisions.length} karar daha · o oturumda`}</Text>] : []),
+            ])}
           </Box>
         )}
 

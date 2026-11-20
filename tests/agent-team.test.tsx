@@ -2010,11 +2010,11 @@ test('other sessions, wiring: 21 files give 20 reads, an unreadable or unparsabl
   delete files['p5--00000005.json'] // read fails
   files['stale--aaaaaaaa.json'] = decisionsOnly(1)
   await bootOthers($, on, 'desktop', listing, files, { read, own: decisionsOnly(7) })
-  expect(read.length).toBe(20)
-  expect(read).not.toContain('p20--00000000.json')
-  expect(read).not.toContain('stale--aaaaaaaa.json')
+  // T4: every file of the last 30 days (the 40 newest) is read once as a possible task session, so the 21st and the day-old file are read too (22 reads);
+  // the strip still takes only the newest 20 of the last 24 h, which the 17 below proves (the 21st and the day-old file are not in it).
+  expect(read.length).toBe(22)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  // 20 read; 3 of them give nothing (unparsable, empty, unreadable): 17 sessions with 1 decision each; own's 7 are not in it.
+  // The newest 20 are drawn; 3 of them give nothing (unparsable, empty, unreadable): 17 sessions with 1 decision each; own's 7 are not in it.
   expect(textIn(await drawnOf(ui), 'Diğer oturumlarda 17 karar bekliyor')).toBe(true)
   await ui.unmount()
 })
@@ -5297,17 +5297,20 @@ const defaultFiles4 = (): Record<string, F4> => ({ [C4_KID]: { text: kid4(), age
 const cBoot = async (
   $: Parameters<TestBody>[0],
   on: Parameters<TestBody>[1],
-  o: { surface?: 'desktop' | 'terminal' | null; own?: string; cwd?: string; sid?: string; files?: Record<string, F4>; store?: Record<string, unknown>; ownAge?: number; deliver?: (id: string) => boolean | 'throw' } = {},
+  o: { surface?: 'desktop' | 'terminal' | null; own?: string; cwd?: string; sid?: string; files?: Record<string, F4>; store?: Record<string, unknown>; ownAge?: number; deliver?: (id: string) => boolean } = {},
 ) => {
   const sid = o.sid ?? C4_SID
   const cwd = o.cwd ?? '/Users/x/Projeler/main'
   const ownName = `${cwd.split('/').pop()}--${sid.slice(0, 8)}.json`
   const disk = { own: o.own ?? own4(), ownAge: o.ownAge ?? MIN4, rev: 0 }
   const files = o.files ?? defaultFiles4()
-  const gate = { deliver: o.deliver ?? (() => true as boolean | 'throw') }
+  const gate = { deliver: o.deliver ?? (() => true), storeFails: false }
   const log = { sends: [] as { to: string; text: string }[], reads: [] as string[], fills: [] as string[], submits: [] as { text: string; context?: readonly string[] }[], sets: [] as string[], writes: [] as string[] }
   const store = new Map<string, unknown>(Object.entries(o.store ?? {}))
-  on('store.get', (_, e) => ({ value: store.get(e.key) }))
+  on('store.get', (_, e) => {
+    if (gate.storeFails && e.key.startsWith('session:')) throw new Error('store down')
+    return { value: store.get(e.key) }
+  })
   on('store.set', (_, e) => {
     store.set(e.key, JSON.parse(JSON.stringify(e.value)))
     return { value: undefined }
@@ -5350,10 +5353,9 @@ const cBoot = async (
   on('session.end', (_, e) => ({ sessionId: e.sessionId }))
   on('session.append', (_, e, next) => next(e))
   on('session.send', (_, e) => {
-    const to = (e.to as { sessionId: string }).sessionId
+    const to = e.to // the kit spells a plugin's { sessionId } address as the id
     log.sends.push({ to, text: e.text })
     const r = gate.deliver(to)
-    if (r === 'throw') return { deny: 'boom' } as never
     return r ? { isDelivered: true as const } : { isDelivered: false as const, reason: 'no live session on this machine' }
   })
   on('state.set', (_, e, next) => {
@@ -5644,7 +5646,7 @@ test('T4 C9: a child Push onayı has no Button on either surface, a fixed captio
     }
   }
   const child = { file: C4_KID, task: 'hard', name: 'hard', mtimeMs: C4_NOW, more: 0, count: 4, decisions: [] }
-  for (const [i, kind] of kinds.entries()) await forward($, child, { id: `p${i}`, kind, text: 'Push?', options: ['Onayla'] }, 'Onayla')
+  for (const [i, kind] of kinds.entries()) await forward($ as never, child, { id: `p${i}`, kind, text: 'Push?', options: ['Onayla'] }, 'Onayla')
   await k.settle()
   expect(k.log.sends).toEqual([])
 })
@@ -5684,9 +5686,11 @@ test('T4 C10 (desktop): the failed press reads "oturum açık değil · o oturum
   expect(byKey(root, 'kd-hard-k1-0').props?.label).toBe('A') // no check mark: nothing was delivered
 })
 
-test('T4 C10 (throwing send): a send that throws is a failed press, nothing breaks', FOLDERS, async ($, on) => {
-  const k = await cBoot($, on, { store: KID_REC, deliver: () => 'throw' })
+test('T4 C10 (store fails): a press whose target lookup throws is a failed press, nothing breaks', FOLDERS, async ($, on) => {
+  // The kit cannot make $.session.send itself reject (a throwing hook is reported as a test error); a failing store read is the same catch path in forward.
+  const k = await cBoot($, on, { store: KID_REC })
   const ui = await k.pane('terminal')
+  k.gate.storeFails = true
   await press4(ui, 'kd-hard-k1-0')
   await k.settle()
   expect(texts4(byKey(await drawnOf(ui), 'kd-hard-k1'))).toContain(FAILED_CAPTION)
@@ -5734,8 +5738,8 @@ test('T4 C10 (decision gone): the answer state of a decision goes when the decis
 })
 
 test('T4 C11: the newest record of the child file is tried first, the next when it is not delivered, never the own id or another file, at most 3 per press', FOLDERS, async ($, on) => {
-  const ids = ['bbbbbbbb-0000-4000-8000-00000000000a', 'bbbbbbbb-0000-4000-8000-00000000000b', 'bbbbbbbb-0000-4000-8000-00000000000c', 'bbbbbbbb-0000-4000-8000-00000000000d', 'bbbbbbbb-0000-4000-8000-00000000000e']
-  const [a, b, c, d, e] = ids as [string, string, string, string, string]
+  const a = 'bbbbbbbb-0000-4000-8000-00000000000a'
+  const b = 'bbbbbbbb-0000-4000-8000-00000000000b'
   const store = Object.fromEntries([sess4(a, C4_KID, hourAt(10)), sess4(b, C4_KID, hourAt(11))])
   const k = await cBoot($, on, { store, deliver: id => id === a })
   // After the start, so the own record (which the start writes) is replaced: the own id names the child file as the newest, another file's id is newer still.
@@ -5745,13 +5749,15 @@ test('T4 C11: the newest record of the child file is tried first, the next when 
   await press4(ui, 'kd-hard-k1-0')
   await k.settle()
   expect(k.log.sends.map(s => s.to)).toEqual([b, a]) // 11:00 first, then 10:00, delivered there
-  // Five records, none delivered: three tries, newest first.
-  for (const [i, id] of [c, d, e].entries()) k.store.set(`session:${id}`, rec(`${C4D}/${C4_KID}`, SWITCH, {}, hourAt(9 - i)))
-  k.gate.deliver = () => false
-  k.log.sends.length = 0
+})
+
+test('T4 C11 (cap): with five records and none delivered a press makes three tries, newest first', FOLDERS, async ($, on) => {
+  const ids = ['a', 'b', 'c', 'd', 'e'].map(x => `bbbbbbbb-0000-4000-8000-00000000000${x}`)
+  const k = await cBoot($, on, { store: Object.fromEntries(ids.map((id, i) => sess4(id, C4_KID, hourAt(6 + i)))), deliver: () => false })
+  const ui = await k.pane('terminal')
   await press4(ui, 'kd-hard-k1-1')
   await k.settle()
-  expect(k.log.sends.map(s => s.to)).toEqual([b, a, c])
+  expect(k.log.sends.map(s => s.to)).toEqual([ids[4], ids[3], ids[2]]) // 10:00, 9:00, 8:00 of the five (6:00-10:00)
 })
 
 // ---- C12: stale children (spec §3.6) ----
@@ -5801,7 +5807,7 @@ test('T4 C13: a reopened parent counts only its own running roles; the child rol
 const kidBoot = (
   $: Parameters<TestBody>[0],
   on: Parameters<TestBody>[1],
-  o: { surface?: 'desktop' | 'terminal' | null; own?: string; deliver?: (id: string) => boolean | 'throw' } = {},
+  o: { surface?: 'desktop' | 'terminal' | null; own?: string; deliver?: (id: string) => boolean } = {},
 ) =>
   cBoot($, on, { sid: C4_KID_SID, cwd: '/Users/x/Projeler/hard', own: o.own ?? kid4(), files: {}, surface: o.surface, deliver: o.deliver, store: Object.fromEntries([sess4(C4_SID, 'main--aaaaaaaa.json', hourAt(11))]) })
 const done4 = async ($: Parameters<TestBody>[0], k: { settle: () => Promise<void> }, over: Record<string, unknown> = {}) => {
@@ -5846,12 +5852,14 @@ test('T4 C14 (team mode off): with team mode off nothing is sent', async ($, on)
   expect(k.log.sends).toEqual([])
 })
 
-test('T4 C14 (throwing send): a send that throws breaks nothing', FOLDERS, async ($, on) => {
-  const k = await kidBoot($, on, { deliver: () => 'throw' })
+test('T4 C14 (failing lookup): a report whose target lookup throws breaks nothing, and the next turn still reports', FOLDERS, async ($, on) => {
+  const k = await kidBoot($, on)
+  k.gate.storeFails = true
   await done4($, k, { answer: 'GÖREV hard: GO' })
-  expect(k.log.sends.length).toBe(1)
-  await done4($, k, { answer: 'GÖREV hard: GO again' }) // the next turn still works
-  expect(k.log.sends.length).toBe(2)
+  expect(k.log.sends).toEqual([])
+  k.gate.storeFails = false
+  await done4($, k, { answer: 'GÖREV hard: GO again' })
+  expect(sent4(k)).toEqual([[C4_SID, 'GÖREV hard: GO again']])
 })
 
 // ---- C15: the plugin's own session.send runs through tool.call as SendMessage (spec §3.8) ----
