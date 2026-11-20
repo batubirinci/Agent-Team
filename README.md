@@ -51,6 +51,11 @@ Pane çizilmiyorken (dar terminal, kapatılmış) prompt üstünde tek satırlı
   `Karar (<id>): <seçenek>` terminalde mesaj kutusuna yazılır (Enter'la gider, birkaç karar tek Enter'la), masaüstünde Lead'in sıradaki araç adımında okunur (Pause ve Devam da böyle); push gibi geri alınamaz onaylar ise Lead işini bitirince senin mesajın olarak gider.
 - **Diğer oturumlar:** aynı makinedeki başka team oturumlarında bekleyen kararlar yalnızca okunur bir
   şeritte görünür (`Göster`/`Gizle`, terminalde `v`); cevap o oturumda verilir.
+- **Görev oturumları:** bir görev kendi oturumunda (masaüstü oturum satırı ya da `claude --bg`) çalışıyorsa görev kartı o oturumun
+  aşamasını, turunu, adayını ve rollerini canlı gösterir (`ayrı oturum · <ad> · <son yazım>`), kararları "Senin sıran"da
+  listelenir ve bir seçeneğe basınca cevap o oturuma gider. `Push onayı` orada düğmesizdir, yalnız o oturumda verilir.
+  Yarım saatten uzun yazmayan çalışan oturum işaretlenir, cevap gitmezse `oturum açık değil` der. Bağlı oturum "Diğer oturumlar"da ikinci kez görünmez.
+  Ayrıntı: `skills/agent-team/references/task-sessions.md`.
 - **Görevler:** her görev için 5 aşamalı çizgi (Spec, Build, Review, Revise, Rapor) ve rollerin
   durumu.
 - **Ayrıntı:** görev kartındaki **Ayrıntı ›** turları, bulguları, Lead notunu ve kanıt yollarını açar.

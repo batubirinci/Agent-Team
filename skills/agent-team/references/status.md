@@ -21,6 +21,7 @@ Panes also read (never write) the other `*.json` files in the same status folder
 "Diğer oturumlar" that shows other sessions' pending `decisions` read-only: only regular files
 (not links) modified in the last 24 hours and at most 256 KiB, the 20 newest at most, parsed like
 your own file. So keep `decisions` current in your own file; the owner answers there, not in the strip.
+A task session of this session (below) is not in the strip: a linked session is drawn on its task card instead.
 
 The file may already hold tasks and decisions from earlier in this session (before a `/clear` or a
 resume): read it before writing, keep what you did not finish, and update only what changed. Do not
@@ -127,6 +128,21 @@ Fields:
   The pane shows the path as text. Long texts are cut (a finding 300 characters, a note 400).
 - Pressing `Ayrıntı ›` on a task card opens its detail view: rounds, findings, notes and evidence.
   A task without `rounds` still opens, just without the Turlar section.
+
+Task sessions (`references/task-sessions.md`): a task in its own session has two ends in two files.
+- The child's file carries top-level `"parent": { "file": "<parent's status file name>", "task": "<task id in the parent's file>" }`.
+  `file` is a bare name ending in `.json` (no `/` or `\`, at most 255 characters); `task` follows the id rule above. Anything else, and `parent` is ignored.
+  A session that is not a task session writes none.
+- The parent's task row carries `"session": { "name": "<handle>" }` (the handle the session was started with).
+- The join: the parent's pane links a file of its status folder (a regular `.json`, under 30 days, at most 256 KiB, among the 40 newest) to its own task
+  when `parent.file` is its own file's name and the task has that written id. Several files for one task: the newest is the child, the others are drawn
+  nowhere. At most 8 children. The task keeps its `id`, `title` and `wait`; its stage, round, candidate, counts, roles, rounds, evidence and state are the
+  child's (its task of that id, else its first), drawn with the row `ayrı oturum · <ad> · <son yazım>`. The child's decisions (the first 10) are listed
+  under "Senin sıran" after the parent's own. A linked session is not in "Diğer oturumlar". Without the child's file the row reads `durum dosyası bekleniyor`.
+- Answers: a press in the parent's pane on a child's decision is sent to the child's session as a message that starts
+  `[Agent Team pane · ana oturum] Sahip ana oturumun pane'inde bastı:` and carries `Karar (<id>): <option>`. It is a message from another
+  session, never the owner's own message and never a push approval: a child's `Push onayı` has no button in the parent's pane.
+  The pane writes no file for it; the child closes the decision in its own file.
 
 Reopened session: when the session is opened again (a resume) the pane keeps the old tasks and decisions and
 shows the day of `updatedAt` when it is not today. Until the file is written again, a banner says how old it is and
