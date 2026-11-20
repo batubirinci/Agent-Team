@@ -177,3 +177,15 @@ Opus; targeted re-checks of named scenarios may run on Sonnet (`model: "sonnet"`
   asking + post-merge steps; pause never archives sessions or blind-WIP-commits an agent worktree.
   Design → implement split is now the default for hard work (no longer a trial). Backup:
   `~/.claude/skills-yedek/agent-team-2026-11-10/`. New pilot phase P9.
+- 2026-11-20 — Owner: six token/speed pilots, passed rules locked into the skill. Kept: P1 spec
+  adversary (the cross-model QA attacks the agreed spec before any code for cross-module / trust
+  work: 17 real gaps, all folded in, 5 of them drift from the code on base; GO in 2 rounds; 0 Claude
+  tokens); P3 mutation first with the shared `tools/mutate.py` (26 mutants ~13 min → ~2 min with
+  parallel worktrees; reviewers' own mutants found test gaps the Developer's 37 missed: 8 survivors,
+  2 blocking, in one round; `claude plugin test` cuts piped stdout at 64 KiB, so the tool writes
+  output to a file); focused re-check briefs (fix diff + Lead's disposition + Developer's ≤15-line
+  summary block) on Sonnet: 85-118k tokens per re-check against 184-246k for the Opus re-checks
+  before (246k with the context pack); task sessions offered for every independent task. Dropped: P2 context pack (QA 2 180k vs ≤115k
+  target, security 246k vs ≤125k, reviewers read whole files anyway, the pack itself cost 180k).
+  P4 executable invariants: not run. Lead hand-off limit ~600k → ~300k context (token study A + pilot
+  P6: the Lead reached 332k over T4 rounds 5-7 plus pane-groups; a task session ran to 400k).

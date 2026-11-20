@@ -5596,19 +5596,21 @@ test('T4 C4 (another day): a child 49 h old is linked and drawn, an unrelated fi
 
 
 
-test('T4 C5 (nine children): eight are joined, the ninth task is drawn as written and its file is not in the strip', FOLDERS, async ($, on) => {
+test('T4 C5 (nine children): eight are joined, the ninth task is drawn as written and its file is no child: its one decision is in the strip', FOLDERS, async ($, on) => {
   // Revision 3: nine bound tasks; the eight with the newest `kids[h].at` are children (addendum §1.4 "at most 8 children (newest kids[h].at)").
   const tasks = Array.from({ length: 9 }, (_, i) => ({ id: `t${i + 1}`, title: `Görev ${i + 1}`, stage: 'build' }))
   const name = (i: number) => `k${i + 1}--0000000${i + 1}.json`
   const sid = (i: number) => `0000000${i + 1}-0000-4000-8000-000000000000`
-  const files = Object.fromEntries(tasks.map((t, i) => [name(i), { text: kid4({ decisions: [], tasks: [{ id: t.id, title: 'K', stage: 'review', roles: [] }] }), age: (i + 1) * MIN4 }]))
+  const files = Object.fromEntries(tasks.map((t, i) => [name(i), { text: kid4({ decisions: i === 8 ? [{ id: 'q9', text: 'Dokuzuncu soru', options: ['Tamam'] }] : [], tasks: [{ id: t.id, title: 'K', stage: 'review', roles: [] }] }), age: (i + 1) * MIN4 }]))
   const store = Object.fromEntries(tasks.map((t, i) => sess4(sid(i), name(i), hourAt(11), boundOf4(t.id, `code-${t.id}-0123456789`))))
   const kids = Object.fromEntries(tasks.map((t, i) => [t.id, { code: `code-${t.id}-0123456789`, at: hourAt(10) - i * MIN4 }]))
   const k = await cBoot($, on, { own: own4({ decisions: [], tasks }), files, store, mine: { kids } })
   const root = await drawnOf(await k.pane('terminal'))
   for (const i of [1, 8]) expect(texts4(byKey(root, `t-t${i}`))).toContain('Review · 3/5')
   expect(texts4(byKey(root, 't-t9'))).toContain('Build · 2/5')
-  expect(stripOf(root)).toEqual([])
+  // The ninth file has an open decision (the fixture above): it is no child (at most 8, linksOf), so it is an unrelated file and its decision is the strip's only one.
+  // Source: the count of decisions the fixture gives it (one); the eight children's files hold none.
+  expect(stripOf(root)).toEqual(['Diğer oturumlarda 1 karar'])
 })
 
 // ---- C8, C9: forwarding a press (spec §3.5) ----
@@ -8065,4 +8067,80 @@ test('pane-groups A13 (termDetail): a finished task\'s detail shows ✓ bitti, t
   const sum = byKey(root, 'detail-summary')
   expect(parts(sum.children?.[1] as Node)).toEqual([['✓ bitti', 'success', 'bold', false], [' · A notu', undefined, undefined, true]])
   expect(nodesOf(sum).filter(n => n.type === 'Text' && textOf(n) === '━━━ ').map(n => n.props?.color)).toEqual(['success', 'success', 'success', 'success', 'success'])
+})
+
+// ====================================================================================================================================================
+// test-gaps: survivors and assertion gaps left by T4 round 7 (Neon N7-*) and pane-groups round 2 (C21/C22/C27). No product code changes.
+// Sources of the expected values (nothing is read back from the implementation):
+//   N7-*: the T4 addendum rules already used above (§1.4 isValid/othersOf, §1.9 adopt: exactly one parent entry binds, the envelope is the delivery's whole body)
+//         and the behaviour Neon measured on the candidate (qa-r7 probes Q6-Q8: bound=null, ownBoundChildListed=false, consumed=null).
+//   pane-groups: spec A13 + invariant 4 (every caption/status/header row in a terminal card is one row, wrap=truncate-end), spec A8 (the C27 row is one row in
+//         the card and the detail), A13 (keys follow the drawn order over acdefghijkmno).
+// ====================================================================================================================================================
+// Q7: a record bound to a child of THIS session's own file (on another task than the one being bound) is not eligible: another session (this one) holds its code.
+test('test-gaps N7 Q7 (Bağla, own child): a session bound to a task this session started on another task is not listed', FOLDERS, async ($, on) => {
+  const X_SID = 'a1b2c3d4-0000-4000-8000-0000000000aa'
+  const YCODE = 'ycode-0123456789abcdef'
+  const store = { ...bindStore(), ...Object.fromEntries([sess4(X_SID, 'x-proj--a1b2c3d4.json', hourAt(11) + 10 * MIN4, boundOf4('y', YCODE))]) }
+  const k = await bindBoot($, on, { store, mine: { kids: { y: { code: YCODE, at: hourAt(10) } } } })
+  const ui = await k.pane('terminal')
+  await openBindTerm(ui)
+  expect(rowKeys(await drawnOf(ui))).toEqual([`bind-row-${B_SID}`, `bind-row-${A_SID}`, `bind-row-${F_SID}`])
+})
+
+// Q6: one parent file that names A on two tasks is two entries, not one: adopt refuses (it binds only when exactly one entry names it).
+test('test-gaps N7 Q6 (child, adopt): one parent file naming A on two tasks is ambiguous: consumed, nothing bound', FOLDERS, async ($, on) => {
+  const kids = { kids: { m: { code: MCODE, at: hourAt(11), to: A_SID }, n: { code: 'ncode-0123456789abcd', at: hourAt(11), to: A_SID } } }
+  const k = await aBoot($, on, Object.fromEntries([sess4(C4_SID, 'main--aaaaaaaa.json', hourAt(11), kids)]))
+  const before = JSON.stringify(k.record())
+  expect(typeof (await recv4($, k, BIND4)).consumed).toBe('string')
+  expect([k.record()?.bound, JSON.stringify(k.record())]).toEqual([undefined, before])
+})
+
+// Q8: the envelope is the whole delivery. A bind message inside an envelope that has text before or after it, or inside a quoted envelope, is not the bind message.
+for (const [what, text] of [
+  ['text after the envelope', `${peer4(BIND4)}\nek satır`],
+  ['text before the envelope', `GÖREV m: GO\n${peer4(BIND4)}`],
+  ['a quoted envelope inside the body', peer4(`alıntı:\n${peer4(BIND4)}`)],
+] as const)
+  test(`test-gaps N7 Q8 (child, whole delivery): ${what} is not consumed, binds nothing and goes on as it came`, FOLDERS, async ($, on) => {
+    const k = await aBoot($, on, parentM())
+    const r = await recv4($, k, '', AT_PLUGIN, { text })
+    expect([r.consumed, k.record()?.bound, k.log.received.at(-1)]).toEqual([undefined, undefined, text])
+  })
+
+// C21: the three terminal group headers are one row each, cut at the end.
+test('test-gaps C21 (terminal headers): ÇALIŞAN, BEKLEYEN (with the takıldı count) and ✓ BİTEN are each one row, cut at the end', FOLDERS, async ($, on) => {
+  const root = await drawnOf(await (await pgBoot($, on, F, { surface: 'terminal' })).pane('terminal'))
+  for (const re of [/^ÇALIŞAN · 1$/, /^BEKLEYEN · 5 · 2 takıldı$/, /^✓ BİTEN · 1$/]) expect([String(re), textNode(root, re)?.props?.wrap]).toEqual([String(re), 'truncate-end'])
+})
+
+// C22: every open Biten row is one Box row (the key Button and the cut title), not only the first.
+test('test-gaps C22 (terminal, three Biten rows): each opened row is a Button and a title cut at the end; keys follow the drawn order', FOLDERS, async ($, on) => {
+  const long = 'çok uzun bir görev başlığı '.repeat(8)
+  const ids = ['P', 'Q', 'R']
+  const done = (id: string) => PGD(id, { done: true, stage: 'report', wait: `${id} notu`, roles: R_DONE, title: `${id} ${long}` })
+  const k = await pgBoot($, on, pgFile(ids.map(done)), { surface: 'terminal' })
+  const ui = await k.pane('terminal')
+  await ui.press({ key: 'done-toggle' })
+  const root = await drawnOf(ui)
+  const drawn = layout(root).filter(x => x.startsWith('biten:')).map(x => x.slice(6))
+  expect([...drawn].sort()).toEqual(ids)
+  expect(drawn.map(id => byKey(root, `detail-${id}`).props?.hotkey)).toEqual(['a', 'c', 'd'])
+  for (const id of ids) {
+    const row = byKey(root, `row-${id}`)
+    expect([row.props?.flexDirection, row.children?.length]).toEqual(['row', 2])
+    const [pick, title] = row.children as Node[]
+    expect([pick?.props?.key, textOf(pick as Node), title?.type, textOf(title as Node), title?.props?.wrap]).toEqual([`detail-${id}`, '✓', 'Text', `${id} ${long}`, 'truncate-end'])
+  }
+})
+
+// C27 (desktop detail): the caption row and the ayrı oturum row of the detail are one row each, cut at the end (the card's row is asserted in the C27 test above).
+test('test-gaps C27 (caption, desktop detail): the ✓ bitti işaretli row and the ayrı oturum row of the detail are one cut row each', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { surface: 'desktop', own: hardOwn(true), files: { [C4_KID]: { text: hardKid({ roles: KID_ROLES }), age: 5 * MIN4 } } })
+  const ui = await k.pane('desktop')
+  await ui.press({ key: 'detail-hard' })
+  const root = await drawnOf(ui)
+  expect(textNode(root, /^✓ bitti işaretli · oturum sürüyor$/)?.props).toMatchObject({ size: 'caption', dimColor: true, wrap: 'truncate-end' })
+  expect(textNode(root, /^ayrı oturum · hard/)?.props).toMatchObject({ size: 'caption', wrap: 'truncate-end' })
 })
