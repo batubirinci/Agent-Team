@@ -6095,7 +6095,7 @@ test('T4 R5 (own cards): the own decision caption is one truncating row too', FO
 test('T4 R-cheap (send catch): a $.session.send that rejects is a failed try: the next record is tried and the answer is sent', FOLDERS, async ($, on) => {
   const a = 'bbbbbbbb-0000-4000-8000-00000000000a'
   const b = 'bbbbbbbb-0000-4000-8000-00000000000b'
-  const k = await cBoot($, on, { store: Object.fromEntries([sess4(a, C4_KID, hourAt(10)), sess4(b, C4_KID, hourAt(11))]) })
+  const k = await cBoot($, on, { store: Object.fromEntries([sess4(a, C4_KID, hourAt(10), boundOf4()), sess4(b, C4_KID, hourAt(11), boundOf4())]) })
   const fake = fakeForwardEngine(k.store, { rejects: id => id === b })
   await forward(fake.$ as never, { file: C4_KID, task: 'hard', name: 'hard', mtimeMs: C4_NOW, more: 0, count: 1, decisions: [] }, { id: 'k1', kind: 'Ürün kararı', text: 'H', options: ['A'], push: false, stuck: false }, 0, C4D)
   expect(fake.sends.map(x => x.to)).toEqual([b, a])
@@ -6202,8 +6202,8 @@ test('T4 E1b: a decision whose push flag is missing or not a boolean is a push e
     listFails: true,
     isFilled: false,
     atoms: {
-      status: { shape: 'status-4', value: storedView(own) },
-      children: { shape: 'children-2', value: storedKids(kid, withOdd) },
+      status: { shape: 'status-5', value: storedView(own) },
+      children: { shape: 'children-3', value: storedKids(kid, withOdd) },
       outbox: { shape: 'outbox-2', value: { queue: [{ line: 'Karar (d9): A', id: 'd9', option: 'A' }], sent: [], said: [] } },
     },
   })
@@ -6355,7 +6355,7 @@ test('T4 E2 (sequence): through absent, unreadable, torn, older claimant, more t
   }
   const per = new Map<string, number>()
   for (const s of k.log.sends) {
-    const id = `${s.to} ${s.text.match(/Karar \(([^)]+)\)/)?.[1]}`
+    const id = `${s.to} ${(JSON.parse(s.text.split('\n')[1] ?? '{}') as { id?: string }).id}` // revision 3: the decision id is in the JSON line (TR8)
     per.set(id, (per.get(id) ?? 0) + 1)
   }
   expect([...per].filter(([, n]) => n > 1)).toEqual([])
@@ -6523,8 +6523,10 @@ test('T4 TR1: only the Lead\'s own, not denied claude --bg start or start_sessio
 })
 
 test('T4 TR2: kids and bound survive a /clear (the record under the new id has both), a mode switch and a resumed start', FOLDERS, async ($, on) => {
+  // The bound is valid (another record holds its code): a void one would be dropped at the start (§1.9).
   const both = { ...kidsOf4(), ...boundOf4('other', 'c0de-0123456789abcd') }
-  const k = await cBoot($, on, { store: { [`session:${C4_SID}`]: rec(C4_OWN, SWITCH, { announced: C4_OWN, ...both }, hourAt(9)) }, mine: null })
+  const holder = sess4('99999990-0000-4000-8000-000000000090', 'p-proj--99999990.json', hourAt(8), kidsOf4('other', 'c0de-0123456789abcd'))
+  const k = await cBoot($, on, { store: { [`session:${C4_SID}`]: rec(C4_OWN, SWITCH, { announced: C4_OWN, ...both }, hourAt(9)), ...Object.fromEntries([holder]) }, mine: null })
   expect([k.record()?.kids?.hard?.code, k.record()?.bound?.code]).toEqual([CODE4, 'c0de-0123456789abcd']) // the resumed start
   await $.command.run({ command: 'team', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
   await $.command.run({ command: 'team', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
@@ -6733,7 +6735,7 @@ test('T4 TR13: a bound child reports only to the record holding its code, whatev
 
 test('T4 TR14: no report for a peer-started turn; BLOCKED once per error streak, again after a turn that did not end in an error', FOLDERS, async ($, on) => {
   const k = await kidBoot($, on)
-  const peerTurn = async (over: object) => {
+  const peerTurn = async (over: Record<string, unknown>) => {
     await prompt4($, k, 'x', { origin: { kind: 'peer' }, isMeta: true })
     await $.turn.start({ text: 'x', turnId: 'c1' })
     await done4($, k, over)

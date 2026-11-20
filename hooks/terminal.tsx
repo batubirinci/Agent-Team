@@ -1,6 +1,6 @@
 import type { EngineInterface } from 'claude-code'
 
-import type { BandSeg, Child, Decision, Forward, Other, Outbox, Role, RoleStatus, SessionLine, Task, TaskState } from '../types'
+import type { BandSeg, BindView, Child, Decision, Forward, Other, Outbox, Role, RoleStatus, SessionLine, Task, TaskState } from '../types'
 import { STAGE_LABELS, clip, cut, decisionTask, isBlocking, kidCaption, pickedAt, pushOf } from './status'
 
 // The terminal drawing of the pane and the footer (approved design "Terminal arayüzü · şimdi ve öneri"):
@@ -95,7 +95,7 @@ export function termUsage({ Text }: UI, rows: readonly (readonly [string, number
 // A task session's decisions (`kids`, each with its task's title and the answers forwarded to it): after the own ones, digits run on, a push takes none;
 // a press is `pressKid` (sent at once to that session).
 export type KidView = { child: Child; title?: string; fwd: readonly Forward[] }
-export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], tasks: Task[], press: (d: Decision, o: string) => void, lines: readonly string[], out: Outbox, kids: readonly KidView[] = [], pressKid: (c: Child, d: Decision, o: string) => void = () => undefined) {
+export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], tasks: Task[], press: (d: Decision, o: string) => void, lines: readonly string[], out: Outbox, kids: readonly KidView[] = [], pressKid: (c: Child, d: Decision, i: number) => void = () => undefined) {
   let n = 0
   return (
     <Box flexDirection="column" gap={1}>
@@ -147,7 +147,7 @@ export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], 
                 ) : (
                   <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
                     {d.options.map((o, i) => (
-                      <Button key={`kd-${c.task}-${d.id}-${i}`} label={cut(o, 60)} onPress={() => pressKid(c, d, o)} {...(n < 9 ? hk(String(++n)) : { plain: true as const })} />
+                      <Button key={`kd-${c.task}-${d.id}-${i}`} label={cut(o, 60)} onPress={() => pressKid(c, d, i)} {...(n < 9 ? hk(String(++n)) : { plain: true as const })} />
                     ))}
                   </Box>
                 ))}
@@ -205,6 +205,9 @@ const roleRows = ({ Box, Text }: UI, id: string, roles: Role[], frame: number) =
     </Box>
   ))
 
+// A joined task session's roles past the 12 drawn (F5).
+const moreRoles = ({ Text }: UI, t: Task) => !!t.moreRoles && <Text dimColor>{`+${t.moreRoles} rol`}</Text>
+
 const counts = ({ Text }: UI, t: Task) =>
   !!(t.blocking || t.followup) && (
     <Text>
@@ -240,6 +243,7 @@ export function termTasks(ui: UI, tasks: Task[], n: { running: number; blocked: 
             {stageLine(ui, t)}
             {stageName(ui, t)}
             {roleRows(ui, `t-${t.id}`, t.roles, frame)}
+            {moreRoles(ui, t)}
             {counts(ui, t)}
           </Box>
         )
@@ -248,8 +252,10 @@ export function termTasks(ui: UI, tasks: Task[], n: { running: number; blocked: 
   )
 }
 
-// The detail: back/ask on one row, a summary box, ROLLER, TURLAR (newest first, a box each), KANIT.
-export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void, frame = 0, rows: readonly SessionLine[] = []) {
+// The detail: back/ask on one row, a summary box, ROLLER, TURLAR (newest first, a box each), KANIT. `link`: a task session's bind ("Oturum bağla", key g)
+// or unbind ("Bağı çöz", key u) and how it was bound (only b and s were taken here; a key on the list card would collide with the task keys).
+export type DetailLink = { bind?: () => void; unbind?: () => void; by?: string }
+export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void, frame = 0, rows: readonly SessionLine[] = [], link: DetailLink = {}) {
   const { Box, Button, Text } = ui
   const head = (s: string) => <Text weight="bold">{s}</Text>
   const where = [t.branch, t.candidate && `aday ${clip(t.candidate, 7)}`].filter(Boolean).join(' · ')
@@ -257,12 +263,15 @@ export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void, f
     <Box flexDirection="column" gap={1}>
       <Box flexDirection="row" justifyContent="space-between" gap={2}>
         <Button key="detail-back" label="‹ Görevler" onPress={back} {...hk('b')} />
+        {link.bind && <Button key="detail-bind" label="Oturum bağla" onPress={link.bind} {...hk('g')} />}
+        {link.unbind && <Button key="detail-unbind" label="Bağı çöz" onPress={link.unbind} {...hk('u')} />}
         <Button key="detail-ask" label="Lead'e sor" onPress={ask} {...hk('s')} />
       </Box>
       <Box key="detail-summary" {...ROUND}>
         <Text weight="bold">{t.title}</Text>
         {stateLine(ui, t)}
         {sessionRows(ui, 'detail', rows)}
+        {link.by && <Text dimColor>{link.by}</Text>}
         {where && <Text dimColor>{where}</Text>}
         <Text>{stageLine(ui, t)}{stageName(ui, t)}</Text>
         {counts(ui, t)}
@@ -271,6 +280,7 @@ export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void, f
         <Box flexDirection="column">
           {head('ROLLER')}
           {roleRows(ui, 'detail', t.roles, frame)}
+          {moreRoles(ui, t)}
         </Box>
       )}
       <Box flexDirection="column">
@@ -309,6 +319,27 @@ export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void, f
           ))}
         </Box>
       )}
+    </Box>
+  )
+}
+
+// The bind view of a task (§1.9): the store records the owner may bind, newest first, keys 1-9, all drawn alike (no row is preselected); back on b.
+export const BIND_LEAD = 'Aşağıdaki oturumlardan birini bu göreve bağlarsın; kararlarını buradan cevaplarsın. Emin değilsen bağlama.'
+export const BIND_EMPTY = 'Bağlanacak oturum yok. Görev oturumu açık ve Agent Team modunda olmalı.'
+export function termBind({ Box, Button, Text }: UI, v: BindView, back: () => void, pick: (sid: string) => void) {
+  return (
+    <Box flexDirection="column" gap={1}>
+      <Button key="bind-back" label="‹ Görevler" onPress={back} {...hk('b')} />
+      <Text dimColor>{BIND_LEAD}</Text>
+      {v.error && <Text color="error">{v.error}</Text>}
+      {v.rows.length === 0 && <Text dimColor>{BIND_EMPTY}</Text>}
+      {v.rows.map((r, i) => (
+        <Box key={`bind-r-${r.sid}`} flexDirection="column">
+          <Button key={`bind-row-${r.sid}`} label={r.name} onPress={() => pick(r.sid)} {...hk(String(i + 1))} />
+          {r.when && <Text dimColor>{`eklenti kaydı ${r.when}`}</Text>}
+        </Box>
+      ))}
+      {v.more > 0 && <Text dimColor>{`+${v.more} oturum daha (en yeni 9 gösterilir)`}</Text>}
     </Box>
   )
 }
