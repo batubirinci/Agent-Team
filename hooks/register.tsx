@@ -389,8 +389,10 @@ async function sweep($: EngineInterface) {
 }
 
 // ---- Task sessions: the binding (trust addendum §1). The store is the authority: a status file never names a child, a parent or a target. ----
-// Every well formed session record of the store (machine-wide per plugin, read live), and this session's id (never empty while a start settled one).
+// Every well formed session record of the store (machine-wide per plugin, read live), and this session's id (never empty while a start settled one). Both
+// after `follow`: right after a /clear the record sits under the old id until it is carried over.
 async function records($: EngineInterface, dir = followed.dir): Promise<Rec[]> {
+  await follow($)
   const out: Rec[] = []
   for (const key of await $.store.keys()) {
     const r = key.startsWith('session:') && key.length > 8 ? parseRecord(await $.store.get(key), dir) : undefined
@@ -398,7 +400,6 @@ async function records($: EngineInterface, dir = followed.dir): Promise<Rec[]> {
   }
   return out
 }
-// After `follow`: right after a /clear the record sits under the old id until it is carried over.
 const selfId = async ($: EngineInterface) => {
   await follow($)
   return String((await $.session.id().catch(() => '')) || followed.last)

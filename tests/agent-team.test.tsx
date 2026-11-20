@@ -7203,6 +7203,15 @@ test('T4 TR22 (unpresented code, /clear): after a /clear the owner\'s bind repla
   expect(rowKeys(await drawnOf(ui))).toContain(`bind-row-${B_SID}`)
 })
 
+test('T4 TR22 (start after a hand bind, /clear): right after a /clear, before any poll, a later marker start for m leaves kids.m as it is under the new id', FOLDERS, async ($, on) => {
+  const kids = { m: { code: MCODE, at: hourAt(11), to: A_SID } }
+  const k = await bindBoot($, on, { store: { ...bindStore(), ...Object.fromEntries([sess4(A_SID, A_FILE, hourAt(10), boundOf4('m', MCODE, 'tok-a'))]) }, mine: { kids } })
+  k.clear(M_NEW)
+  await $.tool.call({ tool: 'Bash', command: `cd /x && claude --bg -n m "[Agent Team görev oturumu] task=m kod=${'n'.repeat(20)}"`, tool_use_id: 'u1' } as never)
+  await k.settle()
+  expect([k.record(M_NEW)?.kids, k.record(C4_SID)?.kids]).toEqual([kids, kids])
+})
+
 // ---- R5-B4: a hot reload after a shape-tag bump is never a resume. The atom an older build stored (any tag) and this session's record: no banner, no
 // reopen line, no role drawn stopped; with no stored atom (a new process) the resume is drawn as C13 draws it. ----
 for (const shape of [undefined, 'status-3', 'status-4'] as const)
