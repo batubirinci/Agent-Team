@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Child, Decision, DirEntry, Forward, Mode, Other, Outbox, Press, Reopen, RoleStatus, SessionRecord, Status, StatusView, Task, TaskState } from '../types'
-import { ANNOUNCE, ASK_WHERE, KARAR, KEEP_MS, OPEN_ROW, PANE_HEAD, STAGE_LABELS, bandSegments, baseName, childFiles, clip, countStates, cut as shorten, decisionTask, detailScroll, expandHome, flat, isBlocking, isInside, joined, kararLine, kararLines, kidCaption, kidsOf, linkChildren, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, reopenLine, reportText, runningRoles, sessionLines, spinnerWord, stamp, stopped, trimSlash, withKarar } from './status'
+import { ANNOUNCE, ASK_WHERE, KARAR, KEEP_MS, OPEN_ROW, PANE_HEAD, STAGE_LABELS, bandSegments, baseName, childFiles, clip, countStates, cut as shorten, decisionTask, detailScroll, expandHome, flat, isBlocking, isInside, joined, kararLine, kararLines, kidCaption, kidsOf, linkChildren, otherFiles, otherSession, parseFolders, parseRecord, parseStatus, pushOf, reopenLine, reportText, runningRoles, sessionLines, spinnerWord, stamp, stopped, trimSlash, withKarar } from './status'
 import { AMBER, BAD, CLAY, MUTED, OK, TRACK, dotSvg, meterSvg, stagesSvg } from './svg'
 import { FRAMES, QUEUED, QUEUED_PUSH, TBOX, hk, termBand, termBanner, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termTasks, termUsage } from './terminal'
 
@@ -12,29 +12,30 @@ const POLL_MS = 500
 const SOON_MS = 500
 const TICK_MS = 1000
 
-// Change a tag when that value's fields change: it declines what an earlier version stored.
+// Change a tag when that value's fields change: it declines what an earlier version stored. Every value that holds a parse (a decision, a press of one, an
+// answer to one) changed its tag when push/stuck moved into the parse (revision 2 of task t4): no earlier value is read without them.
 const mode = atom({ plugin: 'agent-team', key: 'mode' } as const, { isOn: false, source: 'off' } as Mode, {
   shape: 'mode-1',
 })
 const status = atom(
   { plugin: 'agent-team', key: 'status' } as const,
   { file: '', mtime: 0, data: null, error: null } as StatusView,
-  { shape: 'status-3' },
+  { shape: 'status-4' },
 )
 // The task whose detail view the pane shows (null: the list). Session state, not in the file.
 const detail = atom({ plugin: 'agent-team', key: 'detail' } as const, null as string | null, { shape: 'detail-1' })
 // Other team sessions' pending decisions (read-only strip) and whether it is open. Session state, starts collapsed.
-const others = atom({ plugin: 'agent-team', key: 'others' } as const, [] as Other[], { shape: 'others-2' })
+const others = atom({ plugin: 'agent-team', key: 'others' } as const, [] as Other[], { shape: 'others-3' })
 // The task sessions (children) linked to this session's tasks, from their own status files, and the main-pane presses forwarded to them. Session state.
-const children = atom({ plugin: 'agent-team', key: 'children' } as const, [] as Child[], { shape: 'children-1' })
-const forwards = atom({ plugin: 'agent-team', key: 'forwards' } as const, [] as Forward[], { shape: 'forwards-1' })
+const children = atom({ plugin: 'agent-team', key: 'children' } as const, [] as Child[], { shape: 'children-2' })
+const forwards = atom({ plugin: 'agent-team', key: 'forwards' } as const, [] as Forward[], { shape: 'forwards-2' })
 const othersOpen = atom({ plugin: 'agent-team', key: 'othersOpen' } as const, false, { shape: 'others-open-1' })
 // The decision lines now in the owner's prompt box (kararLines of the draft): on the terminal a button writes one and the box shows it picked.
 const karar = atom({ plugin: 'agent-team', key: 'karar' } as const, [] as string[], { shape: 'karar-1' })
 // Pane presses on their way to the Lead (`queue`, in press order) and the decisions whose line was delivered (`sent`: [id, option]; dropped
 // when the decision leaves the file). `said`: lines without a decision (Pause, Devam) submitted as the owner, until the next status read.
 // One atom, so every change (a press, a delivery, a give-back) is one atomic update.
-const outbox = atom({ plugin: 'agent-team', key: 'outbox' } as const, { queue: [], sent: [], said: [] } as Outbox, { shape: 'outbox-2' })
+const outbox = atom({ plugin: 'agent-team', key: 'outbox' } as const, { queue: [], sent: [], said: [] } as Outbox, { shape: 'outbox-3' })
 // A resumed session in team mode: when it started (the pane warns while the status file is older), and whether its first prompt still owes the
 // Lead the reopen line. since 0: not reopened (a new session, /clear). An atom: a hot reload keeps it, /clear resets it.
 const reopened = atom({ plugin: 'agent-team', key: 'reopen' } as const, { since: 0, line: false } as Reopen, { shape: 'reopen-1' })
@@ -134,18 +135,20 @@ const syncKarar = async ($: EngineInterface, draft: string) => {
 // idle, else when the turn ends. A submit that fails (rejects, or a hook drops it) gives its lines back: a press is never lost.
 // `running`: ids of the Lead's turns now running (a set: a queued turn starts before the old one completes).
 const HEAD = "[Agent Team pane] Sahip pane'de bastı:"
+// What a tool result may carry: a line with no decision (Pause, Devam), or a decision's press whose push flag is the boolean false (fail closed: see pushOf).
+const inResult = (q: Press) => q.id === undefined || !pushOf(q)
 const mark = (sent: Outbox['sent'], got: Press[]) =>
   got.reduce((acc, g) => (g.id === undefined ? acc : [...acc.filter(([id]) => id !== g.id), [g.id, g.option ?? ''] as [string, string]]), sent)
 
 // Takes the deliverable presses out of the outbox (all, or without the push approvals) and marks their decisions sent, in one update.
 // Reads first: with nothing to take (nearly every call) nothing is written, so no state change and no pane redraw per tool call.
 async function take($: EngineInterface, ctx: boolean) {
-  if (!(await read($, outbox)).queue.some(q => !ctx || !q.push)) return []
+  if (!(await read($, outbox)).queue.some(q => !ctx || inResult(q))) return []
   let got: Press[] = []
   await update($, outbox, s => {
-    got = ctx ? s.queue.filter(q => !q.push) : s.queue
+    got = ctx ? s.queue.filter(inResult) : s.queue
     const said = ctx ? s.said : [...s.said, ...got.filter(g => g.id === undefined).map(g => g.line)]
-    return got.length ? { queue: ctx ? s.queue.filter(q => q.push) : [], sent: mark(s.sent, got), said } : s
+    return got.length ? { queue: ctx ? s.queue.filter(q => !inResult(q)) : [], sent: mark(s.sent, got), said } : s
   })
   return got
 }
@@ -216,7 +219,7 @@ async function pick($: EngineInterface, running: Set<string>, d: Decision, o: st
       text === box.text ||
       (await $.prompt.fill(text.startsWith(box.text) ? { text: text.slice(box.text.length), mode: 'append' } : { text, mode: 'replace' })).isFilled
   } catch {}
-  if (!isFilled) await press($, running, { line: kararLine(d.id, o), id: d.id, option: o, push: d.push }, term)
+  if (!isFilled) await press($, running, { line: kararLine(d.id, o), id: d.id, option: o, push: pushOf(d) }, term)
 }
 
 const openRow = (file: string) => `${OPEN_ROW}${leadText(file)}`
@@ -281,6 +284,7 @@ async function refresh($: EngineInterface, file: string) {
 // this session's file and one of its tasks is a task session (child) of it (see linkChildren): it joins that task's card and is in no strip. The rest
 // are the strip's "other sessions" (see otherFiles). `seen` keeps the parse of a file by its size and mtime, so a quiet poll is one listing and no reads.
 type Seen = Map<string, { size: number; mtimeMs: number; s?: Status }>
+const SENT_MS = 86_400_000
 async function scanOthers($: EngineInterface, dir: string, own: string, seen: Seen) {
   const unread = new Set<string>() // a file that failed to read is not tried again in this scan (and not cached: the next poll tries again)
   const parsed = async (e: DirEntry) => {
@@ -303,21 +307,32 @@ async function scanOthers($: EngineInterface, dir: string, own: string, seen: Se
   }
   // Nothing in here may throw out: another session's file must not stop this session's poll or start.
   // `kids` stays undefined when the listing failed: a failed scan keeps the last good children and the answers given to them.
+  // `ids`: the whole decision ids (before any cut) of each candidate file read and parsed in this scan; only these drop an answer.
   let next: Other[] = []
   let kids: Child[] | undefined
+  const ids = new Map<string, Set<string>>()
+  let now = 0
   try {
     const entries = await $.fs.list(dir)
-    const now = await $.clock.now()
+    now = await $.clock.now()
     const ownTasks = (await read($, status)).data?.tasks ?? []
     // No file can link to an own file with no written task: then no child file is looked for (nor read).
     const cands = ownTasks.some(t => !t.generatedId) ? childFiles(entries, dir, own, now) : []
     const got = await Promise.all(cands.map(parsed))
+    for (const { e, s } of got) if (s) ids.set(e.name, new Set(s.decisions.map(d => d.id)))
     const link = linkChildren(got.filter((c): c is { e: DirEntry; s: Status } => !!c.s), baseName(own), ownTasks)
-    // A child file still listed but not readable or parsable this poll (a partial scan) keeps its last good child, unless another file now claims the task.
+    // A child file still listed but not readable or parsable this poll (a partial scan) keeps its last good child while its task is still written. Of the files
+    // that claim one task the newest listed one (mtime, then name) is the child, read or not: an older claimant never displaces it.
+    const listed = new Map(got.map(c => [c.e.name, c.e]))
     const bad = new Set(got.filter(c => !c.s).map(c => c.e.name))
-    const kept = (await read($, children)).filter(c => bad.has(c.file) && !link.kids.some(k => k.task === c.task))
-    kids = [...link.kids, ...kept].sort((a, b) => b.mtimeMs - a.mtimeMs || a.file.localeCompare(b.file)).slice(0, 8)
-    const joinedNames = new Set([...link.claimed, ...kids.map(c => c.file)])
+    const kept = (await read($, children)).filter(c => bad.has(c.file) && ownTasks.some(t => t.id === c.task && !t.generatedId))
+    const all = [...link.kids, ...kept]
+    const newer = (a: Child, b: Child) => {
+      const [x, y] = [listed.get(a.file), listed.get(b.file)]
+      return (y?.mtimeMs ?? 0) - (x?.mtimeMs ?? 0) || a.file.localeCompare(b.file)
+    }
+    kids = all.filter(c => !all.some(o => o !== c && o.task === c.task && newer(o, c) < 0)).sort((a, b) => b.mtimeMs - a.mtimeMs || a.file.localeCompare(b.file)).slice(0, 8)
+    const joinedNames = new Set([...link.claimed, ...all.map(c => c.file)])
     const files = otherFiles(entries.filter(e => !joinedNames.has(e.name)), dir, own, now)
     const names = new Set([...cands, ...files].map(f => f.name))
     for (const name of seen.keys()) if (!names.has(name)) seen.delete(name)
@@ -328,10 +343,14 @@ async function scanOthers($: EngineInterface, dir: string, own: string, seen: Se
   } catch {}
   try {
     if (!kids) return
-    const now = kids
-    if (JSON.stringify(await read($, children)) !== JSON.stringify(now)) await update($, children, () => now)
-    // An answer's state goes when its decision leaves the child's file; a failed one also when the file changes.
-    const gone = (f: Forward) => !now.some(c => c.file === f.file && c.decisions.some(d => d.id === f.id) && (f.state === 'sent' || c.mtimeMs === f.mtimeMs))
+    const linked = kids
+    if (JSON.stringify(await read($, children)) !== JSON.stringify(linked)) await update($, children, () => linked)
+    // A delivered answer goes only when its own file was read and parsed in this scan and no longer has the decision (all of them, before the cut to 10), or
+    // after 24 h: never for a file absent, unreadable, claimed by another or cut. A failed one goes when its decision is not drawn or the file changed.
+    const gone = (f: Forward) =>
+      f.state === 'sent'
+        ? ids.get(f.file)?.has(f.id) === false || now - f.at > SENT_MS
+        : !linked.some(c => c.file === f.file && c.decisions.some(d => d.id === f.id) && c.mtimeMs === f.mtimeMs)
     if ((await read($, forwards)).some(gone)) await update($, forwards, fs => fs.filter(f => !gone(f)))
   } catch {}
 }
@@ -355,7 +374,7 @@ async function sweep($: EngineInterface) {
 // Where a message for another team session goes: the ids of the store records (one per team session, machine-wide per plugin, read live) whose file is `file`
 // in the status folder, newest first, at most 3, never this session's own. The message goes to the first that delivers; a send that throws or is refused is the next try.
 async function sendTo($: EngineInterface, dir: string, file: string, text: string) {
-  const mine = String(await $.session.id().catch(() => followed.last))
+  const mine = String((await $.session.id().catch(() => '')) || followed.last)
   const ids: { id: string; at: number }[] = []
   for (const key of await $.store.keys()) {
     const r = key.startsWith('session:') ? parseRecord(await $.store.get(key), dir) : undefined
@@ -374,13 +393,15 @@ async function sendTo($: EngineInterface, dir: string, file: string, text: strin
 const sending = new Set<string>()
 export async function forward($: EngineInterface, c: Child, d: Decision, option: string, dir = followed.dir) {
   const key = `${c.file}\n${d.id}`
-  if (d.push || sending.has(key)) return
+  if (pushOf(d) || sending.has(key)) return
   sending.add(key) // before any await: two presses together send once
   try {
     if ((await read($, forwards)).some(f => f.file === c.file && f.id === d.id && f.state === 'sent')) return
     const ok = await sendTo($, dir, c.file, `${PANE_HEAD}\n${kararLine(d.id, option)}`).catch(() => false)
+    // When it was pressed, for the 24 h limit (the host clock if the engine's cannot answer); the send never waits on it.
+    const at = await Promise.resolve().then(() => $.clock.now()).catch(() => Date.now())
     // A delivered send also clears the failed marks of the child's other decisions (the child answers again).
-    await update($, forwards, fs => [...fs.filter(f => f.file !== c.file || (f.id !== d.id && !(ok && f.state === 'failed'))), { file: c.file, id: d.id, option, state: ok ? ('sent' as const) : ('failed' as const), mtimeMs: c.mtimeMs }])
+    await update($, forwards, fs => [...fs.filter(f => f.file !== c.file || (f.id !== d.id && !(ok && f.state === 'failed'))), { file: c.file, id: d.id, option, state: ok ? ('sent' as const) : ('failed' as const), mtimeMs: c.mtimeMs, at }])
   } catch {} finally {
     sending.delete(key)
   }
@@ -607,7 +628,7 @@ export const register: Register = (on, options) => {
     if (e.agentId !== undefined || r.deny !== undefined || e.tool === 'SendMessage') return r
     try {
       // Team mode off: pass through; what is left goes out as an owner submit at the turn end (or the next press).
-      if (!(await read($, outbox)).queue.some(q => !q.push) || !(await read($, mode)).isOn) return r
+      if (!(await read($, outbox)).queue.some(inResult) || !(await read($, mode)).isOn) return r
       const got = await take($, true)
       if (!got.length) return r
       return { ...r, context: [...(r.context ?? []), [HEAD, ...got.map(g => g.line)].join('\n')] }
@@ -759,7 +780,7 @@ export const register: Register = (on, options) => {
         {sentTo !== undefined ? (
           <Text size="caption" color="success">{`Gönderildi: ${sentTo}`}</Text>
         ) : (
-          (queued || d.options.length > 0) && <Text size="caption" dimColor>{queued ? (queued.push ? QUEUED_PUSH : QUEUED) : "Bir seçeneğe bas · Lead'e gider"}</Text>
+          (queued || d.options.length > 0) && <Text size="caption" dimColor>{queued ? (pushOf(queued) ? QUEUED_PUSH : QUEUED) : "Bir seçeneğe bas · Lead'e gider"}</Text>
         )}
       </Box>
       )
@@ -769,7 +790,7 @@ export const register: Register = (on, options) => {
     const kidCard = (c: Child, d: Decision) => {
       const f = fwd.find(x => x.file === c.file && x.id === d.id)
       const at = f?.state === 'sent' ? d.options.indexOf(f.option) : -1
-      const stuck = d.stuck
+      const stuck = d.stuck === true
       const edge = f?.state === 'sent' ? 'success' : stuck ? BLOCKED_EDGE : CARD.borderColor
       const cap = kidCaption(c, d, f, false)
       return (
@@ -780,7 +801,7 @@ export const register: Register = (on, options) => {
             {d.meta && <Text size="caption" mono dimColor>{d.meta}</Text>}
           </Box>
           {d.options.length > 0 &&
-            (d.push ? (
+            (pushOf(d) ? (
               <Text size="caption" dimColor>{d.options.map(o => shorten(o, 60)).join(' · ')}</Text>
             ) : (
               <Box flexDirection="row" gap="xs" flexWrap="wrap">

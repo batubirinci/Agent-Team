@@ -34,14 +34,19 @@ const num = (x: unknown): number | undefined =>
   typeof x === 'number' && Number.isFinite(x) && x >= 0 ? Math.round(x) : undefined
 const list = (x: unknown): Obj[] => (Array.isArray(x) ? x.filter(isObj) : [])
 
-// A kind as the two rules below read it: trimmed, lower case (Turkish rules), ı as i, and no U+0307 (an İ lowered without Turkish rules, or in NFD, is i + U+0307).
-const kindOf = (kind?: string) => (kind ?? '').trim().toLocaleLowerCase('tr').replace(/ı/g, 'i').replace(/\u0307/g, '')
+// A kind as the two rules below read it: no U+0307 (an İ lowered without Turkish rules, or in NFD, is i + U+0307) and no zero-width character (U+200B-U+200D,
+// U+2060, U+FEFF), both taken out before the trim, then trimmed, lower case (Turkish rules), ı as i.
+const kindOf = (kind?: string) => (kind ?? '').replace(/[\u0307\u200b-\u200d\u2060\ufeff]/g, '').trim().toLocaleLowerCase('tr').replace(/ı/g, 'i').replace(/\u0307/g, '')
 
 // A decision kind that says the work is stuck ("Takıldı ...", any case, also "takildi"): one rule for the parser and the strip.
 export const isStuck = (kind?: string) => kindOf(kind).startsWith('takildi')
 
 // A decision whose kind says it approves an irreversible action ("Push onayı ...", any case, also "push onayi"): never carried by a tool result.
 export const isPush = (kind?: string) => kindOf(kind).startsWith('push onayi')
+
+// How every consumer reads a decision's push flag (fail closed): a push unless the flag is the boolean false. A value stored by an earlier build, or any
+// other path that lost the flag, never gives a button, a digit, a forward or a tool-result delivery.
+export const pushOf = (d: { push?: unknown }) => d.push !== false
 
 // A finding that blocks, "BLOCKING" in any letter case: one rule for the parser's cap order and for both drawings.
 export const isBlocking = (f: Finding) => f.severity?.toLowerCase() === 'blocking'
@@ -394,7 +399,7 @@ export function sessionLines(t: Task, c: Child | undefined, o: { failed: boolean
 
 // The one caption row of a child's decision card (Turkish, exact): push, sent, failed, or the idle line; `f` is the answer's state, if any.
 export function kidCaption(c: Child, d: Decision, f: Forward | undefined, term: boolean): SessionLine | undefined {
-  if (d.push) return { text: 'Push onayı yalnız o oturumda verilir' }
+  if (pushOf(d)) return { text: 'Push onayı yalnız o oturumda verilir' }
   if (f?.state === 'sent') return { text: `Gönderildi: ${cut(f.option, 60)} · ${c.name} oturumuna`, color: 'success' }
   if (f?.state === 'failed') return { text: 'Gönderilemedi · oturum açık değil, cevabı o oturumda ver', color: 'error' }
   return d.options.length ? { text: term ? `1-9 ile seç · ${c.name} oturumuna hemen gider` : `Bir seçeneğe bas · ${c.name} oturumuna gider` } : undefined

@@ -80,7 +80,8 @@ export type Other = { file: string; project: string; name: string; when: string;
 export type Child = { file: string; task: string; name: string; mtimeMs: number; updatedAt?: string; card?: Task; more: number; decisions: Decision[]; count: number }
 
 // A main-pane press on a child's decision: delivered (`sent`) or not (`failed`, until the child's file changes: `mtimeMs` is its mtime then).
-export type Forward = { file: string; id: string; option: string; state: 'sent' | 'failed'; mtimeMs: number }
+// `at`: when it was pressed (a `sent` answer goes 24 h later at the latest).
+export type Forward = { file: string; id: string; option: string; state: 'sent' | 'failed'; mtimeMs: number; at: number }
 
 // One row under a joined task's state row, or a child decision card's caption; no `color` is dim.
 export type SessionLine = { text: string; color?: 'warning' | 'error' | 'success' }

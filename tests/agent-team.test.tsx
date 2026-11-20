@@ -6196,6 +6196,7 @@ test('T4 E1 (A2b, Neon): after a hot reload from r1 (children-1, no flags) with 
     expect(keysWith(root, 'kd-hard-p1-')).toEqual([]) // Neon A2b: btnCount 1
     if (await ui.find({ key: 'kd-hard-p1-0' })) await ui.press({ key: 'kd-hard-p1-0' })
     await k.settle()
+    await ui.unmount()
   }
   expect(k.log.sends).toEqual([])
   expect(k.log.fills).toEqual([])
@@ -6252,7 +6253,9 @@ test('T4 E1b: a decision whose push flag is missing or not a boolean is a push e
     },
   })
   for (const surface of ['desktop', 'terminal'] as const) {
-    const root = await drawnOf(await k.pane(surface))
+    const pane = await k.pane(surface)
+    const root = await drawnOf(pane)
+    await pane.unmount()
     for (const i of odd.keys()) {
       const card = byKey(root, `kd-hard-k${i}`)
       expect([i, buttons(card).length]).toEqual([i, 0])

@@ -1,7 +1,7 @@
 import type { EngineInterface } from 'claude-code'
 
 import type { BandSeg, Child, Decision, Forward, Other, Outbox, Role, RoleStatus, SessionLine, Task, TaskState } from '../types'
-import { STAGE_LABELS, clip, cut, decisionTask, isBlocking, kidCaption, pickedAt } from './status'
+import { STAGE_LABELS, clip, cut, decisionTask, isBlocking, kidCaption, pickedAt, pushOf } from './status'
 
 // The terminal drawing of the pane and the footer (approved design "Terminal arayüzü · şimdi ve öneri"):
 // text and theme colors only, no card fill, no Svg; state is a glyph, never a color alone; every press has a key.
@@ -107,7 +107,7 @@ export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], 
         const sentTo = out.sent.find(([id]) => id === d.id)?.[1]
         return (
         <Box key={`d-${d.id}`} {...TBOX} borderColor={blocked ? 'error' : TBOX.borderColor}>
-          {kind && <Text color={blocked ? 'error' : 'claude'}>{kind}</Text>}
+          {kind && <Text color={blocked ? 'error' : 'claude'} wrap="truncate-end">{kind}</Text>}
           <Text>{d.text}</Text>
           {d.meta && <Text dimColor>{d.meta}</Text>}
           {d.options.length > 0 && (
@@ -125,7 +125,7 @@ export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], 
             </Box>
           )}
           {at >= 0 && <Text color="success" wrap="truncate-end">{`✓ seçildi: ${d.options[at]} · Enter ile gider`}</Text>}
-          {at < 0 && queued && <Text dimColor wrap="truncate-end">{queued.push ? QUEUED_PUSH : QUEUED}</Text>}
+          {at < 0 && queued && <Text dimColor wrap="truncate-end">{pushOf(queued) ? QUEUED_PUSH : QUEUED}</Text>}
           {at < 0 && !queued && sentTo !== undefined && <Text dimColor wrap="truncate-end">{`Gönderildi: ${sentTo}`}</Text>}
           {/* One caption row from the start, so a press changes its text and never the card's height. */}
           {at < 0 && !queued && sentTo === undefined && d.options.length > 0 && <Text dimColor wrap="truncate-end">1-9 ile seç · kutuna yazılır</Text>}
@@ -134,7 +134,7 @@ export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], 
       })}
       {kids.flatMap(({ child: c, title, fwd }) => [
         ...c.decisions.map(d => {
-          const stuck = d.stuck
+          const stuck = d.stuck === true
           const cap = kidCaption(c, d, fwd.find(x => x.file === c.file && x.id === d.id), true)
           return (
             <Box key={`kd-${c.task}-${d.id}`} {...TBOX} borderColor={stuck ? 'error' : TBOX.borderColor}>
@@ -142,7 +142,7 @@ export function termDecisions({ Box, Button, Text }: UI, decisions: Decision[], 
               <Text>{d.text}</Text>
               {d.meta && <Text dimColor>{d.meta}</Text>}
               {d.options.length > 0 &&
-                (d.push ? (
+                (pushOf(d) ? (
                   <Text dimColor>{d.options.map(o => cut(o, 60)).join(' / ')}</Text>
                 ) : (
                   <Box flexDirection="row" flexWrap="wrap" columnGap={2}>

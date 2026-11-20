@@ -135,14 +135,15 @@ Task sessions (`references/task-sessions.md`): a task in its own session has two
   A session that is not a task session writes none.
 - The parent's task row carries `"session": { "name": "<handle>" }` (the handle the session was started with).
 - The join: the parent's pane links a file of its status folder (a regular `.json`, under 30 days, at most 256 KiB, among the 40 newest) to its own task
-  when `parent.file` is its own file's name and the task has that written id. Several files for one task: the newest is the child, the others are drawn
-  nowhere. At most 8 children. The task keeps its `id`, `title` and `wait`; its stage, round, candidate, counts, roles, rounds, evidence and state are the
+  when `parent.file` is its own file's name and the task has that written id. Several files for one task: the newest is the child (also while it cannot be
+  read for a moment), the others are drawn nowhere. At most 8 children. The task keeps its `id`, `title` and `wait`; its stage, round, candidate, counts, roles, rounds, evidence and state are the
   child's (its task of that id, else its first), drawn with the row `ayrı oturum · <ad> · <son yazım>`. The child's decisions (the first 10) are listed
   under "Senin sıran" after the parent's own. A linked session is not in "Diğer oturumlar". Without the child's file the row reads `durum dosyası bekleniyor`.
 - Answers: a press in the parent's pane on a child's decision is sent to the child's session as a message that starts
   `[Agent Team pane · ana oturum] Sahip ana oturumun pane'inde bastı:` and carries `Karar (<id>): <option>`. It is a message from another
   session, never the owner's own message and never a push approval: a child's `Push onayı` has no button in the parent's pane.
-  The pane writes no file for it; the child closes the decision in its own file.
+  The pane writes no file for it; the child closes the decision in its own file. One answer per decision: the pane sends again only after the child's
+  file, read, no longer has that decision id (or 24 hours later).
 
 Reopened session: when the session is opened again (a resume) the pane keeps the old tasks and decisions and
 shows the day of `updatedAt` when it is not today. Until the file is written again, a banner says how old it is and
