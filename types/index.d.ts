@@ -146,6 +146,21 @@ export type EvRec = {
   more?: boolean
 }
 
+// One evidence entry as a row draws it: what the cache holds for its path (`loading`: nothing yet), or the line a refusal by spelling gives.
+export type EvRow = { label: string; ext: string; state: EvRec['state'] | 'loading'; line?: string; size?: number; mtimeMs?: number; preview?: Preview; body?: string; more?: boolean; rec?: EvRec }
+
+// The terminal's evidence views take strings that are already cleaned (one(), clean()) and cut: they only lay them out. Nothing here is a file's raw text.
+// One KANIT row of the terminal detail. `label`: the entry's label, cut to 20 code points. `pressable`: state ok (the row has a Button, hotkey = its 1-based index).
+// `chip`: a report's verdict (GO success, NO-GO error). `text`: the verdict's summary (may be ''), else the file's first line, else a status line ('boş dosya',
+// 'okunuyor…', a refusal line); `dim`: `text` is a status line (drawn dim).
+export type TermEvRow = { label: string; pressable: boolean; chip?: 'GO' | 'NO-GO'; text: string; dim: boolean }
+
+// The terminal reader screen. `label`, `path`: header rows 1 and 2 (cleaned). `meta`: header row 3 without the page part (`<ext> · <size> · <N> satır`, or `<ext>`
+// alone for a refused file; the view appends ` · sayfa <x>/<y>`). `rows`: every row of the body, already wrapped to the width (a refusal line, `okunuyor…`, `boş dosya`
+// or the cut notice are rows too; `bold`: a heading, `dim`: a status or notice row); the view draws 14 of them. `page`: the stored page (0-based; the view clamps it).
+// `nav`: two or more distinct evidence paths (the k / o Buttons exist).
+export type TermReaderView = { label: string; path: string; meta: string; rows: { t: string; bold?: boolean; dim?: boolean }[]; page: number; nav: boolean }
+
 declare module 'claude-code' {
   interface PluginState {
     'agent-team': {
