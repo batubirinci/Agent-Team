@@ -59,6 +59,10 @@ const reopened = atom({ plugin: 'agent-team', key: 'reopen' } as const, { since:
 const placed = atom({ plugin: 'agent-team', key: 'placed' } as const, false, { shape: 'placed-1' })
 const tick = atom({ plugin: 'agent-team', key: 'tick' } as const, 0, { shape: 'tick-1' })
 
+// A desktop row with text beside a Button: the text side takes FILL (it may shrink to 0, else `min-width: auto` keeps it at its full text width and pushes the
+// Button out of the card) and cuts its Texts; the Button goes through `fixed` (a keyless Box that never shrinks; Button has no flex props).
+const FILL = { flexGrow: 1, flexShrink: 1, minWidth: 0 } as const
+
 // Raw colors that read on a light and a dark pane alike (a theme key has no card fill).
 const CARD = {
   flexDirection: 'column',
@@ -1131,6 +1135,7 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const ui = $.ui.resolve(e)
     const { Box, Button, Text } = ui
+    const fixed = (button: Parameters<typeof Box>[0]['children']) => <Box flexShrink={0}>{button}</Box>
     // The terminal draws no Svg (its table may still name one): there the bars stay text.
     const term = e.surface === 'terminal'
     const Svg = !term && 'Svg' in ui ? ui.Svg : undefined
@@ -1288,12 +1293,12 @@ export const register: Register = (on, options) => {
       return otherOpen ? (
         <Box flexDirection="column" gap="sm">
           <Box flexDirection="row" alignItems="center" justifyContent="space-between">
-            <Box flexDirection="row" alignItems="center" gap="xs">
+            <Box flexDirection="row" alignItems="center" gap="xs" {...FILL}>
               {dot(AMBER, 'warning', 'diğer oturumlarda karar bekliyor')}
-              <Text weight="semibold">Diğer oturumlar</Text>
-              <Text dimColor size="caption">{`${otherTotal} karar`}</Text>
+              <Text weight="semibold" wrap="truncate-end">Diğer oturumlar</Text>
+              <Text dimColor size="caption" wrap="truncate-end">{`${otherTotal} karar`}</Text>
             </Box>
-            <Button key="others-toggle" label="Gizle" onPress={toggleOthers} />
+            {fixed(<Button key="others-toggle" label="Gizle" onPress={toggleOthers} />)}
           </Box>
           {other.map(o => (
             <Box key={`other-${o.file}`} {...CARD} borderColor={o.stuckCount ? BLOCKED_EDGE : CARD.borderColor}>
@@ -1316,11 +1321,11 @@ export const register: Register = (on, options) => {
       ) : (
         <Box {...CARD} flexDirection="row" alignItems="center" borderColor="rgba(229,192,123,0.40)" backgroundColor="rgba(229,192,123,0.08)">
           {dot(AMBER, 'warning', 'diğer oturumlarda karar bekliyor')}
-          <Box flexDirection="column" flexGrow={1}>
-            <Text weight="semibold">{`Diğer oturumlarda ${otherTotal} karar bekliyor`}</Text>
-            <Text size="caption" dimColor>{counts}</Text>
+          <Box flexDirection="column" {...FILL}>
+            <Text weight="semibold" wrap="truncate-end">{`Diğer oturumlarda ${otherTotal} karar bekliyor`}</Text>
+            <Text size="caption" dimColor wrap="truncate-end">{counts}</Text>
           </Box>
-          <Button key="others-toggle" label="Göster" onPress={toggleOthers} />
+          {fixed(<Button key="others-toggle" label="Göster" onPress={toggleOthers} />)}
         </Box>
       )
     }
@@ -1412,7 +1417,7 @@ export const register: Register = (on, options) => {
       return (
         <Box key={`ev-${i}`} {...CARD} flexDirection="row" alignItems="flex-start" hover={ok ? hover(CARD.borderColor) : undefined}>
           {Svg && <Svg source={evDocSvg(flash)} alt="Belge" width={14} height={14} />}
-          <Box flexDirection="column" flexGrow={1}>
+          <Box flexDirection="column" {...FILL}>
             {ok ? (
               <Button key={`ev-open-${i}`} onPress={() => void evOpen(t, e.path)}>
                 {r.label}
@@ -1542,11 +1547,11 @@ export const register: Register = (on, options) => {
           {bindView.rows.length === 0 && <Text size="caption" dimColor>{BIND_EMPTY}</Text>}
           {bindView.rows.map(r => (
             <Box key={`bind-r-${r.sid}`} {...CARD} flexDirection="row" alignItems="center" justifyContent="space-between">
-              <Box flexDirection="column">
+              <Box flexDirection="column" {...FILL}>
                 <Text weight="semibold" wrap="truncate-end">{r.name}</Text>
-                {r.when && <Text size="caption" dimColor>{`eklenti kaydı ${r.when}`}</Text>}
+                {r.when && <Text size="caption" dimColor wrap="truncate-end">{`eklenti kaydı ${r.when}`}</Text>}
               </Box>
-              <Button key={`bind-row-${r.sid}`} label="Bağla" onPress={() => pickRow(r.sid)} />
+              {fixed(<Button key={`bind-row-${r.sid}`} label="Bağla" onPress={() => pickRow(r.sid)} />)}
             </Box>
           ))}
           {bindView.more > 0 && <Text size="caption" dimColor>{`+${bindView.more} oturum daha (en yeni 9 gösterilir)`}</Text>}
@@ -1654,9 +1659,9 @@ export const register: Register = (on, options) => {
           )
         ) : (
         <Box flexDirection="row" justifyContent="space-between" alignItems="flex-start" gap="sm">
-          <Box flexDirection="column">
-            <Text size="title">Agent Team</Text>
-            <Text size="caption" dimColor>
+          <Box flexDirection="column" {...FILL}>
+            <Text size="title" wrap="truncate-end">Agent Team</Text>
+            <Text size="caption" dimColor wrap="truncate-end">
               {[data?.lead && `Lead · ${data.lead}`, updated && `${updated}'de güncellendi`, !m.isOn && 'mod kapalı']
                 .filter(Boolean)
                 .join(' · ') || 'Lead'}
@@ -1664,9 +1669,9 @@ export const register: Register = (on, options) => {
           </Box>
           {data &&
             (data.paused ? (
-              <Button key="resume" label={labelled('Devam', 'Devam et')} onPress={() => void press($, running, { line: 'Devam et' })} />
+              fixed(<Button key="resume" label={labelled('Devam', 'Devam et')} onPress={() => void press($, running, { line: 'Devam et' })} />)
             ) : (
-              <Button key="pause" label={labelled('Pause', 'Pause')} onPress={() => void press($, running, { line: 'Pause' })} />
+              fixed(<Button key="pause" label={labelled('Pause', 'Pause')} onPress={() => void press($, running, { line: 'Pause' })} />)
             ))}
         </Box>
         )}
@@ -1789,22 +1794,20 @@ export const register: Register = (on, options) => {
               (doneShown ? (
                 <Box key="sec-biten" flexDirection="column" gap="sm">
                   <Box flexDirection="row" alignItems="center" justifyContent="space-between">
-                    <Box flexDirection="row" alignItems="center" gap="xs">
-                      <Text weight="semibold">Biten</Text>
-                      <Text dimColor size="caption">{`${sec.done.length} görev`}</Text>
+                    <Box flexDirection="row" alignItems="center" gap="xs" {...FILL}>
+                      <Text weight="semibold" wrap="truncate-end">Biten</Text>
+                      <Text dimColor size="caption" wrap="truncate-end">{`${sec.done.length} görev`}</Text>
                     </Box>
-                    <Button key="done-toggle" label="Gizle" onPress={toggleDone} />
+                    {fixed(<Button key="done-toggle" label="Gizle" onPress={toggleDone} />)}
                   </Box>
                   <Box key="done-rows" {...CARD}>
                     {sec.done.map(t => (
                       <Box key={`t-${t.id}`} flexDirection="row" alignItems="center" gap="sm">
                         <Text color="success">✓</Text>
-                        <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                        <Box {...FILL}>
                           <Text wrap="truncate-end">{t.title}</Text>
                         </Box>
-                        <Box flexShrink={0}>
-                          <Button key={`detail-${t.id}`} label="Ayrıntı ›" hover={{ color: 'claude' }} onPress={() => void show(t.id)} />
-                        </Box>
+                        {fixed(<Button key={`detail-${t.id}`} label="Ayrıntı ›" hover={{ color: 'claude' }} onPress={() => void show(t.id)} />)}
                       </Box>
                     ))}
                   </Box>
@@ -1812,11 +1815,11 @@ export const register: Register = (on, options) => {
               ) : (
                 <Box key="sec-biten" {...CARD} flexDirection="row" alignItems="center" hover={hover(CARD.borderColor)}>
                   <Text color="success">✓</Text>
-                  <Box flexDirection="column" flexGrow={1}>
-                    <Text weight="semibold">Biten</Text>
-                    <Text size="caption" dimColor>{`${sec.done.length} görev`}</Text>
+                  <Box flexDirection="column" {...FILL}>
+                    <Text weight="semibold" wrap="truncate-end">Biten</Text>
+                    <Text size="caption" dimColor wrap="truncate-end">{`${sec.done.length} görev`}</Text>
                   </Box>
-                  <Button key="done-toggle" label="Göster" onPress={toggleDone} />
+                  {fixed(<Button key="done-toggle" label="Göster" onPress={toggleDone} />)}
                 </Box>
               ))}
           </Box>

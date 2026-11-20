@@ -8160,4 +8160,90 @@ test('biten-overflow (desktop): the title Box of a Biten row shrinks (minWidth 0
   const owner = (n: Node) => nodesOf(row).find(b => b.type === 'Box' && b.children?.includes(n)) as Node
   expect(owner(text).props).toMatchObject({ flexGrow: 1, flexShrink: 1, minWidth: 0 })
   expect(owner(byKey(row, 'detail-L')).props).toMatchObject({ flexShrink: 0 })
+  expect(owner(byKey(row, 'detail-L')).props?.key).toBeUndefined() // a key here would take the row's hover scope from the Button
+})
+
+// biten-overflow revision 2: one rule for every desktop row that puts text beside a Button. The rule is the CSS flexbox one named above (a flex item's
+// `min-width: auto` is its content width): the text side grows, may shrink, may go to 0 and cuts its Texts; the Button sits alone in a Box that never shrinks,
+// and that Box has no `key` (a key there would take the row's hover scope from the Button). Rows are found in the drawn tree, so a new row is checked too.
+const LONG120 = `${'uzun-ad-'.repeat(15)}`.slice(0, 120)
+const hasButton = (n: Node) => nodesOf(n).some(x => x.type === 'Button')
+const hasText = (n: Node) => nodesOf(n).some(x => x.type === 'Text')
+const flexRows = (root: Node) => nodesOf(root).filter(n => n.type === 'Box' && n.props?.flexDirection === 'row')
+const kidsOf = (n: Node) => (n.children ?? []).filter((c): c is Node => typeof c !== 'string')
+// The broken rows, as "<what is wrong>: <keys or first text>" (empty = the rule holds), and how many rows have a Button side.
+const rowRuleBreaks = (root: Node) => {
+  const bad: string[] = []
+  let checked = 0
+  for (const row of flexRows(root)) {
+    const kids = kidsOf(row)
+    const id = `${row.props?.key ?? kids.map(k => k.props?.key ?? k.type).join('+')}`
+    for (const k of kids) if (k.type === 'Box' && Number(k.props?.flexGrow) >= 1 && (k.props?.flexShrink !== 1 || k.props?.minWidth !== 0)) bad.push(`grow without shrink/minWidth: ${id}`)
+    const sides = kids.filter(k => k.type === 'Button' || (k.type === 'Box' && kidsOf(k).length === 1 && kidsOf(k)[0]?.type === 'Button'))
+    if (sides.length === 0 || !kids.some(k => k.type !== 'Button' && !sides.includes(k) && hasText(k))) continue
+    checked++
+    for (const s of sides) if (s.type !== 'Box' || s.props?.flexShrink !== 0 || s.props?.key !== undefined) bad.push(`button side not a keyless flexShrink 0 Box: ${id}`)
+    const text = kids.filter(k => !sides.includes(k) && hasText(k) && !hasButton(k) && k.type === 'Box')
+    if (text.length === 0) bad.push(`no text side Box: ${id}`)
+    for (const t of text) if (!(Number(t.props?.flexGrow) >= 1)) bad.push(`text side does not grow: ${id}`)
+    for (const t of text) for (const x of nodesOf(t)) if (x.type === 'Text' && x.props?.wrap !== 'truncate-end') bad.push(`Text not cut at the end: ${id}`)
+  }
+  return { bad, checked }
+}
+
+test('biten-overflow R2 (desktop pane, Biten, detail): rows with text beside a Button follow the shrink rule with 120-character names', { options: { teamFolders: '/' } }, async ($, on) => {
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('env.get', () => ({ value: '/Users/x' }))
+  on('fs.exists', () => ({ value: true }))
+  on('fs.stat', (_, e) => ({ value: { kind: 'file', size: 10, mtimeMs: 1, isLink: false, realPath: e.path } }))
+  const status = JSON.stringify({
+    v: 1,
+    lead: LONG120,
+    updatedAt: '2026-11-20T11:59:00',
+    tasks: [
+      { id: 't1', title: LONG120, branch: 'feat/sel', stage: 'review', candidate: SHA_B, roles: [], evidence: [{ label: LONG120, path: '/Users/x/agent-team-evidence/qa report.md' }] },
+      { id: 'd1', title: LONG120, stage: 'report', done: true, roles: R_DONE },
+    ],
+  })
+  on('fs.read', (_, e) => ({ value: e.path.endsWith('.json') ? status : 'ilk satır\nikinci' }))
+  on('clock.every', () => ({ value: undefined }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.append', (_, e, next) => next(e))
+  await $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const seen: Record<string, { bad: string[]; checked: number }> = {}
+  const look = async (name: string) => (seen[name] = rowRuleBreaks(await drawnOf(ui)))
+  await look('header + folded Biten')
+  await ui.press({ key: 'done-toggle' })
+  await look('Biten rows')
+  await ui.press({ key: 'detail-t1' })
+  for (let i = 0; i < 10; i++) await new Promise(r => (globalThis as unknown as { setTimeout: (f: () => void, ms: number) => void }).setTimeout(() => r(undefined), 0))
+  expect(await ui.find({ key: 'ev-open-0' })).toBeDefined() // the evidence row is the loaded (Button) kind
+  await look('detail')
+  expect(Object.fromEntries(Object.entries(seen).map(([k, v]) => [k, v.bad]))).toEqual({ 'header + folded Biten': [], 'Biten rows': [], detail: [] })
+  expect(Object.fromEntries(Object.entries(seen).map(([k, v]) => [k, v.checked > 0]))).toEqual({ 'header + folded Biten': true, 'Biten rows': true, detail: false })
+})
+
+test('biten-overflow R2 (desktop, other sessions): the collapsed banner and the opened header follow the shrink rule with a 120-character project name', FOLDERS, async ($, on) => {
+  const long = `${LONG120}--5e6f7a8b.json`
+  await bootOthers($, on, 'desktop', [entry(long, { mtimeMs: at(14, 25) })], { [long]: NORTH })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const folded = rowRuleBreaks(await drawnOf(ui))
+  await ui.press({ key: 'others-toggle' })
+  const open = rowRuleBreaks(await drawnOf(ui))
+  expect([folded.bad, open.bad]).toEqual([[], []])
+  expect([folded.checked, open.checked].map(n => n > 0)).toEqual([true, true])
+})
+
+test('biten-overflow R2 (desktop, Bağla): the bind rows follow the shrink rule with a 120-character project name', FOLDERS, async ($, on) => {
+  const LID = 'ccccccc9-0000-4000-8000-000000000009'
+  const k = await bindBoot($, on, { store: { ...bindStore(), ...Object.fromEntries([sess4(LID, `${LONG120}--ccccccc9.json`, hourAt(11) + 20 * MIN4)]) } })
+  const ui = await k.pane('desktop')
+  await press4(ui, 'detail-m')
+  await press4(ui, 'detail-bind')
+  const root = await drawnOf(ui)
+  expect(rowKeys(root)).toContain(`bind-row-${LID}`)
+  const r = rowRuleBreaks(root)
+  expect([r.bad, r.checked >= 4]).toEqual([[], true])
 })
