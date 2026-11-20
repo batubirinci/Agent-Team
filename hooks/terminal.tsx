@@ -266,10 +266,15 @@ export function termTasks(ui: UI, sec: ReturnType<typeof sections>, hasOn: boole
           <Button key="done-toggle" label={doneOpen ? 'gizle' : 'göster'} onPress={toggle} {...hk('z')} />
         </Box>
       )}
+      {/* One row each: the Button prints its whole label and ignores a cut inside it (seen live at 48 columns), so the Button is the key and the green ✓, and the
+          title beside it is the Text that is cut. */}
       {doneOpen && sec.done.map(t => (
-        <Button key={`detail-${t.id}`} label={t.title} onPress={() => open(t.id)} {...key()}>
+        <Box key={`row-${t.id}`} flexDirection="row" gap={1}>
+          <Button key={`detail-${t.id}`} label="✓" onPress={() => open(t.id)} {...key()}>
+            <Text color="success">✓</Text>
+          </Button>
           <Text wrap="truncate-end">{t.title}</Text>
-        </Button>
+        </Box>
       ))}
     </Box>
   )

@@ -7964,9 +7964,16 @@ test('pane-groups C22 + C23 + A13 (terminal keys and rows): keys follow the draw
   await ui.press({ key: 'done-toggle' })
   root = await drawnOf(ui)
   expect(byKey(root, 'done-toggle').props?.label).toBe('gizle')
-  const row = byKey(root, 'detail-A')
-  expect(row.props?.hotkey).toBe('h')
-  expect(textNode(row, /^Görev A$/)?.props?.wrap).toBe('truncate-end')
+  // The row is one Box row: the pressable `detail-A` (hotkey h) holding the green ✓, then the title Text cut at the end (the Button prints its whole label and
+  // ignores a cut inside it: QA 2, live, 48 columns). Source: spec A13 + invariant 4 (every row is one row, wrap=truncate-end).
+  const row = byKey(root, 'row-A')
+  expect(row.props?.flexDirection).toBe('row')
+  expect(row.children?.length).toBe(2)
+  const [pick, title] = row.children as Node[]
+  expect(pick?.props).toMatchObject({ key: 'detail-A', hotkey: 'h', plain: true })
+  expect(textNode(pick as Node, /^✓$/)?.props?.color).toBe('success')
+  expect(title?.type).toBe('Text')
+  expect([textOf(title as Node), title?.props?.wrap]).toEqual(['Görev A', 'truncate-end'])
   expect(layout(root).filter(x => x.startsWith('biten'))).toEqual(['biten:A'])
   // One Button row: no state, stage or role rows for it.
   const t = texts4(root)
