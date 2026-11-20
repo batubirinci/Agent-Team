@@ -12,8 +12,9 @@ const POLL_MS = 500
 const SOON_MS = 500
 const TICK_MS = 1000
 
-// Change a tag when that value's fields change: it declines what an earlier version stored. Every value that holds a parse (a decision, a press of one, an
-// answer to one) changed its tag when push/stuck moved into the parse (revision 2 of task t4): no earlier value is read without them.
+// Change a tag when that value's fields change: it declines what an earlier version stored. Every value that holds a parsed decision or an answer to one
+// changed its tag when push/stuck moved into the parse (revision 2 of task t4): no earlier value is read without them. The outbox keeps its 0.8.0 tag: a
+// decision's press stored `push` as a boolean then too, a line with no decision has none, and its sent marks must survive the upgrade.
 const mode = atom({ plugin: 'agent-team', key: 'mode' } as const, { isOn: false, source: 'off' } as Mode, {
   shape: 'mode-1',
 })
@@ -35,7 +36,7 @@ const karar = atom({ plugin: 'agent-team', key: 'karar' } as const, [] as string
 // Pane presses on their way to the Lead (`queue`, in press order) and the decisions whose line was delivered (`sent`: [id, option]; dropped
 // when the decision leaves the file). `said`: lines without a decision (Pause, Devam) submitted as the owner, until the next status read.
 // One atom, so every change (a press, a delivery, a give-back) is one atomic update.
-const outbox = atom({ plugin: 'agent-team', key: 'outbox' } as const, { queue: [], sent: [], said: [] } as Outbox, { shape: 'outbox-3' })
+const outbox = atom({ plugin: 'agent-team', key: 'outbox' } as const, { queue: [], sent: [], said: [] } as Outbox, { shape: 'outbox-2' })
 // A resumed session in team mode: when it started (the pane warns while the status file is older), and whether its first prompt still owes the
 // Lead the reopen line. since 0: not reopened (a new session, /clear). An atom: a hot reload keeps it, /clear resets it.
 const reopened = atom({ plugin: 'agent-team', key: 'reopen' } as const, { since: 0, line: false } as Reopen, { shape: 'reopen-1' })
@@ -235,12 +236,14 @@ const announce = ($: EngineInterface, file: string) =>
 // (file deleted, task removed), so the same id coming back does not reopen it by itself.
 async function setView($: EngineInterface, view: StatusView) {
   await update($, status, () => view)
-  await tidy($, view)
+  await tidy($, view, false)
 }
 
-async function tidy($: EngineInterface, view: StatusView) {
+// `parsed`: the view is a parse of the file read now. Only such a view drops a sent mark (its decision left the file): a file missing, unreadable, torn
+// or too big keeps them, so a decision already answered is never answered again.
+async function tidy($: EngineInterface, view: StatusView, parsed: boolean) {
   const ids = view.data?.decisions.map(d => d.id) ?? []
-  await update($, outbox, s => ({ ...s, sent: s.sent.filter(([id]) => ids.includes(id)), said: [] }))
+  await update($, outbox, s => ({ ...s, sent: parsed ? s.sent.filter(([id]) => ids.includes(id)) : s.sent, said: [] }))
   const open = await read($, detail)
   if (open && !view.data?.tasks.some(t => t.id === open)) await update($, detail, () => null)
 }
@@ -277,7 +280,7 @@ async function refresh($: EngineInterface, file: string) {
     return
   }
   // The new view is written: a failure of what follows (the outbox, the open detail) is not the view's, and never takes it back.
-  await tidy($, view)
+  await tidy($, view, true)
 }
 
 // The other files of the status folder: untrusted data, read-only; what fails to list, read or parse is skipped. A file of the last 30 days that names

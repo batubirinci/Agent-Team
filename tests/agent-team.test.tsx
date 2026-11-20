@@ -5304,7 +5304,7 @@ const cBoot = async (
   const ownName = `${cwd.split('/').pop()}--${sid.slice(0, 8)}.json`
   const disk = { own: o.own ?? own4(), ownAge: o.ownAge ?? MIN4, rev: 0 }
   const files = o.files ?? defaultFiles4()
-  const gate = { deliver: o.deliver ?? (() => true), storeFails: false, listFails: o.listFails ?? false, now: C4_NOW, isFilled: o.isFilled ?? true }
+  const gate = { deliver: o.deliver ?? (() => true), storeFails: false, listFails: o.listFails ?? false, ownGone: false, now: C4_NOW, isFilled: o.isFilled ?? true }
   const log = { sends: [] as { to: string; text: string }[], reads: [] as string[], fills: [] as string[], submits: [] as { text: string; context?: readonly string[] }[], sets: [] as string[], writes: [] as string[] }
   const store = new Map<string, unknown>(Object.entries(o.store ?? {}))
   on('store.get', (_, e) => {
@@ -5324,7 +5324,7 @@ const cBoot = async (
   on('ui.panes', () => ({ value: [{ id: 'agent-team', title: 'Agent Team', isShown: false, isFocused: false, isPlaced: false }] }))
   on('env.get', () => ({ value: '/Users/x' }))
   const ownMtime = () => C4_NOW - disk.ownAge + disk.rev * 1000
-  on('fs.exists', (_, e) => ({ value: e.path === `${C4D}/${ownName}` }))
+  on('fs.exists', (_, e) => ({ value: !gate.ownGone && e.path === `${C4D}/${ownName}` }))
   on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs: ownMtime(), isLink: false } }))
   on('fs.write', (_, e) => {
     log.writes.push(e.path)
@@ -6208,8 +6208,8 @@ test('T4 E1 (A2b, Neon): after a hot reload from r1 (children-1, no flags) with 
   expect(keysWith(root, 'kd-hard-k1-')).toEqual(['kd-hard-k1-0', 'kd-hard-k1-1'])
 })
 
-test('T4 E1a: every stored value of an earlier build that holds a parse is declined: the own file is parsed again, a stale child is not drawn, a stale queued press is not delivered', FOLDERS, async ($, on) => {
-  const own = own4({ decisions: [{ id: 'd1', kind: 'Ürün kararı', text: 'Hangisi sayılsın?', options: ['Evet', 'Hayır'] }, { id: 'z1', kind: '​Push onayı', text: 'Push?', options: ['Onayla'] }] })
+test('T4 E1a: every stored value of an earlier build that holds a decision is declined: the own file is parsed again, a stale child is not drawn', FOLDERS, async ($, on) => {
+  const own = own4({ decisions: [{ id: 'd1', kind: 'Ürün kararı', text: 'Hangisi sayılsın?', options: ['Evet', 'Hayır'] }] })
   const k = await cBoot($, on, {
     surface: 'desktop',
     own,
@@ -6217,14 +6217,11 @@ test('T4 E1a: every stored value of an earlier build that holds a parse is decli
     atoms: {
       status: { shape: 'status-3', value: storedView(own) },
       children: { shape: 'children-1', value: storedKids(kid4()) },
-      // 0.8.0 classified "​Push onayı" as no push (its kindOf kept the U+200B): its queued press says push false.
-      outbox: { shape: 'outbox-2', value: { queue: [{ line: 'Karar (z1): Onayla', id: 'z1', option: 'Onayla', push: false }], sent: [], said: [] } },
     },
   })
   const ui = await k.pane('desktop')
   expect(keysWith(await drawnOf(ui), 'kd-hard-')).toEqual([]) // the r1 child is declined; the failing listing gives no new one
   await $.turn.start({ text: 'x', turnId: 't1' })
-  expect(await toolCtx($)).toBeUndefined() // the 0.8.0 queue is declined, so its push:false entry never reaches a tool result
   await press4(ui, 'd-d1-0')
   await k.settle()
   // A press on a parsed (flagged) ordinary decision rides the next tool result: the own file was parsed again, not read from the 0.8.0 value.
@@ -6249,7 +6246,7 @@ test('T4 E1b: a decision whose push flag is missing or not a boolean is a push e
     atoms: {
       status: { shape: 'status-4', value: storedView(own) },
       children: { shape: 'children-2', value: storedKids(kid, withOdd) },
-      outbox: { shape: 'outbox-3', value: { queue: [{ line: 'Karar (d9): A', id: 'd9', option: 'A' }], sent: [], said: [] } },
+      outbox: { shape: 'outbox-2', value: { queue: [{ line: 'Karar (d9): A', id: 'd9', option: 'A' }], sent: [], said: [] } },
     },
   })
   for (const surface of ['desktop', 'terminal'] as const) {
@@ -6459,3 +6456,45 @@ for (const w of [46, 75])
     expect((await k.tool()).context).toEqual([`${HEAD}\nKarar (d2): Evet`])
     expect(await wrapOf('d-d2', 'Gönderildi: Evet')).toBe('truncate-end')
   })
+
+// Revision 2b (Lead's decisions on the r2 report): the outbox keeps its 0.8.0 tag (its Press type and the push rule of a decision press did not change, and
+// declining it would drop the sent marks); own sent marks follow the E2a rule. Expected values: the Lead's message (push:true never in a tool result,
+// push:false is, a sent mark still blocks a second answer) and, for Pause, the existing criterion 2 test above (a line with no decision rides a tool result).
+test('T4 E1 (outbox 0.8.0): a stored 0.8.0 outbox is kept: its push:true press waits for the owner\'s submit, its push:false press and Pause ride the tool result, its sent mark blocks a second answer', FOLDERS, async ($, on) => {
+  const own = own4({ decisions: [{ id: 'd1', kind: 'Ürün kararı', text: 'Hangisi sayılsın?', options: ['Evet', 'Hayır'] }, OWN_P1, { id: 'd2', kind: 'Ürün kararı', text: 'Hangisi?', options: ['X', 'Y'] }] })
+  const queue = [{ line: 'Karar (p1): Onayla', id: 'p1', option: 'Onayla', push: true }, { line: 'Karar (d1): Evet', id: 'd1', option: 'Evet', push: false }, { line: 'Pause' }]
+  const k = await cBoot($, on, { surface: 'desktop', own, atoms: { outbox: { shape: 'outbox-2', value: { queue, sent: [['d2', 'X']], said: [] } } } })
+  const ui = await k.pane('desktop')
+  await $.turn.start({ text: 'x', turnId: 't1' })
+  expect(await toolCtx($)).toEqual([`${HEAD}\nKarar (d1): Evet\nPause`])
+  expect(await toolCtx($)).toBeUndefined()
+  await press4(ui, 'd-d2-1') // d2 was answered before the reload: nothing goes
+  await k.settle()
+  expect(texts4(byKey(await drawnOf(ui), 'd-d2'))).toContain('Gönderildi: X')
+  await endTurn4($, k, 't1')
+  expect(k.log.submits.map(s => s.text)).toEqual(['Karar (p1): Onayla'])
+})
+
+test('T4 E2a (own): an own file missing for one poll, then torn for one poll, keeps the own sent marks; a second press submits nothing; a parsed file without the id drops the mark', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { surface: 'desktop' })
+  const ui = await k.pane('desktop')
+  await press4(ui, 'd-d1-0')
+  await k.settle()
+  k.gate.ownGone = true
+  await k.poll()
+  k.gate.ownGone = false
+  await k.setOwn(own4())
+  await press4(ui, 'd-d1-1')
+  await k.settle()
+  const good = k.disk.own
+  await k.setOwn('{"v":1,"decisions":[')
+  await k.setOwn(good)
+  await press4(ui, 'd-d1-1')
+  await k.settle()
+  expect(k.log.submits.map(s => s.text)).toEqual(['Karar (d1): Evet']) // the r2 probe saw "Karar (d1): Evet" then "Karar (d1): Hayır"
+  expect(texts4(byKey(await drawnOf(ui), 'd-d1'))).toContain('Gönderildi: Evet')
+  // Control: the own file read and parsed without d1 drops the mark, so d1 coming back is a new decision.
+  await k.setOwn(own4({ decisions: [] }))
+  await k.setOwn(good)
+  expect(texts4(byKey(await drawnOf(ui), 'd-d1'))).not.toContain('Gönderildi: Evet')
+})
