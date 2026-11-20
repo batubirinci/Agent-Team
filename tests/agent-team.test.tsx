@@ -8144,3 +8144,20 @@ test('test-gaps C27 (caption, desktop detail): the ✓ bitti işaretli row and t
   expect(textNode(root, /^✓ bitti işaretli · oturum sürüyor$/)?.props).toMatchObject({ size: 'caption', dimColor: true, wrap: 'truncate-end' })
   expect(textNode(root, /^ayrı oturum · hard/)?.props).toMatchObject({ size: 'caption', wrap: 'truncate-end' })
 })
+
+// biten-overflow (desktop, Biten row): a 120-character title must not push "Ayrıntı ›" out of the card.
+// Source of the expected props: the CSS flexbox rule the desktop engine lays a Box with. A flex item has `min-width: auto` (= its content width),
+// so a grown title Box never shrinks below the full title unless `minWidth` is 0; `flexShrink` 1 lets it give room, and the button's Box keeps `flexShrink` 0.
+test('biten-overflow (desktop): the title Box of a Biten row shrinks (minWidth 0, flexShrink 1) and the Ayrıntı button Box does not', FOLDERS, async ($, on) => {
+  const title = 'Çok uzun bir görev başlığı '.repeat(5).slice(0, 120)
+  expect(title).toHaveLength(120)
+  const k = await pgBoot($, on, pgFile([PGD('L', { title, done: true, stage: 'report', roles: R_DONE })]))
+  const ui = await k.pane('desktop')
+  await ui.press({ key: 'done-toggle' })
+  const row = byKey(await drawnOf(ui), 't-L')
+  const text = textNode(row, /^Çok uzun/) as Node
+  expect([textOf(text), text.props?.wrap]).toEqual([title, 'truncate-end'])
+  const owner = (n: Node) => nodesOf(row).find(b => b.type === 'Box' && b.children?.includes(n)) as Node
+  expect(owner(text).props).toMatchObject({ flexGrow: 1, flexShrink: 1, minWidth: 0 })
+  expect(owner(byKey(row, 'detail-L')).props).toMatchObject({ flexShrink: 0 })
+})
