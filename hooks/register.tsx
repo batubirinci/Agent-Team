@@ -136,8 +136,8 @@ const syncKarar = async ($: EngineInterface, draft: string) => {
 // idle, else when the turn ends. A submit that fails (rejects, or a hook drops it) gives its lines back: a press is never lost.
 // `running`: ids of the Lead's turns now running (a set: a queued turn starts before the old one completes).
 const HEAD = "[Agent Team pane] Sahip pane'de bastı:"
-// What a tool result may carry: a line with no decision (Pause, Devam), or a decision's press whose push flag is the boolean false (fail closed: see pushOf).
-const inResult = (q: Press) => q.id === undefined || !pushOf(q)
+// What a tool result may carry: a line with no decision and no push flag (Pause, Devam), or a press whose push flag is the boolean false (fail closed: see pushOf).
+const inResult = (q: Press) => (q.id === undefined && q.push === undefined) || !pushOf(q)
 const mark = (sent: Outbox['sent'], got: Press[]) =>
   got.reduce((acc, g) => (g.id === undefined ? acc : [...acc.filter(([id]) => id !== g.id), [g.id, g.option ?? ''] as [string, string]]), sent)
 
@@ -348,11 +348,12 @@ async function scanOthers($: EngineInterface, dir: string, own: string, seen: Se
     if (!kids) return
     const linked = kids
     if (JSON.stringify(await read($, children)) !== JSON.stringify(linked)) await update($, children, () => linked)
-    // A delivered answer goes only when its own file was read and parsed in this scan and no longer has the decision (all of them, before the cut to 10), or
-    // after 24 h: never for a file absent, unreadable, claimed by another or cut. A failed one goes when its decision is not drawn or the file changed.
+    // A delivered answer goes when its own file was read and parsed in this scan and no longer has the decision (all of them, before the cut to 10), or after
+    // 24 h while its file is not parsed with it: never while a parsed file still lists it, nor for a file absent, unreadable, claimed by another or cut only
+    // for one poll. A failed one goes when its decision is not drawn or the file changed.
     const gone = (f: Forward) =>
       f.state === 'sent'
-        ? ids.get(f.file)?.has(f.id) === false || now - f.at > SENT_MS
+        ? ids.get(f.file)?.has(f.id) === false || (!ids.get(f.file)?.has(f.id) && now - f.at > SENT_MS)
         : !linked.some(c => c.file === f.file && c.decisions.some(d => d.id === f.id) && c.mtimeMs === f.mtimeMs)
     if ((await read($, forwards)).some(gone)) await update($, forwards, fs => fs.filter(f => !gone(f)))
   } catch {}

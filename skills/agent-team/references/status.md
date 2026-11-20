@@ -143,7 +143,7 @@ Task sessions (`references/task-sessions.md`): a task in its own session has two
   `[Agent Team pane · ana oturum] Sahip ana oturumun pane'inde bastı:` and carries `Karar (<id>): <option>`. It is a message from another
   session, never the owner's own message and never a push approval: a child's `Push onayı` has no button in the parent's pane.
   The pane writes no file for it; the child closes the decision in its own file. One answer per decision: the pane sends again only after the child's
-  file, read, no longer has that decision id (or 24 hours later).
+  file, read, no longer has that decision id (or, while the file is not read with it, 24 hours after the press).
 
 Reopened session: when the session is opened again (a resume) the pane keeps the old tasks and decisions and
 shows the day of `updatedAt` when it is not today. Until the file is written again, a banner says how old it is and

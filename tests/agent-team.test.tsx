@@ -5304,7 +5304,7 @@ const cBoot = async (
   const ownName = `${cwd.split('/').pop()}--${sid.slice(0, 8)}.json`
   const disk = { own: o.own ?? own4(), ownAge: o.ownAge ?? MIN4, rev: 0 }
   const files = o.files ?? defaultFiles4()
-  const gate = { deliver: o.deliver ?? (() => true), storeFails: false, listFails: o.listFails ?? false, ownGone: false, now: C4_NOW, isFilled: o.isFilled ?? true }
+  const gate = { deliver: o.deliver ?? (() => true), storeFails: false, listFails: o.listFails ?? false, ownGone: false, now: C4_NOW, sid, isFilled: o.isFilled ?? true }
   const log = { sends: [] as { to: string; text: string }[], reads: [] as string[], fills: [] as string[], submits: [] as { text: string; context?: readonly string[] }[], sets: [] as string[], writes: [] as string[] }
   const store = new Map<string, unknown>(Object.entries(o.store ?? {}))
   on('store.get', (_, e) => {
@@ -5317,7 +5317,7 @@ const cBoot = async (
   })
   on('store.delete', () => ({ value: undefined }))
   on('store.keys', () => ({ value: [...store.keys()] }))
-  on('session.id', () => ({ value: sid }))
+  on('session.id', () => ({ value: gate.sid }))
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true as const } }))
   on('ui.close', () => ({ value: undefined }))
@@ -6497,4 +6497,45 @@ test('T4 E2a (own): an own file missing for one poll, then torn for one poll, ke
   await k.setOwn(own4({ decisions: [] }))
   await k.setOwn(good)
   expect(texts4(byKey(await drawnOf(ui), 'd-d1'))).not.toContain('Gönderildi: Evet')
+})
+
+// Revision 2c (round 3: QA-R3-C1, Neon follow-ups 2 and 3; qa-r3/qa-neon-report.md, qa-r3/neon/r3-probes.tsx). Expected values: spec §3.5 "one answer per
+// decision" (a decision a parsed child still lists is never pressable again), E1a (an r1 forwards value is declined), the sendTo rule "never this session's
+// own id", and the Lead's inResult rule (a press with no id but push true is held for the owner's submit).
+test('T4 E2a (24 h, still listed): a child decision answered more than 24 h ago that its parsed file still lists stays answered; a second press sends nothing', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { store: KID_REC })
+  const ui = await k.pane('terminal')
+  await press4(ui, 'kd-hard-k1-0')
+  await k.settle()
+  k.gate.now = C4_NOW + DAY4 + MIN4
+  await k.poll()
+  expect(texts4(byKey(await drawnOf(ui), 'kd-hard-k1'))).toContain('Gönderildi: A · hard oturumuna') // QA-R3-C1 saw the idle caption
+  await press4(ui, 'kd-hard-k1-1')
+  await k.settle()
+  expect(sent4(k)).toEqual(KARAR_A)
+})
+
+test('T4 E1a (forwards-1): an answer stored by r1 (forwards-1, no time) is declined: the decision reads unanswered', FOLDERS, async ($, on) => {
+  const r1 = [{ file: C4_KID, id: 'k1', option: 'A', state: 'sent', mtimeMs: C4_NOW - 5 * MIN4 }]
+  const k = await cBoot($, on, { store: KID_REC, atoms: { forwards: { shape: 'forwards-1', value: r1 } } })
+  const root = await drawnOf(await k.pane('terminal'))
+  expect(texts4(byKey(root, 'kd-hard-k1'))).toContain('1-9 ile seç · hard oturumuna hemen gider')
+})
+
+test('T4 R-cheap (sendTo empty id): with session.id() answering "" after the start, the own record is still never a target', FOLDERS, async ($, on) => {
+  const store = Object.fromEntries([sess4(C4_SID, C4_KID, hourAt(12)), sess4(C4_KID_SID, C4_KID, hourAt(11))]) // the own id's record is the newest
+  const k = await cBoot($, on, { store })
+  const ui = await k.pane('terminal')
+  k.gate.sid = ''
+  await press4(ui, 'kd-hard-k1-0')
+  await k.settle()
+  expect(k.log.sends.map(s => s.to)).toEqual([C4_KID_SID])
+})
+
+test('T4 E1b (no id, push true): a stored press with no decision id but push true never rides a tool result; Pause does; the turn end submits it', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { surface: 'desktop', atoms: { outbox: { shape: 'outbox-2', value: { queue: [{ line: 'Pause' }, { line: 'Onaylıyorum', push: true }], sent: [], said: [] } } } })
+  await $.turn.start({ text: 'x', turnId: 't1' })
+  expect(await toolCtx($)).toEqual([`${HEAD}\nPause`])
+  await endTurn4($, k, 't1')
+  expect(k.log.submits.map(s => s.text)).toEqual(['Onaylıyorum'])
 })
