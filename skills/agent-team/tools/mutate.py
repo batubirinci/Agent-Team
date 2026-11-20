@@ -437,7 +437,7 @@ def _self_check(root):
     checks["dirty worktree: refused (exit 2, nothing run)"] = r9.returncode == 2 and log9 is None
 
     left = repo + "-mjob0"
-    os.mkdir(left)
+    os.makedirs(left, exist_ok=True)  # may be there already when a job worktree was kept
     write_text(os.path.join(left, "f"), "x")
     r10, log10 = run(mutants, "--jobs", "2")
     shutil.rmtree(left)
