@@ -7301,3 +7301,127 @@ test('T4 TR1 (sixteen): seventeen starts of seventeen tasks keep the sixteen new
   }
   expect(Object.keys(k.record()?.kids ?? {}).sort()).toEqual(Array.from({ length: 16 }, (_, i) => `t${i + 1}`).sort())
 })
+
+// ===== T4 revision 5: round 6 (<evidence root>/tasks/t4/qa-r6/lead-r6-adjudication.md). One session = one status file: every reader that counts, compares or
+// ranks store records groups them by `file` first, so a session's records from before a /clear never count as another session. Source of every expected
+// value: that rule, the addendum's rules and strings already used above (§1.3 first prompt, §1.4 table, §1.6 report, §1.9 bind, TR2/TR18/TR19/TR22), and
+// Neon's probes Q1-Q4 (qa-r6/neon/probes-candidate.log), rebuilt here from their descriptions. ----
+const C4_OLD = 'a9a9a9a9-0000-4000-8000-0000000000a9' // this session's id before a /clear, in a store that already holds it
+const KID_OLD = 'b9b9b9b9-0000-4000-8000-0000000000b9'
+
+// R6-B1 (Neon Q1): what the parent's bind after a /clear leaves in the store: both its records (one file) name A in kids.m.
+test('T4 TR19 (child, parent cleared): two records of one parent file naming A are one parent: A adopts m with the code', FOLDERS, async ($, on) => {
+  const kids = { kids: { m: { code: MCODE, at: hourAt(11), to: A_SID } } }
+  const store = Object.fromEntries([sess4(C4_SID, 'main--aaaaaaaa.json', hourAt(10), kids), sess4(M_NEW, 'main--aaaaaaaa.json', hourAt(11), kids)])
+  const k = await aBoot($, on, store)
+  expect(typeof (await recv4($, k, BIND4)).consumed).toBe('string')
+  expect([k.record()?.bound?.task, k.record()?.bound?.code]).toEqual(['m', MCODE])
+})
+
+// Neon Q3: the /clear lands right after the prompt hook's own mode check (its follow read the id, then the mode); the first prompt still binds the new id and the code never goes on.
+test('T4 TR3 (/clear inside the first prompt): a /clear right after the hook\'s mode check binds the new id and the code goes on as <alındı>', FOLDERS, async ($, on) => {
+  const k = await kidBoot($, on, { mine: null })
+  let sid = C4_KID_SID
+  let reads = 0
+  Object.defineProperty(k.gate, 'sid', {
+    get: () => {
+      if (++reads === 2) k.clear(KID_NEW) // the hook's mode check read the id once (no change) and the mode (on); the /clear comes before its next read
+      return sid
+    },
+    set: (v: string) => (sid = v),
+  })
+  await prompt4($, k, `${MARK4}\nBrief…`)
+  expect(k.record(KID_NEW)?.bound?.code).toBe(CODE4)
+  expect(k.log.submits.at(-1)?.text).toBe('[Agent Team görev oturumu] task=hard kod=<alındı>\nBrief…')
+})
+
+// Neon Q4 and the candidate list: this session's own record from before the /clear is never listed; another session's two records (one file) are one row,
+// its newest.
+test('T4 TR17 (/clear): after a /clear the bind view lists neither this session\'s old record nor another session\'s older record of the same file', FOLDERS, async ($, on) => {
+  const G_OLD = '12121212-0000-4000-8000-000000000012'
+  const G_NEW = '13131313-0000-4000-8000-000000000013'
+  const store = { ...bindStore(), ...Object.fromEntries([sess4(G_OLD, 'g-proj--12121212.json', hourAt(11) + 54 * MIN4), sess4(G_NEW, 'g-proj--12121212.json', hourAt(11) + 55 * MIN4)]) }
+  const k = await bindBoot($, on, { store, mine: null })
+  k.clear(M_NEW)
+  await k.poll()
+  const ui = await k.pane('terminal')
+  await openBindTerm(ui)
+  expect(rowKeys(await drawnOf(ui))).toEqual([`bind-row-${G_NEW}`, `bind-row-${B_SID}`, `bind-row-${A_SID}`, `bind-row-${F_SID}`])
+})
+
+// Ride-along (Neon LOW register.tsx:907): a child's report that quotes the bind message on a line of its own is a report, not the bind message.
+test('T4 TR19 (whole body): a delivery whose body only has the bind message as one of its lines is not consumed and goes on as it came', FOLDERS, async ($, on) => {
+  const k = await aBoot($, on, parentM())
+  const text = `GÖREV m: GO · alıntı:\n${BIND4}\nson`
+  const r = await recv4($, k, text)
+  expect([r.consumed, k.record()?.bound, k.log.received.at(-1)]).toEqual([undefined, undefined, peer4(text)])
+})
+
+// isValid: a binding is valid only while another session's file holds the code; this session's own older record does not.
+test('T4 TR21 (own old record): a child whose only holder of its code is its own record from before a /clear is not bound: its press is refused', FOLDERS, async ($, on) => {
+  const k = await kidBoot($, on, { store: Object.fromEntries([sess4(KID_OLD, C4_KID, hourAt(11), kidsOf4())]) })
+  const r = await recv4($, k, wire4('k1', 1, 'A'))
+  expect([r.consumed, k.log.submits]).toEqual([undefined, []])
+})
+
+// parentsOf: the report goes to the parent's file, never to this session's own older record.
+test('T4 C14 (own old record): a bound child reports to its parent, not to its own newer record from before a /clear that holds the code', FOLDERS, async ($, on) => {
+  const k = await kidBoot($, on, { store: { ...Object.fromEntries([sess4(C4_SID, 'main--aaaaaaaa.json', hourAt(11), kidsOf4())]), ...Object.fromEntries([sess4(KID_OLD, C4_KID, hourAt(11) + 30 * MIN4, kidsOf4())]) } })
+  await done4($, k, { answer: 'GÖREV hard: GO' })
+  expect(sent4(k)).toEqual([[C4_SID, 'GÖREV hard: GO']])
+})
+
+// linksOf: this session's own older record that presents its code is not a task session.
+test('T4 TR8 (own old record): the own record from before a /clear presenting kids.m\'s code leaves m unbound', FOLDERS, async ($, on) => {
+  const store = { ...bindStore(), ...Object.fromEntries([sess4(C4_OLD, 'main--aaaaaaaa.json', hourAt(10), boundOf4('m', MCODE, 'tok-old'))]) }
+  const k = await bindBoot($, on, { store, mine: { kids: { m: { code: MCODE, at: hourAt(9) } } } })
+  const root = await drawnOf(await k.pane('terminal'))
+  expect(texts4(byKey(root, 't-m'))).toContain('◇ ayrı oturum · m · bağlanmadı · ayrıntıda bağla')
+})
+
+// Neon survivors N6-notestart-patchown, N6-fail-patchown: every change of kids after a /clear reaches the session's records from before it too.
+test('T4 TR22 (unpresented code, start after /clear): a later marker start replaces the unpresented code in every record of this session', FOLDERS, async ($, on) => {
+  const k = await bindBoot($, on, { mine: { kids: { m: { code: MCODE, at: hourAt(9) } } } })
+  k.clear(M_NEW)
+  const code = 'n'.repeat(20)
+  await $.tool.call({ tool: 'Bash', command: `cd /x && claude --bg -n m "[Agent Team görev oturumu] task=m kod=${code}"`, tool_use_id: 'u1' } as never)
+  await k.settle()
+  expect([k.record(M_NEW)?.kids?.m?.code, k.record(C4_SID)?.kids?.m?.code]).toEqual([code, code])
+})
+
+test('T4 TR18 (/clear): a bind not delivered after a /clear leaves no entry in any record of this session', FOLDERS, async ($, on) => {
+  const k = await bindBoot($, on, { mine: null, deliver: () => false })
+  k.clear(M_NEW)
+  await k.poll()
+  const ui = await k.pane('terminal')
+  await openBindTerm(ui)
+  await press4(ui, `bind-row-${A_SID}`)
+  await k.settle()
+  expect(sent4(k)).toEqual([[A_SID, BIND4]])
+  expect([k.record(M_NEW)?.kids?.m, k.record(C4_SID)?.kids?.m]).toEqual([undefined, undefined])
+})
+
+// Neon survivors N6-report-rawmode, N6-toolcall-rawmode: right after a /clear the mode is the one the follow carries, not the reset atom.
+test('T4 C14 (/clear): right after a /clear, before any poll, a GÖREV final message is reported to the parent', FOLDERS, async ($, on) => {
+  const k = await kidBoot($, on)
+  k.clear(KID_NEW)
+  await done4($, k, { answer: 'GÖREV hard: GO' })
+  expect(sent4(k)).toEqual([[C4_SID, 'GÖREV hard: GO']])
+})
+
+test('T4 E1 (/clear, in flight): a press made while the poll\'s follow is carrying the mode is in the next tool result', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { surface: 'desktop' })
+  await $.turn.start({ text: 'x', turnId: 't1' })
+  k.clear(M_NEW)
+  let go = () => undefined as void
+  k.gate.hold = { key: `session:${C4_SID}`, wait: new Promise<void>(r => (go = r)) }
+  await k.poll() // its follow put the path back and waits on the old record
+  const ui = await k.pane('desktop')
+  await press4(ui, 'd-d1-0')
+  await k.settle()
+  const ctx = toolCtx($)
+  await k.settle()
+  k.gate.hold = undefined
+  go()
+  expect(((await ctx) ?? []).join('\n')).toContain('Karar (d1): Evet')
+})
