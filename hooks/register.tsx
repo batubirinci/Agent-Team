@@ -178,8 +178,7 @@ const giveBack = ($: EngineInterface, got: Press[]) =>
 // one hidden user row, the reminder a `session.append` is. Team mode only, as the hook; never throws.
 async function contextRow($: EngineInterface) {
   try {
-    await follow($) // after a /clear the atoms are reset until it carries the mode over: it runs before the mode is read
-    if (!(await read($, mode)).isOn) return
+    if (!(await modeNow($)).isOn) return // after a /clear: the mode carried over
     const line = await takeReopen($)
     const text = [leadText((await read($, status)).file, await boundTask($)), ...(line ? [line] : [])].join('\n')
     await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
@@ -203,14 +202,13 @@ async function submitOut($: EngineInterface) {
 // on the terminal, where a repeated fallback press submits again; before delivery the last press per decision wins.
 async function press($: EngineInterface, running: Set<string>, p: Press, term = false) {
   try {
-    await follow($) // the mode below is read after a /clear carried it over
     let ignored = false
     await update($, outbox, s => {
       ignored = p.id !== undefined && !term && s.sent.some(([id]) => id === p.id)
       if (ignored || (p.id === undefined && s.queue.at(-1)?.line === p.line)) return s
       return { ...s, queue: [...s.queue.filter(q => p.id === undefined || q.id !== p.id), p] }
     })
-    if (ignored || (running.size && (await read($, mode)).isOn)) return
+    if (ignored || (running.size && (await modeNow($)).isOn)) return
     await submitOut($)
   } catch {}
 }
@@ -400,13 +398,25 @@ async function records($: EngineInterface, dir = followed.dir): Promise<Rec[]> {
   }
   return out
 }
-const selfId = async ($: EngineInterface) => String((await $.session.id().catch(() => '')) || followed.last)
+// After `follow`: right after a /clear the record sits under the old id until it is carried over.
+const selfId = async ($: EngineInterface) => {
+  await follow($)
+  return String((await $.session.id().catch(() => '')) || followed.last)
+}
 // Rewrites one record as `f` says; a missing or malformed record is left alone. `kids` with no entry is left out.
 async function patch($: EngineInterface, sid: string, f: (r: SessionRecord) => SessionRecord, dir = followed.dir) {
   const r = sid ? parseRecord(await $.store.get(`session:${sid}`), dir) : undefined
   if (!r) return
   const { kids, ...rest } = f(r)
   await $.store.set(`session:${sid}`, { ...rest, ...(kids && Object.keys(kids).length > 0 && { kids }) })
+}
+// Every change of `kids` goes here: it rewrites every record of this session, its id now and the ids a /clear carried it from (`follow` copies the record
+// with its file, so they are the records with this session's file), so no earlier id keeps a code this session dropped or replaced (Neon r5 LOW-1).
+async function patchKids($: EngineInterface, f: (kids: Record<string, Kid> | undefined) => Record<string, Kid> | undefined) {
+  const recs = await records($)
+  const own = await selfId($)
+  const file = recs.find(x => x.sid === own)?.r.file
+  if (file) for (const x of recs) if (x.r.file === file) await patch($, x.sid, r => ({ ...r, kids: f(r.kids) }))
 }
 const withoutKid = (kids: Record<string, Kid> | undefined, task: string) => Object.fromEntries(Object.entries(kids ?? {}).filter(([t]) => t !== task))
 const withKid = (kids: Record<string, Kid> | undefined, task: string, k: Kid) => Object.fromEntries([...Object.entries(withoutKid(kids, task)), [task, k] as const].sort((a, b) => b[1].at - a[1].at).slice(0, KIDS_MAX))
@@ -423,11 +433,15 @@ async function boundTask($: EngineInterface) {
   }
 }
 
-// Resolves this session's `kids` for its written tasks and keeps the answer in `links`.
+// This session's bindings (linksOf) ranked by the tasks its own file writes now: every reader of a binding (the view, a press, a bind, an unbind) asks here.
+async function linksNow($: EngineInterface, recs: readonly Rec[]) {
+  const open = new Set((await read($, status)).data?.tasks.filter(t => !t.generatedId).map(t => t.id) ?? [])
+  return linksOf(recs, await selfId($), open)
+}
+
+// Resolves this session's `kids` and keeps the answer in `links`.
 async function relink($: EngineInterface) {
-  const recs = await records($)
-  const written = new Set((await read($, status)).data?.tasks.filter(t => !t.generatedId).map(t => t.id) ?? [])
-  const next = linksOf(recs, await selfId($), written)
+  const next = await linksNow($, await records($))
   if (JSON.stringify(await read($, links)) !== JSON.stringify(next)) await update($, links, () => next)
 }
 
@@ -456,7 +470,7 @@ export async function forward($: EngineInterface, c: Child, d: Decision, i: numb
     if (option === undefined) return
     const o = label(option)
     const send = async () => {
-      const l = linksOf(await records($, dir), await selfId($)).find(x => x.task === c.task)
+      const l = (await linksNow($, await records($, dir))).find(x => x.task === c.task)
       if (l?.state !== 'bound' || l.file !== c.file || !l.token) return false
       return sendFirst($, l.ids, `${PANE_HEAD}\n${JSON.stringify({ t: l.token, id: d.id, i: i + 1, o })}`)
     }
@@ -478,7 +492,7 @@ let blockedOut = false
 async function report($: EngineInterface, e: { answer: string; reason: string }, byPeer: boolean) {
   try {
     if (e.reason !== 'error') blockedOut = false
-    if (byPeer || surface !== 'terminal' || !(await read($, mode)).isOn || (e.reason === 'error' && blockedOut)) return
+    if (byPeer || surface !== 'terminal' || !(await modeNow($)).isOn || (e.reason === 'error' && blockedOut)) return
     const recs = await records($)
     const own = await selfId($)
     const b = recs.find(x => x.sid === own)?.r.bound
@@ -507,7 +521,7 @@ async function noteStart($: EngineInterface, e: Record<string, unknown>) {
   const was = recs.find(x => x.sid === own)?.r.kids?.[m.task]
   if (was && recs.some(x => x.sid !== own && x.r.bound?.task === m.task && x.r.bound.code === was.code)) return
   const at = await $.clock.now()
-  await patch($, own, r => ({ ...r, kids: withKid(r.kids, m.task, { code: m.code, at }) }))
+  await patchKids($, kids => withKid(kids, m.task, { code: m.code, at }))
 }
 
 // The child's first prompt (§1.3): once, in a new team session with no binding, its first prompt's marker binds it; true when it did.
@@ -544,10 +558,10 @@ const BIND_TEXT = '[Agent Team bağ]'
 async function bindTo($: EngineInterface, task: string, sid: string) {
   try {
     const own = await selfId($)
-    if (!sid || sid === own || linksOf(await records($), own).find(l => l.task === task)?.state === 'bound') return
+    if (!sid || sid === own || (await linksNow($, await records($))).find(l => l.task === task)?.state === 'bound') return
     const code = crypto.randomUUID()
     const at = await $.clock.now()
-    await patch($, own, r => ({ ...r, kids: withKid(r.kids, task, { code, at, to: sid }) }))
+    await patchKids($, kids => withKid(kids, task, { code, at, to: sid }))
     let ok = false
     try {
       ok = (await $.session.send({ to: { sessionId: sid }, text: BIND_TEXT })).isDelivered
@@ -557,21 +571,21 @@ async function bindTo($: EngineInterface, task: string, sid: string) {
       await relink($)
       return
     }
-    await patch($, own, r => (r.kids?.[task]?.code === code ? { ...r, kids: withoutKid(r.kids, task) } : r))
+    await patchKids($, kids => (kids?.[task]?.code === code ? withoutKid(kids, task) : kids))
     await update($, bind, v => v && { ...v, error: `Bağlanamadı · ${sid.slice(0, 8)} oturumu açık değil` })
   } catch {}
 }
 
-// "Bağı çöz": the task's entry goes from every record holding its code (this session's, and its own earlier ids a /clear carried it to), the answers given to
+// "Bağı çöz": the task's entry goes from every record of this session that holds its code (its id now and its earlier ids, patchKids), the answers given to
 // that child go, and the child is told (best effort): its binding is void from now on. Never throws.
 async function unbindTask($: EngineInterface, task: string) {
   try {
     const recs = await records($)
     const own = await selfId($)
-    const l = linksOf(recs, own).find(x => x.task === task)
+    const l = (await linksNow($, recs)).find(x => x.task === task)
     const code = recs.find(x => x.sid === own)?.r.kids?.[task]?.code
     if (l?.state !== 'bound' || !code) return
-    for (const x of recs) if (x.r.kids?.[task]?.code === code) await patch($, x.sid, r => ({ ...r, kids: withoutKid(r.kids, task) }))
+    await patchKids($, kids => (kids?.[task]?.code === code ? withoutKid(kids, task) : kids))
     await update($, forwards, fs => fs.filter(f => f.file !== l.file))
     await sendFirst($, l.ids, BIND_TEXT)
     await relink($)
@@ -615,30 +629,42 @@ async function takeReopen($: EngineInterface) {
   }
 }
 
-async function follow($: EngineInterface) {
+// One follow at a time, and every caller waits for the ones before its own: a hook that comes while a follow is carrying the record over (the poll's, a
+// prompt's) reads what it carried, never the reset atoms. `followed.last` moves only once a carry finished; a failed one is tried again by the next call.
+// Never throws: it runs in the poll, in every hook and in a command.
+let following: Promise<void> = Promise.resolve()
+function follow($: EngineInterface) {
+  following = following.then(() => followOnce($))
+  return following
+}
+async function followOnce($: EngineInterface) {
   const { dir, file, last: was } = followed
   if (!dir) return
-  // Nothing in here may throw out: it runs in the poll, in prompt.submit and in a command.
   try {
     const id = String(await $.session.id().catch(() => ''))
     if (!id || id === was) return
-    followed.last = id
     await update($, reopened, () => ({ since: 0, line: false })) // /clear: the owner cleared, nothing was reopened
     // The path comes back first, record or none: a session that never was a team session has no record, and a /team
     // before the next poll must not read the reset (empty) path.
     await refresh($, file)
     const old = was ? parseRecord(await $.store.get(`session:${was}`), dir) : undefined
-    if (!old) return
-    await save($, id, old)
-    if (old.mode.isOn) await update($, mode, () => old.mode)
-  } catch {
-    followed.last = was
-  }
+    if (old) {
+      await save($, id, old)
+      if (old.mode.isOn) await update($, mode, () => old.mode)
+    }
+    followed.last = id
+  } catch {}
+}
+
+// The team mode, read only here: after `follow`, so right after a /clear it is the mode carried over, not the reset atom. A drawing may not write (a
+// ui.render hook), so it reads what the last follow left (`drawing`); the poll carries it within 500 ms and the site is drawn again.
+async function modeNow($: EngineInterface, drawing = false) {
+  if (!drawing) await follow($)
+  return read($, mode)
 }
 
 async function setMode($: EngineInterface, isOn: boolean) {
-  await follow($) // the footer chip and the pane buttons come here too
-  const was = await read($, mode)
+  const was = await modeNow($) // the footer chip and the pane buttons come here too, right after a /clear as well
   if (was.isOn === isOn) return
   const now: Mode = { isOn, source: isOn ? 'switch' : 'off' }
   await update($, mode, () => now)
@@ -663,7 +689,7 @@ async function setMode($: EngineInterface, isOn: boolean) {
 let beat: ReturnType<EngineInterface['clock']['every']> | undefined
 // A session that ended for good (exit, logout, -p done): the poll, which nothing cancels, must not start the timer again. Clear and resume go on in the process.
 let ended = false
-const turning = async ($: EngineInterface) => (await read($, mode)).isOn && (await read($, placed)) && runningRoles((await drawnStatus($)).data).length > 0
+const turning = async ($: EngineInterface) => (await modeNow($)).isOn && (await read($, placed)) && runningRoles((await drawnStatus($)).data).length > 0
 function stopBeat() {
   beat?.cancel()
   beat = undefined
@@ -730,13 +756,15 @@ export const register: Register = (on, options) => {
     for (const old of [held, rec?.file]) if (!file && old && (await $.fs.exists(old))) file = old
     if (!file) file = `${dir}/${baseName(e.cwd)}${sid ? `--${sid.slice(0, 8)}` : ''}.json`
     Object.assign(followed, { dir, file, last: sid })
-    let m = await read($, mode)
+    let m = await modeNow($)
     if (!m.isOn) {
       const to: Mode | undefined = isInside(e.cwd, parseFolders(options.teamFolders, home)) ? { isOn: true, source: 'folder' } : rec?.mode.isOn ? rec.mode : undefined
       if (to) await update($, mode, () => (m = to))
     }
-    // A reload (the atom holds the file) leaves the reopen state as it is.
-    if (m.isOn && !held && rec) {
+    // A reload leaves the reopen state as it is. A reload is told by any value an earlier load stored under this key, whatever its shape tag (a tag bump
+    // declines the value, not the fact that this process ran the plugin before); a new process (a resume) has none.
+    const reloaded = (await $.state.get({ plugin: 'agent-team', key: 'status' })).value !== undefined
+    if (m.isOn && !reloaded && rec) {
       const since = await $.clock.now().catch(() => 0)
       await update($, reopened, () => ({ since, line: since > 0 }))
     }
@@ -791,7 +819,7 @@ export const register: Register = (on, options) => {
 
   // A surface joined: a pane opened unasked at the start may not have been placed then (F11), so ask again. The answer changes nothing here.
   on('session.attach', async ($, e, next) => {
-    if ((await read($, mode)).isOn) await $.ui.open(PANE_OPEN).catch(() => undefined)
+    if ((await modeNow($)).isOn) await $.ui.open(PANE_OPEN).catch(() => undefined)
     return next(e)
   })
 
@@ -810,9 +838,8 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     // A prompt that starts a turn says whether a peer's message started it (no report for that turn, §1.6).
     if (e.turnId === undefined) peerNext = isPeer(e.origin)
-    await follow($)
     // Its own submit never runs this hook in the engine; the guard keeps the lines once should one ever do (submitOut queues them).
-    if (e.command || (e.origin?.kind === 'plugin' && e.origin.name === 'agent-team') || !(await read($, mode)).isOn) return next(e)
+    if (e.command || (e.origin?.kind === 'plugin' && e.origin.name === 'agent-team') || !(await modeNow($)).isOn) return next(e)
     // The first prompt of a task session binds it (§1.3); its code goes on as <alındı>.
     const m = e.isMeta || isPeer(e.origin) ? undefined : markerOf(e.text)
     const text = m && (await claimFirst($, m)) ? e.text.replace(MARKER, `[Agent Team görev oturumu] task=${m.task} kod=<alındı>`) : e.text
@@ -857,7 +884,7 @@ export const register: Register = (on, options) => {
     await noteStart($, e as unknown as Record<string, unknown>).catch(() => undefined)
     try {
       // Team mode off: pass through; what is left goes out as an owner submit at the turn end (or the next press).
-      if (!(await read($, outbox)).queue.some(inResult) || !(await read($, mode)).isOn) return r
+      if (!(await read($, outbox)).queue.some(inResult) || !(await modeNow($)).isOn) return r
       const got = await take($, true)
       if (!got.length) return r
       return { ...r, context: [...(r.context ?? []), [HEAD, ...got.map(g => g.line)].join('\n')] }
@@ -872,10 +899,11 @@ export const register: Register = (on, options) => {
   on('session.receive', async ($, e, next) => {
     let out = e
     try {
-      if ((await read($, mode)).isOn) {
+      if ((await modeNow($)).isOn) {
         const o = e.origin as { kind: string; plugin?: string }
         const ours = o.kind === 'peer' && o.plugin === 'agent-team' && e.agentId === undefined
-        if (ours && e.text === BIND_TEXT) {
+        // The CLI hands a peer message over in its <cross-session-message …> envelope (measured, 2.1.328): the bind message is one whole line of it.
+        if (ours && e.text.split('\n').includes(BIND_TEXT)) {
           await adopt($)
           return { consumed: 'agent-team: bağ yeniden okundu' }
         }
@@ -913,8 +941,7 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'team' }, async $ => {
-    await follow($)
-    const isOn = !(await read($, mode)).isOn
+    const isOn = !(await modeNow($)).isOn
     await setMode($, isOn)
     return { text: isOn ? "Agent Team açık: bu oturumda her mesaj Lead'e gider." : 'Agent Team kapandı.' }
   })
@@ -927,7 +954,7 @@ export const register: Register = (on, options) => {
   // A chip left of the footer's mode labels turns team mode on and off, a Pane button next to it opens the pane; the band above the prompt is the other seat (AbovePrompt, below).
   on('ui.render', { component: 'SessionMode' }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
-    const { isOn } = await read($, mode)
+    const { isOn } = await modeNow($, true)
     if (e.surface === 'terminal') return termFooter($.ui.resolve(e), isOn, e.props.modes, () => void setMode($, !isOn), () => void $.ui.open(PANE_OPEN))
     return (
       <Box flexDirection="row" alignItems="center" gap="sm">
@@ -946,7 +973,7 @@ export const register: Register = (on, options) => {
 
   // While the pane is not drawn: one row above the prompt with this session's counts and a key (after ctrl+x tab) that opens the pane. Terminal only.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.surface !== 'terminal' || e.props.hasSurvey || !(await read($, mode)).isOn || (await read($, placed))) return next(e)
+    if (e.surface !== 'terminal' || e.props.hasSurvey || !(await modeNow($, true)).isOn || (await read($, placed))) return next(e)
     const { cut, data, kids } = await drawnStatus($)
     const n = countStates(data?.tasks ?? [])
     const total = (await read($, others)).reduce((t, o) => t + o.count, 0)
@@ -956,7 +983,7 @@ export const register: Register = (on, options) => {
 
   // The engine's spinner line names the running role during a Lead turn: only its word is rewritten, the engine keeps its mark, timer and color.
   on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
-    if (e.surface !== 'terminal' || e.props.message !== null || !(await read($, mode)).isOn) return next(e)
+    if (e.surface !== 'terminal' || e.props.message !== null || !(await modeNow($, true)).isOn) return next(e)
     const word = spinnerWord((await drawnStatus($)).data)
     return next(word ? { ...e, props: { ...e.props, word } } : e)
   })
@@ -972,7 +999,7 @@ export const register: Register = (on, options) => {
     const card = term ? TBOX : CARD
     const dot = (hex: string, themeKey: string, alt: string, pulse = false) =>
       Svg ? <Svg source={dotSvg(hex, pulse)} alt={alt} width={8} height={8} /> : <Text color={themeKey}>●</Text>
-    const m = await read($, mode)
+    const m = await modeNow($, true)
     const other = await read($, others)
     const otherOpen = await read($, othersOpen)
     const otherTotal = other.reduce((n, o) => n + o.count, 0)

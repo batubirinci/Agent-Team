@@ -5378,11 +5378,19 @@ const cBoot = async (
   })
   // `atoms`: values stored before this start, as an earlier version of the plugin left them (a hot reload): key -> the stored { shape, value }.
   // A seeded key is kept here from then on; every other key is the kit's.
+  // Revision 4: a key `clear` wiped reads as never written (at the kit's version) until the plugin writes it again, which the kit then keeps (and redraws).
   const seeded = new Map(Object.entries(o.atoms ?? {}).map(([key, value]) => [key, { value, version: 1 }]))
-  on('state.get', (_, e, next) => (seeded.has(e.key) ? { value: seeded.get(e.key) } : next(e)) as never)
+  const wiped = new Set<string>()
+  on('state.get', async (_, e, next) => {
+    if (seeded.has(e.key)) return { value: seeded.get(e.key) } as never
+    if (!wiped.has(e.key)) return next(e)
+    const r = (await next(e)) as { value: { version: number } }
+    return { value: { value: undefined, version: r.value.version } } as never
+  })
   on('state.set', (_, e, next) => {
     log.sets.push(e.key)
     const was = seeded.get(e.key)
+    wiped.delete(e.key)
     if (!was) return next(e)
     if (e.ifVersion !== undefined && e.ifVersion !== was.version) return { value: { isSet: false, version: was.version } } as never
     seeded.set(e.key, { value: e.value, version: was.version + 1 })
@@ -5441,7 +5449,11 @@ const cBoot = async (
   // Revision 4: what /clear does, as measured (the `continuity` block above): a new id, no session.start, every atom back to nothing; no poll here.
   const clear = (id: string) => {
     gate.sid = id
-    for (const key of ATOM_KEYS4) seeded.set(key, { value: undefined, version: (seeded.get(key)?.version ?? 0) + 1 })
+    for (const key of ATOM_KEYS4) {
+      const was = seeded.get(key)
+      if (was) seeded.set(key, { value: undefined, version: was.version + 1 })
+      else wiped.add(key)
+    }
   }
   return { files, disk, store, log, gate, settle, fire, poll, setOwn, pane, band, ownName, mineAdd, record, clear }
 }

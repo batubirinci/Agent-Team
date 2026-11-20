@@ -302,12 +302,12 @@ const newest = (a: Rec, b: Rec) => atOf(b.r) - atOf(a.r) || a.sid.localeCompare(
 // A binding is valid while a record other than the bound session's own holds that code for that task in its `kids`; else it is void (treated as absent).
 export const isValid = (recs: readonly Rec[], sid: string, b: Bound | undefined) => !!b && recs.some(x => x.sid !== sid && x.r.kids?.[b.task]?.code === b.code)
 
-// Trust addendum §1.4: for each `kids[h]` of this session's own record (only `tasks`, when given), the records, not the own, whose `bound` has that task and
-// code. None: unbound; one file: bound (ids newest first, at most 3; the newest's token); two or more files: conflict. At most 8 bound (newest kids[h].at).
-export function linksOf(recs: readonly Rec[], own: string, tasks?: ReadonlySet<string>): Link[] {
+// Trust addendum §1.4: for each `kids[h]` of this session's own record, the records, not the own, whose `bound` has that task and code. None: unbound; one
+// file: bound (ids newest first, at most 3; the newest's token); two or more files: conflict. At most 8 bound: the tasks the own file writes now (`open`)
+// first, then the newest kids[h].at. `open` is required: every caller ranks alike, so a card that is drawn is also the one pressed, unbound and guarded.
+export function linksOf(recs: readonly Rec[], own: string, open: ReadonlySet<string>): Link[] {
   const kids = recs.find(x => x.sid === own)?.r.kids ?? {}
   const all = Object.entries(kids).flatMap(([task, k]): Link[] => {
-    if (tasks && !tasks.has(task)) return []
     const by = k.to ? 'owner' : 'code'
     const holders = recs.filter(x => x.sid !== own && x.r.bound?.task === task && x.r.bound.code === k.code).sort(newest)
     const files = new Set(holders.map(x => x.r.file))
@@ -315,7 +315,8 @@ export function linksOf(recs: readonly Rec[], own: string, tasks?: ReadonlySet<s
     if (files.size > 1) return [{ task, state: 'conflict', ids: [], by, at: k.at }]
     return [{ task, state: 'bound', file: baseName(holders[0]!.r.file), ids: holders.slice(0, 3).map(x => x.sid), token: holders[0]!.r.bound!.token, by, at: k.at }]
   })
-  const keep = new Set(all.filter(l => l.state === 'bound').sort((a, b) => b.at - a.at).slice(0, CHILDREN).map(l => l.task))
+  const rank = (l: Link) => (open.has(l.task) ? 0 : 1)
+  const keep = new Set(all.filter(l => l.state === 'bound').sort((a, b) => rank(a) - rank(b) || b.at - a.at).slice(0, CHILDREN).map(l => l.task))
   return all.filter(l => l.state !== 'bound' || keep.has(l.task)).sort((a, b) => a.task.localeCompare(b.task))
 }
 
