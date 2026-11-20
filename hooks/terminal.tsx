@@ -344,10 +344,18 @@ export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void, f
       {t.evidence && (
         <Box flexDirection="column">
           {head('KANIT')}
-          {t.evidence.map((e, i) => (
-            <Box key={`ev-${i}`} flexDirection="column">
-              <Text>{e.label}</Text>
-              <Text dimColor wrap="truncate-middle">{e.path}</Text>
+          {evidence.map((e, i) => (
+            <Box key={`ev-${i}`} flexDirection="row" gap={1}>
+              {e.pressable ? (
+                <Button key={`ev-open-${i}`} label={e.label} onPress={() => evOpen(i)} {...hk(String(i + 1))} />
+              ) : (
+                <Text wrap="truncate-end">{e.label}</Text>
+              )}
+              {/* A space, never '': an empty Text may collapse its row. */}
+              <Text wrap="truncate-end" dimColor={e.dim || !e.pressable || undefined}>
+                {e.chip && <Text color={e.chip === 'GO' ? 'success' : 'error'}>{e.chip}</Text>}
+                {e.chip ? (e.text !== '' && ` · ${e.text}`) : e.text || ' '}
+              </Text>
             </Box>
           ))}
         </Box>
@@ -368,12 +376,42 @@ export function termDetail(ui: UI, t: Task, back: () => void, ask: () => void, f
 //  5. Only when `v.nav`: row with `Button key="reader-next" label="sonraki kanıt"` hotkey k (`onNext`) and `Button key="reader-prev" label="önceki kanıt"` hotkey o (`onPrev`).
 // Every Button is plain (`hk`); no Svg, no Markdown, no clock call, no timer. The hotkeys drawn are exactly b s n p k o (k o only with `nav`).
 export type ReaderHandlers = { onBack: () => void; onAsk: () => void; onPage: (page: number) => void; onNext: () => void; onPrev: () => void }
-export function termReader(ui: UI, v: TermReaderView, h: ReaderHandlers) {
+const PAGE_ROWS = 14
+export function termReader(ui: UI, v: TermReaderView, on: ReaderHandlers) {
   const { Box, Button, Text } = ui
+  const y = Math.max(1, Math.ceil(v.rows.length / PAGE_ROWS))
+  const page = Math.min(Math.max(0, Math.floor(v.page) || 0), y - 1)
   return (
     <Box flexDirection="column" gap={1}>
-      <Button key="reader-back" label="‹ Görev" onPress={h.onBack} {...hk('b')} />
-      <Text wrap="truncate-end">{v.label}</Text>
+      <Box flexDirection="row" justifyContent="space-between" gap={2}>
+        <Button key="reader-back" label="‹ Görev" onPress={on.onBack} {...hk('b')} />
+        <Button key="reader-ask" label="Lead'e sor" onPress={on.onAsk} {...hk('s')} />
+      </Box>
+      <Box key="reader-head" {...ROUND}>
+        <Text weight="bold" wrap="truncate-end">{v.label}</Text>
+        <Text dimColor wrap="truncate-middle">{v.path}</Text>
+        <Text wrap="truncate-end">{`${v.meta} · sayfa ${page + 1}/${y}`}</Text>
+      </Box>
+      <Box key="reader-page" flexDirection="column">
+        {Array.from({ length: PAGE_ROWS }, (_, i) => {
+          const r = v.rows[page * PAGE_ROWS + i]
+          return (
+            <Text key={`reader-row-${i}`} wrap="truncate-end" weight={r?.bold ? 'bold' : undefined} dimColor={r?.dim || undefined}>
+              {r?.t || ' '}
+            </Text>
+          )
+        })}
+      </Box>
+      <Box flexDirection="row" gap={2}>
+        <Button key="reader-next-page" label="sonraki" onPress={() => page < y - 1 && on.onPage(page + 1)} {...hk('n')} />
+        <Button key="reader-prev-page" label="önceki" onPress={() => page > 0 && on.onPage(page - 1)} {...hk('p')} />
+      </Box>
+      {v.nav && (
+        <Box flexDirection="row" gap={2}>
+          <Button key="reader-next" label="sonraki kanıt" onPress={on.onNext} {...hk('k')} />
+          <Button key="reader-prev" label="önceki kanıt" onPress={on.onPrev} {...hk('o')} />
+        </Box>
+      )}
     </Box>
   )
 }
