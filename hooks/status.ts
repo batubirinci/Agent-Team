@@ -1,4 +1,4 @@
-import type { BandCounts, BandSeg, Bound, Candidate, Child, Decision, DirEntry, Evidence, Finding, Forward, Fresh, Kid, Link, Mode, Other, Role, Round, RoleStatus, SessionLine, SessionRecord, Status, Task, TaskState } from '../types'
+import type { BandCounts, BandSeg, Bound, Candidate, Child, Decision, DirEntry, EvRec, EvStat, Evidence, Finding, Forward, Fresh, Kid, Link, Mode, Other, Preview, Role, Round, RoleStatus, SessionLine, SessionRecord, Status, Task, TaskState } from '../types'
 
 export const STAGES = ['spec', 'build', 'review', 'revise', 'report'] as const
 export const STAGE_LABELS = ['Spec', 'Build', 'Review', 'Revise', 'Rapor'] as const
@@ -558,4 +558,228 @@ export function spinnerWord(s: Status | null | undefined): string | undefined {
   const [first, ...rest] = runningRoles(s)
   if (!first) return undefined
   return clip([[first.name.split(' · ')[0], first.state].filter(Boolean).join(' · '), rest.length && ` +${rest.length}`].filter(Boolean).join(''), 40)
+}
+
+// ---- Evidence files (the reader). The status file is model-written, so a path in it is untrusted data: every rule below fails closed. ----
+// The most a file may be, what a detail row reads of it (4 KiB), what the reader reads (80 KiB), and the most characters of one body in the tree (the engine draws
+// 100 000 characters in all, and the reader's buttons come after the body).
+export const EV_MAX = 1_048_576
+export const EV_HEAD = 4096
+export const EV_BODY = 81_920
+export const EV_CHARS = 96_000
+const ZW = '\u200b'
+// Characters that draw as nothing or reorder text (bidi marks and overrides, zero width, BOM, tag characters): never drawn. U+200D stays (emoji joiner).
+const INVISIBLE = /[\u061c\u200b\u200c\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u{e0000}-\u{e007f}]/gu
+// With the u flag this matches a lone surrogate only (a pair is one code point).
+const LONE = /[\ud800-\udfff]/gu
+// ESC, NUL, BEL, DEL and the C1 controls make the engine refuse the whole pane tree (measured), so each is made visible; tab and line feed pass.
+const CTRL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g
+const BAD_PATH = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u061c\u200b\u200c\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u{e0000}-\u{e007f}\ud800-\udfff]/u
+
+// Text read from a file, made safe to draw: line breaks to \n, controls to U+FFFD, invisible characters out, lone surrogates to U+FFFD.
+export const clean = (s: string) =>
+  s.replace(/\r\n|[\r\u2028\u2029]/g, '\n').replace(CTRL, '�').replace(INVISIBLE, '').replace(LONE, '�')
+
+// A label, path or title as one drawn line.
+export const one = (s: string) => flat(s).replace(/\t/g, ' ').replace(INVISIBLE, '').replace(LONE, '�')
+
+// An absolute path of clean segments: no empty, `.` or `..` segment, no backslash, no control or invisible character.
+export const okPath = (p: string) => p.startsWith('/') && !p.includes('\\') && !BAD_PATH.test(p) && p.slice(1).split('/').every(s => s !== '' && s !== '.' && s !== '..')
+
+// The home as the evidence rules read it ('' when it is not absolute), and the evidence root: the option, `~` expanded, '' when it needs a home there is none of.
+export const evHomeOf = (home: string) => (home.startsWith('/') ? trimSlash(home) : '')
+export const evRootOf = (option: string, home: string) => (option.startsWith('~') && home === '' ? '' : trimSlash(expandHome(option, home)))
+
+const REFUSED = {
+  root: 'kanıt kökü okunamadı',
+  bad: 'geçersiz yol: gösterilmiyor',
+  outside: 'kanıt kökünün dışında: gösterilmiyor',
+  link: 'sembolik bağ ya da farklı yazım: gösterilmiyor',
+  notFile: 'dosya değil: gösterilmiyor',
+  missing: 'dosya bulunamadı',
+  unread: 'okunamadı',
+  changed: 'okunurken değişti: gösterilmiyor',
+  notText: 'metin değil: gösterilmiyor',
+} as const
+
+// R0-R2, from spellings alone (no fs call, so a path outside the root is never even stat'ed): the path to look at, or the line that says why not.
+export function evCheck(root: string, home: string, path: string): { p: string } | { line: string } {
+  if (!okPath(root) || root === '/') return { line: REFUSED.root }
+  if (path.startsWith('~') && home === '') return { line: REFUSED.bad }
+  const p = trimSlash(expandHome(path, home))
+  if (!okPath(p)) return { line: REFUSED.bad }
+  return p.startsWith(`${root}/`) ? { p } : { line: REFUSED.outside }
+}
+
+// "3,8 KB": base 1024, one decimal, a Turkish comma; a KB value that would print 1024,0 prints 1,0 MB.
+export const fmtSize = (n: number) => {
+  const kb = (n / 1024).toFixed(1)
+  const text = n < 1024 ? `${n} B` : kb === '1024.0' || n >= 1_048_576 ? `${(n / 1_048_576).toFixed(1)} MB` : `${kb} KB`
+  return text.replace('.', ',')
+}
+
+export const isMdPath = (p: string) => /\.(?:md|markdown)$/i.test(p.split('/').pop() ?? '')
+export const evExt = (p: string) => {
+  const seg = p.split('/').pop() ?? ''
+  const i = seg.lastIndexOf('.')
+  const ext = i > 0 ? seg.slice(i + 1).toLowerCase() : ''
+  return /^[a-z0-9]{1,8}$/.test(ext) ? ext : 'dosya'
+}
+
+// What a desktop Markdown element may be given: after clean(), nothing that can become a link, an image, HTML or a character reference (each mark gets a
+// zero width space after it), cut to EV_CHARS (never inside a surrogate pair).
+export function md(text: string) {
+  const s = text
+    .replace(/&(?=[#A-Za-z])/g, `&${ZW}`)
+    .replace(/<(?=[A-Za-z0-9/!?])/g, `<${ZW}`)
+    .replace(/!\[/g, `!${ZW}[`)
+    .replace(/\]\(/g, `]${ZW}(`)
+    .replace(/\]:/g, `]${ZW}:`)
+    .replace(/:\//g, `:${ZW}/`)
+    .replace(/www\./gi, m => `${m.slice(0, 3)}${ZW}.`)
+  return s.length <= EV_CHARS ? s : s.slice(0, /[\ud800-\udbff]/.test(s[EV_CHARS - 1]!) ? EV_CHARS - 1 : EV_CHARS)
+}
+
+// The first lines of a file for a detail row. `text` is clean(); `partial`: it is the start of a longer file, so its last line may be cut (the text after the last
+// line break goes; with no break it stays). Markdown: marks stripped, a report's `VERDICT: GO` / `GÖREV x: NO-GO` among the first 8 lines becomes a chip.
+const HEX = /\b[0-9a-fA-F]{12,64}\b/g
+const strip = (l: string) =>
+  cut(
+    l.trim().replace(/^(?:>\s*)+/, '').replace(/^#{1,6}\s+/, '').replace(/^(?:[-*+]|\d+[.)])\s+/, '').replace(/^\[[ xX]\]\s+/, '')
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/\*\*|__|~~|`/g, '').trim(),
+    200,
+  )
+const skipped = (l: string) => {
+  const t = l.trim()
+  return !t || /^(?:```|~~~|<!--)/.test(t) || /^([-*_])(?:\s*\1){2,}$/.test(t) || (/^[|:\s-]+$/.test(t) && t.includes('-')) || !strip(l)
+}
+const VERDICT = /^(?:VERDICT:|GÖREV\s+[^:]{1,80}:)\s*(NO-GO|GO)(?![\w|-])/
+export function evPreview(text: string, isMd: boolean, partial: boolean): Preview {
+  const at = partial ? text.lastIndexOf('\n') : -1
+  const lines = (at >= 0 ? text.slice(0, at) : text).split('\n')
+  if (!isMd) {
+    const [l1, l2] = lines.map(l => l.trim()).filter(Boolean).map(l => cut(l, 200))
+    return { ...(l1 && { l1 }), ...(l2 && { l2 }) }
+  }
+  const hit = lines.slice(0, 8).findIndex(l => VERDICT.test(strip(l)))
+  const kept = lines.flatMap((l, i) => (i === hit || skipped(l) ? [] : [strip(l)]))
+  if (hit < 0) {
+    const [l1, l2] = kept
+    return { ...(l1 && { l1 }), ...(l2 && { l2 }) }
+  }
+  const s = strip(lines[hit]!)
+  const m = VERDICT.exec(s)!
+  const chip = m[1] as 'GO' | 'NO-GO'
+  const summary = cut(s.slice(m[0].length).replace(/^[\s·:—.(-]+/, '').replace(HEX, m => clip(m, 7)), 200)
+  return { chip, ...(summary && { summary }), ...(kept[0] && { l2: kept[0] }) }
+}
+
+// An evidence file read for the pane: R3-R9, in order, the first that fails decides. `fs` is $.fs; `root` the evidence root as written, `rootReal` where it lands, `p`
+// the path (evCheck passed), `len` how much to read (EV_HEAD for a row, EV_BODY for the reader). Never a whole read, never a read of anything the stat did not call
+// a regular file inside the root with no link on the way; the second stat must equal the first (the API has no file handle), twice running or nothing is kept.
+export type EvFs = {
+  stat(p: string, o: { resolve: true }): Promise<EvStat>
+  read(p: string, o: { offset: number; length: number }): Promise<unknown>
+}
+export const sameStat = (a: EvStat | null, b: EvStat | null) =>
+  a === b || (!!a && !!b && a.kind === b.kind && a.isLink === b.isLink && a.realPath === b.realPath && a.size === b.size && a.mtimeMs === b.mtimeMs)
+const refusal = (s: EvStat, root: string, rootReal: string, p: string) =>
+  s.kind !== 'file'
+    ? REFUSED.notFile
+    : s.isLink !== false || typeof s.realPath !== 'string' || s.realPath.normalize('NFC') !== (rootReal + p.slice(root.length)).normalize('NFC')
+      ? REFUSED.link
+      : !Number.isFinite(s.size) || s.size < 0
+        ? REFUSED.notFile
+        : s.size > EV_MAX
+          ? `çok büyük (${fmtSize(s.size)}): gösterilmiyor`
+          : undefined
+
+export async function evLoad(fs: EvFs, root: string, rootReal: string, p: string, len: number): Promise<EvRec> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let s: EvStat
+    try {
+      s = await fs.stat(p, { resolve: true })
+    } catch {
+      return { stat: null, state: 'refused', line: REFUSED.missing }
+    }
+    const line = refusal(s, root, rootReal, p)
+    if (line) return { stat: s, state: 'refused', line }
+    if (s.size === 0) return { stat: s, state: 'empty', size: 0, mtimeMs: s.mtimeMs }
+    let raw: string
+    try {
+      const got = await fs.read(p, { offset: 0, length: len })
+      raw = typeof got === 'string' ? got : ''
+    } catch {
+      return { stat: s, state: 'refused', line: REFUSED.unread }
+    }
+    const again = await fs.stat(p, { resolve: true }).catch(() => null)
+    if (!sameStat(s, again)) continue
+    // A cut character at the end of a range is U+FFFD (types:3863): that one goes.
+    if (s.size > len && raw.endsWith('�')) raw = raw.slice(0, -1)
+    if (raw.includes('\u0000') || (raw.match(/�/g)?.length ?? 0) * 10 > raw.length * 3) return { stat: s, state: 'refused', line: REFUSED.notText }
+    const text = clean(raw)
+    const isMd = isMdPath(p)
+    // A reader read holds more than a row's read: the preview is made from its first EV_HEAD characters.
+    const lead = text.length > EV_HEAD ? text.slice(0, EV_HEAD) : text
+    const preview = evPreview(lead, isMd, lead !== text || s.size > len)
+    return { stat: s, state: 'ok', size: s.size, mtimeMs: s.mtimeMs, preview, ...(len > EV_HEAD && { body: text, more: s.size > len }) }
+  }
+  return { state: 'refused', line: REFUSED.changed }
+}
+
+// The distinct paths of a task's evidence, first appearance first: a path is one reader target and one cache entry, however many rows name it.
+export const evPaths = (t: Task) => [...new Set((t.evidence ?? []).map(e => e.path))]
+
+// Where the pane goes with the reader: its top (no `back`), or back to the row `ev-<back>` (moved the least that shows it); a negative `back`: nowhere.
+export const readerScroll = (pane: string, back?: number) =>
+  back === undefined ? ({ in: pane, to: 'start' } as const) : back >= 0 ? ({ in: pane, to: { key: `ev-${back}` }, block: 'nearest' } as const) : undefined
+
+// ---- The terminal reader's rows ----
+// Wrap width: the pane's columns less the box and padding, never under 12 (so every wrapping pass ends); 48 when the columns are not a number.
+export const evWidth = (columns: number) => Math.max(12, (Number.isFinite(columns) ? Math.floor(columns) : 48) - 4)
+
+// One source line cut into rows of at most W code points: at the last space within reach (that space goes), else hard at W; a continuation row starts with `hang`.
+export function wrapLine(line: string, W: number, hang = ''): string[] {
+  let rest = Array.from(line)
+  const rows: string[] = []
+  for (let prefix = ''; ; prefix = hang) {
+    const room = W - prefix.length
+    if (rest.length <= room) return [...rows, prefix + rest.join('')]
+    const i = rest.lastIndexOf(' ', room)
+    rows.push(prefix + rest.slice(0, i < 1 ? room : i).join(''))
+    rest = rest.slice(i < 1 ? room : i + 1)
+  }
+}
+
+// A Markdown file's lines as the terminal draws them (owner Q3: light clean-up): the first block rule that matches wins (fence, rule, table separator, heading,
+// quote, bullet), then the inline marks go. A code line is kept as written. Presentation only: no safety rule depends on it.
+export type TLine = { t: string; bold?: true; hang?: string }
+const inline = (s: string) => s.replace(/!\[([^\]]*)\]\(([^)]*)\)/g, '$1 ($2)').replace(/\[([^\]]*)\]\(([^)]*)\)/g, '$1 ($2)').replace(/\*\*|__|~~|`/g, '')
+export function termText(lines: readonly string[], W: number): TLine[] {
+  let code = false
+  return lines.flatMap((line): TLine[] => {
+    if (/^\s*(?:```|~~~)/.test(line)) return ((code = !code), [])
+    if (code) return [{ t: line }]
+    if (/^\s*([-*_])(?:\s*\1){2,}\s*$/.test(line)) return [{ t: '─'.repeat(W) }]
+    if (/^[|:\s-]+$/.test(line) && line.includes('|') && line.includes('-')) return []
+    const h = /^ {0,3}#{1,6}\s+(.*)$/.exec(line)
+    if (h) return [{ t: inline(h[1]!.replace(/\s+#+\s*$/, '')), bold: true }]
+    const q = /^(?: {0,3}> ?)+/.exec(line)
+    if (q) return [{ t: '│ '.repeat(q[0].split('>').length - 1) + inline(line.slice(q[0].length)) }]
+    const b = /^( *)([-*+])\s+(.*)$/.exec(line)
+    if (!b) return [{ t: inline(line) }]
+    const pad = ' '.repeat(Math.min(b[1]!.length, Math.floor(W / 2) - 2))
+    return [{ t: `${pad}${b[1]!.length < 2 ? '•' : '◦'} ${inline(b[3]!)}`, hang: `${pad}  ` }]
+  })
+}
+
+// The source lines of a text (a final empty one is no line), and the rows the terminal draws for it: tabs are two spaces, an empty line is one space row.
+export const evLines = (text: string) => {
+  const src = text.split('\n')
+  if (src.at(-1) === '') src.pop()
+  return src
+}
+export const evRows = (text: string, isMd: boolean, W: number) => {
+  const src = evLines(text).map(l => l.replace(/\t/g, '  '))
+  return (isMd ? termText(src, W) : src.map((t): TLine => ({ t }))).flatMap(l => wrapLine(l.t, W, l.hang).map(t => ({ t: t || ' ', ...(l.bold && { bold: true as const }) })))
 }

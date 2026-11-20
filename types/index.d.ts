@@ -121,6 +121,31 @@ export type Fresh = { id: string; at: number; from: Exclude<TaskState, 'done'> }
 // One entry of $.fs.list.
 export type DirEntry = { name: string; kind: string; size: number; mtimeMs: number; isLink: boolean }
 
+// The evidence reader (design B): `task` and `path` say which file of which open detail is read (`path` null: the detail is drawn); `page` is the terminal's
+// page; `enter` / `left.at` are the desktop clock readings the one-shot motion is a function of (null: static; 0 is a real clock value); `rev` counts the redraws a
+// load asked for. Never a file's content: that lives in a module cache (the status file is untrusted data, a file it names is display only).
+export type Reader = { task: string | null; path: string | null; page: number; enter: number | null; left: { path: string; at: number | null } | null; rev: number }
+
+// What $.fs.stat answers with `{ resolve: true }`.
+export type EvStat = { kind: string; size: number; mtimeMs: number; isLink: boolean; realPath?: string }
+
+// A file's first lines for a detail row: a verdict chip with its summary and a second line, or two lines.
+export type Preview = { chip?: 'GO' | 'NO-GO'; summary?: string; l1?: string; l2?: string }
+
+// One evidence file as last loaded: `stat` is what the load saw (null: the stat rejected; absent: the file changed under the read, so the next step loads again).
+export type EvRec = {
+  stat?: EvStat | null
+  state: 'ok' | 'empty' | 'refused'
+  line?: string
+  size?: number
+  mtimeMs?: number
+  preview?: Preview
+  // The cleaned text of the first bytes of a read for the reader (absent: a preview read).
+  body?: string
+  // The file is longer than what was read.
+  more?: boolean
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'agent-team': {
@@ -140,6 +165,7 @@ declare module 'claude-code' {
       reopen: Shaped<Reopen>
       placed: Shaped<boolean>
       tick: Shaped<number>
+      reader: Shaped<Reader>
     }
   }
 }
