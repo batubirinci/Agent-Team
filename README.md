@@ -52,8 +52,9 @@ Pane çizilmiyorken (dar terminal, kapatılmış) prompt üstünde tek satırlı
 - **Diğer oturumlar:** aynı makinedeki başka team oturumlarında bekleyen kararlar yalnızca okunur bir
   şeritte görünür (`Göster`/`Gizle`, terminalde `v`); cevap o oturumda verilir.
 - **Görev oturumları:** bir görev kendi oturumunda (masaüstü oturum satırı ya da `claude --bg`) çalışıyorsa görev kartı o oturumun
-  aşamasını, turunu, adayını ve rollerini canlı gösterir (`ayrı oturum · <ad> · <son yazım>`), kararları "Senin sıran"da
-  listelenir ve bir seçeneğe basınca cevap o oturuma gider. `Push onayı` orada düğmesizdir, yalnız o oturumda verilir.
+  aşamasını, turunu, adayını ve rollerini canlı gösterir (`ayrı oturum · <ad> · <id8> · <son yazım>`), kararları "Senin sıran"da
+  listelenir ve bir seçeneğe basınca cevap o oturuma kendi pane basışı olarak gider. Eşleşme başlatma kodu ile eklentilerin kaydında
+  tutulur, durum dosyasıyla değil; kod gelmediyse kart `bağlanmadı` der ve oturumu `Bağla` ile elle bağlarsın (`Bağı çöz` geri alır). `Push onayı` orada düğmesizdir, yalnız o oturumda verilir.
   Yarım saatten uzun yazmayan çalışan oturum işaretlenir, cevap gitmezse `oturum açık değil` der. Bağlı oturum "Diğer oturumlar"da ikinci kez görünmez.
   Ayrıntı: `skills/agent-team/references/task-sessions.md`.
 - **Görevler:** her görev için 5 aşamalı çizgi (Spec, Build, Review, Revise, Rapor) ve rollerin
