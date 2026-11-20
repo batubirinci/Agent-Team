@@ -115,6 +115,8 @@ Fields:
   `wait` if given, else none; running, none (`wait` if given). The task section's header counts the
   states: `<r> çalışıyor · <b> takıldı · <w> bekliyor`; `takıldı` and `bekliyor` are left out at zero,
   `çalışıyor` is always shown.
+  On the terminal, while the pane is not drawn, a band above the prompt shows this session's `◆ <n> karar · ◐ <n> çalışıyor · ✗ <n> takıldı` (zero counts left out; nothing to
+  say, no band) with a `t: pane` key; during a Lead turn the engine's spinner line names the first running role, `QA · inceliyor` (` +<n>` for more), and the running role's `◐` in the pane turns once a second.
 - `rounds` (optional, the task's detail view): one entry per review round, oldest first; the pane keeps the last 10 and
   reads the header's round count from the last round's `n` (so write `n` as the true round number):
   `n` (a round with `n` 0, missing or invalid is shown by its position, 1 for the first), `verdict` (`GO` or `NO-GO`), `candidate` (full SHA of that round), `note` (the Lead's note,

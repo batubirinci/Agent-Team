@@ -80,6 +80,10 @@ export type Outbox = { queue: Press[]; sent: [string, string][]; said: string[] 
 // the Lead the reopen line. An atom, so a hot reload keeps both and /clear resets them.
 export type Reopen = { since: number; line: boolean }
 
+// The band above the prompt (terminal, pane not drawn): what it counts, and the segments it draws, in order (`kind` picks the color).
+export type BandCounts = { stale: boolean; decisions: number; running: number; blocked: number; others: number }
+export type BandSeg = { kind: 'stale' | 'karar' | 'running' | 'blocked' | 'others'; text: string }
+
 // One entry of $.fs.list.
 export type DirEntry = { name: string; kind: string; size: number; mtimeMs: number; isLink: boolean }
 
@@ -94,6 +98,8 @@ declare module 'claude-code' {
       karar: Shaped<string[]>
       outbox: Shaped<Outbox>
       reopen: Shaped<Reopen>
+      placed: Shaped<boolean>
+      tick: Shaped<number>
     }
   }
 }

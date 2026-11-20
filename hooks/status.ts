@@ -1,4 +1,4 @@
-import type { Decision, DirEntry, Evidence, Finding, Mode, Other, Role, Round, RoleStatus, SessionRecord, Status, Task, TaskState } from '../types'
+import type { BandCounts, BandSeg, Decision, DirEntry, Evidence, Finding, Mode, Other, Role, Round, RoleStatus, SessionRecord, Status, Task, TaskState } from '../types'
 
 export const STAGES = ['spec', 'build', 'review', 'revise', 'report'] as const
 export const STAGE_LABELS = ['Spec', 'Build', 'Review', 'Revise', 'Rapor'] as const
@@ -303,3 +303,38 @@ export function otherSession(e: DirEntry, s: Status): Other | undefined {
 // Where the pane scrolls once a detail opens (its top) or closes (the card that was left, moved the least that shows it).
 export const detailScroll = (pane: string, open: string | null, left?: string) =>
   open ? ({ in: pane, to: 'start' } as const) : ({ in: pane, to: { key: `t-${left}` }, block: 'nearest' } as const)
+
+// The band above the prompt (terminal, pane not drawn): which segments fit `columns` cells (the band's `bodyColumns`), or null with nothing to say
+// (a decision, a running or blocked task, a stale reopen; other sessions alone never count). The row is the segments joined by " · ", two spaces, "t: pane".
+// Cut order when it does not fit: ◇ diğer, ◐ çalışıyor, ! yeniden açıldı; below the floor (◆ and ✗ and the button, 34 cells at two digits) ✗ stays before ◆.
+// One cell per character (not measured: the glyphs' width outside tmux).
+const BAND_BUTTON = 't: pane'.length
+export function bandSegments(n: BandCounts, columns: number): BandSeg[] | null {
+  if (!n.stale && !n.decisions && !n.running && !n.blocked) return null
+  const all = [
+    n.stale && { kind: 'stale', text: '! yeniden açıldı' },
+    n.decisions > 0 && { kind: 'karar', text: `◆ ${n.decisions} karar` },
+    n.running > 0 && { kind: 'running', text: `◐ ${n.running} çalışıyor` },
+    n.blocked > 0 && { kind: 'blocked', text: `✗ ${n.blocked} takıldı` },
+    n.others > 0 && { kind: 'others', text: `◇ ${n.others} diğer` },
+  ].filter((x): x is BandSeg => !!x)
+  const width = (s: readonly BandSeg[]) => s.reduce((w, x) => w + Array.from(x.text).length, 3 * Math.max(0, s.length - 1) + (s.length ? 2 : 0)) + BAND_BUTTON
+  let segs = all
+  for (const drop of ['others', 'running', 'stale'] as const) if (width(segs) > columns) segs = segs.filter(s => s.kind !== drop)
+  if (width(segs) <= columns) return segs
+  const keep = new Set<BandSeg['kind']>()
+  for (const kind of ['blocked', 'karar'] as const) {
+    const s = segs.find(x => x.kind === kind)
+    if (s && width(segs.filter(x => keep.has(x.kind) || x === s)) <= columns) keep.add(kind)
+  }
+  return segs.filter(s => keep.has(s.kind))
+}
+
+// The roles drawn running, in file order (tasks, then roles in a task), and the word the engine's spinner line shows for them:
+// "<short name> · <state>" of the first, " +n" for the others, cut to 40 cells ("QA · GPT-6 Astra", "inceliyor" -> "QA · inceliyor").
+export const runningRoles = (s: Status | null | undefined) => s?.tasks.flatMap(t => t.roles.filter(r => r.status === 'running')) ?? []
+export function spinnerWord(s: Status | null | undefined): string | undefined {
+  const [first, ...rest] = runningRoles(s)
+  if (!first) return undefined
+  return clip([[first.name.split(' · ')[0], first.state].filter(Boolean).join(' · '), rest.length && ` +${rest.length}`].filter(Boolean).join(''), 40)
+}

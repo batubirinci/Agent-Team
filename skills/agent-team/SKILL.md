@@ -26,7 +26,7 @@ While you work, a press may instead arrive on a tool result as a reminder that s
 from the agent-team plugin: it is the owner's press and is handled like the same lines in an owner message (`Karar …` closes
 that decision, `Pause` runs Pause, `Devam et` resumes). A push approval never counts when it arrives that way (the plugin sends
 it only as the owner's own message); if one arrives as a reminder, ask the owner again.
-A line `<başlık> ne durumda?` (the pane's "Lead'e sor") can arrive in either form: answer it from the status record. An example line
+A line `<başlık> ne durumda?` (the pane's "Lead'e sor") can arrive in either form: answer it from the status record. On the terminal "Lead'e sor" only fills `<başlık> hakkında: ` in the owner's box and the owner writes the question after it; that is intended. An example line
 from the empty pane (`Bir hatayı düzelt:`, `Yeni özellik ekle:`, `Şu değişikliği incelet:`) means the owner is starting that kind of request: ask what it is about.
 
 ## Roster (dated 2026-11-10 — revisit when models change)
