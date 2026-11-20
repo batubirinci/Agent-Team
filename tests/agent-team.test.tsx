@@ -385,7 +385,7 @@ test('rounds and evidence are parsed with caps, malformed entries dropped, a fil
   expect('rounds' in old || 'evidence' in old).toBe(false)
 })
 
-test('a task card opens its detail view with rounds and evidence, back returns, ask fills the prompt', async ($, on) => {
+test('a task card opens its detail view with rounds and evidence, back returns, ask fills the prompt', { options: { teamFolders: '/' } }, async ($, on) => {
   // Criteria 2, 3, 5 and the approved design: every round with findings and note, evidence, same on desktop and terminal.
   const filled: string[] = []
   const modes: unknown[] = []
@@ -415,13 +415,15 @@ test('a task card opens its detail view with rounds and evidence, back returns, 
     expect((await ui.find({ key: 'detail-t1' }))?.text).toBe(surface === 'terminal' ? 'Seçim kutusu taşması' : 'Ayrıntı ›')
     expect(await ui.find({ key: 'detail-back' })).toBeUndefined()
     await ui.press({ key: 'detail-t1' })
+    // The evidence file is read after the press (no poll runs here): let the load land.
+    for (let i = 0; i < 10; i++) await new Promise(r => (globalThis as unknown as { setTimeout: (f: () => void, ms: number) => void }).setTimeout(() => r(undefined), 0))
 
     expect(await ui.find({ key: 't-t1' })).toBeUndefined()
     expect((await ui.find({ key: 'detail-back' }))?.text).toBe('‹ Görevler')
     // Terminal strings are the terminal-boxes design's (own tests below); here only what both surfaces share.
     for (const re of surface === 'terminal'
-      ? [/^Seçim kutusu taşması$/, /^feat\/sel · aday bbbbbbb$/, /^TURLAR$/, /^Tur 1 · NO-GO · aaaaaaa$/, /^Tur 2 · GO · bbbbbbb$/, /^BLOCKING · introduced$/, /^Kutu iki nesneye taşıyor$/, /^src\/sel\.ts:42$/, /^LOW · pre-existing$/, /^Not: Aynı aile ikinci kez: mekanizma değişsin$/, /^KANIT$/, /^QA raporu$/]
-      : [/^Seçim kutusu taşması$/, /^feat\/sel$/, /bbbbbbb$/, /^GO · 2 tur$/, /^Turlar$/, /^Tur 1 · NO-GO$/, /^Tur 2 · GO$/, /^BLOCKING · introduced$/, /^Kutu iki nesneye taşıyor$/, /^src\/sel\.ts:42$/, /^LOW · pre-existing$/, /^Aynı aile ikinci kez: mekanizma değişsin$/, /^Kanıt$/, /^QA raporu$/]) {
+      ? [/^Seçim kutusu taşması$/, /^feat\/sel · aday bbbbbbb$/, /^TURLAR$/, /^Tur 1 · NO-GO · aaaaaaa$/, /^Tur 2 · GO · bbbbbbb$/, /^BLOCKING · introduced$/, /^Kutu iki nesneye taşıyor$/, /^src\/sel\.ts:42$/, /^LOW · pre-existing$/, /^Not: Aynı aile ikinci kez: mekanizma değişsin$/, /^KANIT$/] // the pressable evidence row's label is its Button (ev-open-0, asserted below)
+      : [/^Seçim kutusu taşması$/, /^feat\/sel$/, /bbbbbbb$/, /^GO · 2 tur$/, /^Turlar$/, /^Tur 1 · NO-GO$/, /^Tur 2 · GO$/, /^BLOCKING · introduced$/, /^Kutu iki nesneye taşıyor$/, /^src\/sel\.ts:42$/, /^LOW · pre-existing$/, /^Aynı aile ikinci kez: mekanizma değişsin$/, /^Kanıt$/]) {
       expect(await ui.find({ type: 'Text', text: re })).toBeDefined()
     }
     expect((await ui.findAll({ type: 'Text', text: /aaaaaaa$/ })).length).toBe(1)
@@ -1445,7 +1447,7 @@ test('terminal list: a task with no candidate and no round has no Tur line, with
   expect(textNode(inBox('a'), /blocking|follow-up/)).toBeUndefined()
 })
 
-test('terminal detail: back and ask on one row, summary box, ROLLER, TURLAR newest first in round boxes, KANIT with the path dim', async ($, on) => {
+test('terminal detail: back and ask on one row, summary box, ROLLER, TURLAR newest first in round boxes, KANIT one row per entry with no path', async ($, on) => {
   // Source: the terminal-boxes design in the Lead's brief ("Detail view"), strings spelled out by hand from it.
   await boot($, on, detailStatus({
     roles: [{ name: 'Developer', state: 'yazıyor', status: 'running' }],
@@ -1500,10 +1502,10 @@ test('terminal detail: back and ask on one row, summary box, ROLLER, TURLAR newe
   expect(textNode(r1, /^Not: Aynı aile$/)?.props?.color).toBe('warning')
   expect(textNode(r2, /^Not: /)).toBeUndefined()
 
-  // Evidence: label, then the path dim, cut in the middle.
+  // Evidence (design B, spec A 5.3): one row, the label then one dim status Text cut at the end; the path is not drawn (team mode is off here: nothing is read yet).
   const ev = nodesOf(root).find(n => n.props?.key === 'ev-0') as Node
-  expect((ev.children as Node[]).map(textOf)).toEqual(['QA raporu', '/Users/x/agent-team-evidence/qa report.md'])
-  expect(ev.children?.[1] && (ev.children[1] as Node).props).toMatchObject({ dimColor: true, wrap: 'truncate-middle' })
+  expect((ev.children as Node[]).map(textOf)).toEqual(['QA raporu', 'okunuyor…'])
+  expect(ev.children?.[1] && (ev.children[1] as Node).props).toMatchObject({ dimColor: true, wrap: 'truncate-end' })
   await ui.unmount()
 })
 
@@ -5464,7 +5466,7 @@ const cBoot = async (
   }
   return { files, disk, store, log, gate, settle, fire, poll, setOwn, pane, band, ownName, mineAdd, record, clear }
 }
-const ATOM_KEYS4 = ['mode', 'status', 'detail', 'others', 'children', 'forwards', 'links', 'bind', 'othersOpen', 'karar', 'outbox', 'reopen', 'placed', 'tick', 'fresh', 'doneOpen']
+const ATOM_KEYS4 = ['mode', 'status', 'detail', 'others', 'children', 'forwards', 'links', 'bind', 'othersOpen', 'karar', 'outbox', 'reopen', 'placed', 'tick', 'fresh', 'doneOpen', 'reader']
 const texts4 = (root: Node) => nodesOf(root).filter(n => n.type === 'Text').map(textOf)
 const byKey = (root: Node, key: string) => {
   const n = nodesOf(root).find(x => x.props?.key === key)
