@@ -299,20 +299,30 @@ export type Rec = { sid: string; r: SessionRecord }
 const atOf = (r: SessionRecord) => Date.parse(r.at) || 0
 const newest = (a: Rec, b: Rec) => atOf(b.r) - atOf(a.r) || a.sid.localeCompare(b.sid)
 
-// A binding is valid while a record other than the bound session's own holds that code for that task in its `kids`; else it is void (treated as absent).
-export const isValid = (recs: readonly Rec[], sid: string, b: Bound | undefined) => !!b && recs.some(x => x.sid !== sid && x.r.kids?.[b.task]?.code === b.code)
+// One session = one status file: a /clear carries a session's record to its new id with its file, so its earlier ids keep records of the same file. Every
+// reader that counts, compares or ranks records asks here: the other sessions than `sid`'s (no record of its file), each one group of its records, newest
+// first; the groups in the order of their newest records.
+export function othersOf(recs: readonly Rec[], sid: string): Rec[][] {
+  const own = recs.find(x => x.sid === sid)?.r.file
+  const by = new Map<string, Rec[]>()
+  for (const x of [...recs].sort(newest)) if (x.sid !== sid && x.r.file !== own) by.set(x.r.file, [...(by.get(x.r.file) ?? []), x])
+  return [...by.values()]
+}
 
-// Trust addendum §1.4: for each `kids[h]` of this session's own record, the records, not the own, whose `bound` has that task and code. None: unbound; one
+// A binding is valid while another session (othersOf) holds that code for that task in its `kids`; else it is void (treated as absent).
+export const isValid = (recs: readonly Rec[], sid: string, b: Bound | undefined) => !!b && othersOf(recs, sid).some(g => g.some(x => x.r.kids?.[b.task]?.code === b.code))
+
+// Trust addendum §1.4: for each `kids[h]` of this session's own record, the other sessions' records (othersOf) whose `bound` has that task and code. None: unbound; one
 // file: bound (ids newest first, at most 3; the newest's token); two or more files: conflict. At most 8 bound: the tasks the own file writes now (`open`)
 // first, then the newest kids[h].at. `open` is required: every caller ranks alike, so a card that is drawn is also the one pressed, unbound and guarded.
 export function linksOf(recs: readonly Rec[], own: string, open: ReadonlySet<string>): Link[] {
   const kids = recs.find(x => x.sid === own)?.r.kids ?? {}
   const all = Object.entries(kids).flatMap(([task, k]): Link[] => {
     const by = k.to ? 'owner' : 'code'
-    const holders = recs.filter(x => x.sid !== own && x.r.bound?.task === task && x.r.bound.code === k.code).sort(newest)
-    const files = new Set(holders.map(x => x.r.file))
+    const held = othersOf(recs, own).map(g => g.filter(x => x.r.bound?.task === task && x.r.bound.code === k.code)).filter(g => g.length)
+    const holders = held[0] ?? []
     if (!holders.length) return [{ task, state: 'unbound', ids: [], by, at: k.at }]
-    if (files.size > 1) return [{ task, state: 'conflict', ids: [], by, at: k.at }]
+    if (held.length > 1) return [{ task, state: 'conflict', ids: [], by, at: k.at }]
     return [{ task, state: 'bound', file: baseName(holders[0]!.r.file), ids: holders.slice(0, 3).map(x => x.sid), token: holders[0]!.r.bound!.token, by, at: k.at }]
   })
   const rank = (l: Link) => (open.has(l.task) ? 0 : 1)
@@ -320,9 +330,9 @@ export function linksOf(recs: readonly Rec[], own: string, open: ReadonlySet<str
   return all.filter(l => l.state !== 'bound' || keep.has(l.task)).sort((a, b) => a.task.localeCompare(b.task))
 }
 
-// The records that started a bound task session (its report targets): not its own, `kids[task].code` is its code; newest first, at most 3.
+// The records that started a bound task session (its report targets): other sessions' (othersOf), `kids[task].code` is its code; newest first, at most 3.
 export const parentsOf = (recs: readonly Rec[], own: string, b: Bound) =>
-  recs.filter(x => x.sid !== own && x.r.kids?.[b.task]?.code === b.code).sort(newest).slice(0, 3).map(x => x.sid)
+  othersOf(recs, own).flatMap(g => g.filter(x => x.r.kids?.[b.task]?.code === b.code)).sort(newest).slice(0, 3).map(x => x.sid)
 
 // "<project> · <id8>" of a record (the file's project part as otherSession names it, the id8 of the session id in the store key).
 const projectOf = (file: string) => {
@@ -330,10 +340,10 @@ const projectOf = (file: string) => {
   return base.match(/^(.+)--([^-]{8})$/)?.[1] ?? base
 }
 
-// The sessions the owner may bind to a task by hand (§1.9): records, not the own, team mode on, with no `kids` and no valid `bound`; newest record first
+// The sessions the owner may bind to a task by hand (§1.9): each other session's newest record (othersOf), team mode on, with no `kids` and no valid `bound`; newest record first
 // (ties by id); the first 9 and how many more. Only the store decides: no file's content, mtime or name decides who is listed or in what order.
 export function candidatesOf(recs: readonly Rec[], own: string, now: number): { rows: Candidate[]; more: number } {
-  const all = recs.filter(x => x.sid !== own && x.r.mode.isOn && !x.r.kids && !isValid(recs, x.sid, x.r.bound)).sort(newest)
+  const all = othersOf(recs, own).map(g => g[0]!).filter(x => x.r.mode.isOn && !x.r.kids && !isValid(recs, x.sid, x.r.bound))
   return { rows: all.slice(0, 9).map(x => ({ sid: x.sid, name: `${projectOf(x.r.file)} · ${x.sid.slice(0, 8)}`, ...(stamp(x.r.at, now).text && { when: stamp(x.r.at, now).text }) })), more: Math.max(0, all.length - 9) }
 }
 

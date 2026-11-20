@@ -3,7 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { BindView, Child, Decision, DirEntry, Forward, Kid, Link, Mode, Other, Outbox, Press, Reopen, RoleStatus, SessionRecord, Status, StatusView, Task, TaskState } from '../types'
 import type { Rec } from './status'
-import { ANNOUNCE, ASK_WHERE, KARAR, KEEP_MS, KIDS_MAX, MARKER, OPEN_ROW, PANE_HEAD, STAGE_LABELS, bandSegments, baseName, bindable, candidatesOf, childOf, clip, countStates, cut as shorten, decisionTask, detailScroll, expandHome, flat, isBlocking, isInside, isValid, joined, kararLine, kararLines, kidCaption, kidsOf, label, linksOf, markerOf, otherFiles, otherSession, parentsOf, parseFolders, parseRecord, parseStatus, pushOf, readable, reopenLine, reportText, runningRoles, sessionLines, spinnerWord, stamp, stopped, trimSlash, withKarar } from './status'
+import { ANNOUNCE, ASK_WHERE, KARAR, KEEP_MS, KIDS_MAX, MARKER, OPEN_ROW, PANE_HEAD, STAGE_LABELS, bandSegments, baseName, bindable, candidatesOf, childOf, clip, countStates, cut as shorten, decisionTask, detailScroll, expandHome, flat, isBlocking, isInside, isValid, joined, kararLine, kararLines, kidCaption, kidsOf, label, linksOf, markerOf, otherFiles, otherSession, othersOf, parentsOf, parseFolders, parseRecord, parseStatus, pushOf, readable, reopenLine, reportText, runningRoles, sessionLines, spinnerWord, stamp, stopped, trimSlash, withKarar } from './status'
 import { AMBER, BAD, CLAY, MUTED, OK, TRACK, dotSvg, meterSvg, stagesSvg } from './svg'
 import { BIND_EMPTY, BIND_LEAD, FRAMES, QUEUED, QUEUED_PUSH, TBOX, hk, termBand, termBanner, termBind, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termTasks, termUsage } from './terminal'
 
@@ -520,7 +520,7 @@ async function noteStart($: EngineInterface, e: Record<string, unknown>) {
   const recs = await records($)
   const own = await selfId($)
   const was = recs.find(x => x.sid === own)?.r.kids?.[m.task]
-  if (was && recs.some(x => x.sid !== own && x.r.bound?.task === m.task && x.r.bound.code === was.code)) return
+  if (was && othersOf(recs, own).some(g => g.some(x => x.r.bound?.task === m.task && x.r.bound.code === was.code))) return
   const at = await $.clock.now()
   await patchKids($, kids => withKid(kids, m.task, { code: m.code, at }))
 }
@@ -539,14 +539,15 @@ async function claimFirst($: EngineInterface, m: { task: string; code: string })
 }
 
 // The owner's bind (§1.9), on the child's side: the store, not the message, decides. A valid binding stays; else exactly one record whose `kids` names this
-// session in `to` binds it (a new token); none drops a void binding; two or more change nothing. Never throws.
+// session in `to` binds it (a new token); none drops a void binding; two or more change nothing. A record is one session's (othersOf). Never throws.
 async function adopt($: EngineInterface) {
   try {
     const recs = await records($)
     const own = await selfId($)
     const me = recs.find(x => x.sid === own)?.r
     if (!me || isValid(recs, own, me.bound)) return
-    const named = recs.filter(x => x.sid !== own).flatMap(x => Object.entries(x.r.kids ?? {}).filter(([, k]) => k.to === own).map(([task, k]) => ({ task, code: k.code })))
+    // One entry per other session (othersOf) and task and code: a parent's records from before its /clear name this session alike.
+    const named = [...new Map(othersOf(recs, own).flatMap((g, i) => g.flatMap(x => Object.entries(x.r.kids ?? {}).filter(([, k]) => k.to === own).map(([task, k]) => [`${i} ${task} ${k.code}`, { task, code: k.code }] as const)))).values()]
     const one = named[0]
     if (named.length === 1 && one) await patch($, own, r => ({ ...r, bound: { task: one.task, code: one.code, token: crypto.randomUUID() } }))
     else if (!named.length && me.bound) await patch($, own, ({ bound: _b, ...r }) => r)
@@ -556,6 +557,8 @@ async function adopt($: EngineInterface) {
 // The owner's bind, on this session's side: an entry naming the candidate (a new code, `to`), then one message; not delivered (only a live session can be
 // bound), the entry goes and the view says so. A bound task changes nothing. Never the box, the outbox or the Lead; no status file is written.
 const BIND_TEXT = '[Agent Team bağ]'
+// The body of one peer delivery: the envelope's opening line, the body, the closing line.
+const BIND_BODY = /^<cross-session-message[^\n]*>\n([\s\S]*)\n<\/cross-session-message>$/
 async function bindTo($: EngineInterface, task: string, sid: string) {
   try {
     const own = await selfId($)
@@ -903,8 +906,8 @@ export const register: Register = (on, options) => {
       if ((await modeNow($)).isOn) {
         const o = e.origin as { kind: string; plugin?: string }
         const ours = o.kind === 'peer' && o.plugin === 'agent-team' && e.agentId === undefined
-        // The CLI hands a peer message over in its <cross-session-message …> envelope (measured, 2.1.328): the bind message is one whole line of it.
-        if (ours && e.text.split('\n').includes(BIND_TEXT)) {
+        // The CLI hands a peer message over in its <cross-session-message …> envelope (measured, 2.1.328): the bind message is its whole body.
+        if (ours && BIND_BODY.exec(e.text)?.[1] === BIND_TEXT) {
           await adopt($)
           return { consumed: 'agent-team: bağ yeniden okundu' }
         }
