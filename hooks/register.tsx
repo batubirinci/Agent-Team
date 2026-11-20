@@ -1799,10 +1799,12 @@ export const register: Register = (on, options) => {
                     {sec.done.map(t => (
                       <Box key={`t-${t.id}`} flexDirection="row" alignItems="center" gap="sm">
                         <Text color="success">✓</Text>
-                        <Box flexGrow={1}>
+                        <Box flexGrow={1} flexShrink={1} minWidth={0}>
                           <Text wrap="truncate-end">{t.title}</Text>
                         </Box>
-                        <Button key={`detail-${t.id}`} label="Ayrıntı ›" hover={{ color: 'claude' }} onPress={() => void show(t.id)} />
+                        <Box flexShrink={0}>
+                          <Button key={`detail-${t.id}`} label="Ayrıntı ›" hover={{ color: 'claude' }} onPress={() => void show(t.id)} />
+                        </Box>
                       </Box>
                     ))}
                   </Box>
