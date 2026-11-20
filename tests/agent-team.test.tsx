@@ -5297,14 +5297,14 @@ const defaultFiles4 = (): Record<string, F4> => ({ [C4_KID]: { text: kid4(), age
 const cBoot = async (
   $: Parameters<TestBody>[0],
   on: Parameters<TestBody>[1],
-  o: { surface?: 'desktop' | 'terminal' | null; own?: string; cwd?: string; sid?: string; files?: Record<string, F4>; store?: Record<string, unknown>; ownAge?: number; deliver?: (id: string) => boolean } = {},
+  o: { surface?: 'desktop' | 'terminal' | null; own?: string; cwd?: string; sid?: string; files?: Record<string, F4>; store?: Record<string, unknown>; ownAge?: number; deliver?: (id: string) => boolean; atoms?: Record<string, unknown>; listFails?: boolean; isFilled?: boolean } = {},
 ) => {
   const sid = o.sid ?? C4_SID
   const cwd = o.cwd ?? '/Users/x/Projeler/main'
   const ownName = `${cwd.split('/').pop()}--${sid.slice(0, 8)}.json`
   const disk = { own: o.own ?? own4(), ownAge: o.ownAge ?? MIN4, rev: 0 }
   const files = o.files ?? defaultFiles4()
-  const gate = { deliver: o.deliver ?? (() => true), storeFails: false, listFails: false }
+  const gate = { deliver: o.deliver ?? (() => true), storeFails: false, listFails: o.listFails ?? false, now: C4_NOW, isFilled: o.isFilled ?? true }
   const log = { sends: [] as { to: string; text: string }[], reads: [] as string[], fills: [] as string[], submits: [] as { text: string; context?: readonly string[] }[], sets: [] as string[], writes: [] as string[] }
   const store = new Map<string, unknown>(Object.entries(o.store ?? {}))
   on('store.get', (_, e) => {
@@ -5349,7 +5349,7 @@ const cBoot = async (
   })
   // Manual clock: `now` never moves; every clock.every period is held until fire() releases it (one poll = fire(500)).
   const held: { ms: number; fire: () => void }[] = []
-  on('clock.now', () => ({ value: C4_NOW }))
+  on('clock.now', () => ({ value: gate.now }))
   on('clock.every', (_, e) => new Promise(go => held.push({ ms: e.ms, fire: () => go({ value: undefined }) })) as never)
   on('clock.after', () => new Promise(() => undefined) as never)
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -5361,14 +5361,22 @@ const cBoot = async (
     const r = gate.deliver(to)
     return r ? { isDelivered: true as const } : { isDelivered: false as const, reason: 'no live session on this machine' }
   })
+  // `atoms`: values stored before this start, as an earlier version of the plugin left them (a hot reload): key -> the stored { shape, value }.
+  // A seeded key is kept here from then on; every other key is the kit's.
+  const seeded = new Map(Object.entries(o.atoms ?? {}).map(([key, value]) => [key, { value, version: 1 }]))
+  on('state.get', (_, e, next) => (seeded.has(e.key) ? { value: seeded.get(e.key) } : next(e)) as never)
   on('state.set', (_, e, next) => {
     log.sets.push(e.key)
-    return next(e)
+    const was = seeded.get(e.key)
+    if (!was) return next(e)
+    if (e.ifVersion !== undefined && e.ifVersion !== was.version) return { value: { isSet: false, version: was.version } } as never
+    seeded.set(e.key, { value: e.value, version: was.version + 1 })
+    return { value: { isSet: true, version: was.version + 1 } } as never
   })
   on('prompt.read', () => ({ value: { text: '', cursor: 0 } }))
   on('prompt.fill', (_, e) => {
     log.fills.push(e.text)
-    return { isFilled: true }
+    return { isFilled: gate.isFilled }
   })
   on('prompt.submit', (_, e) => {
     log.submits.push({ text: e.text, context: e.context })
@@ -6142,3 +6150,309 @@ test('T4 R-cheap (empty id): a store key "session:" with nothing after it is nev
   await forward(fake.$ as never, { file: C4_KID, task: 'hard', name: 'hard', mtimeMs: C4_NOW, more: 0, count: 1, decisions: [] }, { id: 'k1', kind: 'Ürün kararı', text: 'H', options: ['A'], push: false, stuck: false }, 'A', C4D)
   expect(fake.sends).toEqual([])
 })
+
+// ===== T4 revision 2 (escalation): /Users/batuhan/agent-team-evidence/tasks/t4/qa-r2/lead-r2-adjudication.md, invariants E1a, E1b, E2a, E2b and the cheap
+// items; Neon's probes A2, A2b, B2a and B2b (qa-r2/neon/r2-probes.log, qa-r2/qa-neon-report.md) are rebuilt here from the report's description.
+// Source of every expected value: those invariants (nothing leaks, one send per decision) and the spec §3.4 strings already used above. The 0.8.0
+// `status-3` value is a StatusView whose decisions have no push/stuck (base 9ac3253 types/index.d.ts: Decision had neither); the r1 `children-1`
+// value is linkChildren's Child list with the flags taken out (what an engine keeps from a build before the flags were required).
+const OWN_P1 = { id: 'p1', kind: 'Push onayı', text: "main'e itelim mi?", options: ['Onayla', 'Reddet'] }
+const C4_FILE = `${C4D}/main--aaaaaaaa.json`
+const noFlags = <T extends { push?: unknown; stuck?: unknown }>(d: T) => {
+  const { push: _p, stuck: _s, ...rest } = d
+  return rest
+}
+// The view an older build stored for `own`, at the own file's mtime (cBoot's own file is MIN4 old): a reload with the file unchanged does not read it again.
+const storedView = (own: string, f: (d: ReturnType<typeof parseStatus>['decisions'][number]) => object = noFlags) => {
+  const s = parseStatus(own)
+  return { file: C4_FILE, mtime: C4_NOW - MIN4, data: { ...s, decisions: s.decisions.map(f) }, error: null }
+}
+const storedKids = (text: string, f: (d: ReturnType<typeof parseStatus>['decisions'][number]) => object = noFlags) =>
+  linkChildren([{ e: entry(C4_KID, { mtimeMs: C4_NOW - 5 * MIN4 }), s: parseStatus(text) }], 'main--aaaaaaaa.json', parseStatus(own4()).tasks).kids.map(c => ({ ...c, decisions: c.decisions.map(f) }))
+const toolCtx = async ($: Parameters<TestBody>[0]) => ((await $.tool.call({ tool: 'Bash', command: 'ls' } as never)) as { context?: readonly string[] }).context
+const endTurn4 = async ($: Parameters<TestBody>[0], k: { settle: () => Promise<void> }, turnId: string) => {
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, reason: 'answer', turnId })
+  await k.settle()
+}
+
+// ---- E1 (push leaves the main pane only as the owner's own message), channel: values an earlier build stored ----
+test('T4 E1 (A2, Neon): after a hot reload from 0.8.0 (status-3, no flags) an own Push onayı pressed during a turn is not in the tool result; the turn end submits it as the owner', FOLDERS, async ($, on) => {
+  const own = own4({ decisions: [OWN_P1] })
+  const k = await cBoot($, on, { surface: 'desktop', own, atoms: { status: { shape: 'status-3', value: storedView(own) } } })
+  const ui = await k.pane('desktop')
+  await $.turn.start({ text: 'x', turnId: 't1' })
+  await press4(ui, 'd-p1-0')
+  await k.settle()
+  expect(await toolCtx($)).toBeUndefined() // Neon A2 saw ["[Agent Team pane] Sahip pane'de bastı:\nKarar (p1): Onayla"]
+  await endTurn4($, k, 't1')
+  expect(k.log.submits.map(s => s.text)).toEqual(['Karar (p1): Onayla'])
+})
+
+test('T4 E1 (A2b, Neon): after a hot reload from r1 (children-1, no flags) with the listing failing, a child Push onayı has no Button and nothing is sent; the next good scan draws it normally', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { store: KID_REC, listFails: true, atoms: { children: { shape: 'children-1', value: storedKids(kid4()) } } })
+  for (const surface of ['desktop', 'terminal'] as const) {
+    const ui = await k.pane(surface)
+    const root = await drawnOf(ui)
+    expect(keysWith(root, 'kd-hard-p1-')).toEqual([]) // Neon A2b: btnCount 1
+    if (await ui.find({ key: 'kd-hard-p1-0' })) await ui.press({ key: 'kd-hard-p1-0' })
+    await k.settle()
+  }
+  expect(k.log.sends).toEqual([])
+  expect(k.log.fills).toEqual([])
+  k.gate.listFails = false
+  await k.poll()
+  const root = await drawnOf(await k.pane('terminal'))
+  expect(texts4(byKey(root, 'kd-hard-p1'))).toContain('Push onayı yalnız o oturumda verilir')
+  expect(keysWith(root, 'kd-hard-p1-')).toEqual([])
+  expect(keysWith(root, 'kd-hard-k1-')).toEqual(['kd-hard-k1-0', 'kd-hard-k1-1'])
+})
+
+test('T4 E1a: every stored value of an earlier build that holds a parse is declined: the own file is parsed again, a stale child is not drawn, a stale queued press is not delivered', FOLDERS, async ($, on) => {
+  const own = own4({ decisions: [{ id: 'd1', kind: 'Ürün kararı', text: 'Hangisi sayılsın?', options: ['Evet', 'Hayır'] }, { id: 'z1', kind: '​Push onayı', text: 'Push?', options: ['Onayla'] }] })
+  const k = await cBoot($, on, {
+    surface: 'desktop',
+    own,
+    listFails: true,
+    atoms: {
+      status: { shape: 'status-3', value: storedView(own) },
+      children: { shape: 'children-1', value: storedKids(kid4()) },
+      // 0.8.0 classified "​Push onayı" as no push (its kindOf kept the U+200B): its queued press says push false.
+      outbox: { shape: 'outbox-2', value: { queue: [{ line: 'Karar (z1): Onayla', id: 'z1', option: 'Onayla', push: false }], sent: [], said: [] } },
+    },
+  })
+  const ui = await k.pane('desktop')
+  expect(keysWith(await drawnOf(ui), 'kd-hard-')).toEqual([]) // the r1 child is declined; the failing listing gives no new one
+  await $.turn.start({ text: 'x', turnId: 't1' })
+  expect(await toolCtx($)).toBeUndefined() // the 0.8.0 queue is declined, so its push:false entry never reaches a tool result
+  await press4(ui, 'd-d1-0')
+  await k.settle()
+  // A press on a parsed (flagged) ordinary decision rides the next tool result: the own file was parsed again, not read from the 0.8.0 value.
+  expect(await toolCtx($)).toEqual([`${HEAD}\nKarar (d1): Evet`])
+})
+
+test('T4 E1b: a decision whose push flag is missing or not a boolean is a push everywhere: no Button, no digit, no forward, no fill, no tool result; a missing stuck is not stuck', FOLDERS, async ($, on) => {
+  const own = own4({ decisions: [{ id: 'd1', kind: 'Ürün kararı', text: 'Hangisi sayılsın?', options: ['Evet', 'Hayır'] }] })
+  const odd = [undefined, 'false', null, 0]
+  const kid = kid4({ decisions: odd.map((_, i) => ({ id: `k${i}`, kind: 'Ürün kararı', task: 'hard', text: 'Hangisi?', options: ['A', 'B'] })) })
+  const withOdd = (d: { id: string; push?: unknown; stuck?: unknown }) => {
+    const i = Number(d.id.slice(1))
+    const { push: _p, stuck: _s, ...rest } = d
+    return odd[i] === undefined ? rest : { ...rest, push: odd[i] }
+  }
+  // Stored under the tags this build reads: the consumers alone must hold (a later path that stores a decision without its flags).
+  const k = await cBoot($, on, {
+    own,
+    store: KID_REC,
+    listFails: true,
+    isFilled: false,
+    atoms: {
+      status: { shape: 'status-4', value: storedView(own) },
+      children: { shape: 'children-2', value: storedKids(kid, withOdd) },
+      outbox: { shape: 'outbox-3', value: { queue: [{ line: 'Karar (d9): A', id: 'd9', option: 'A' }], sent: [], said: [] } },
+    },
+  })
+  for (const surface of ['desktop', 'terminal'] as const) {
+    const root = await drawnOf(await k.pane(surface))
+    for (const i of odd.keys()) {
+      const card = byKey(root, `kd-hard-k${i}`)
+      expect([i, buttons(card).length]).toEqual([i, 0])
+      expect(texts4(card)).toContain('Push onayı yalnız o oturumda verilir')
+      expect(card.props?.borderColor).not.toBe(surface === 'terminal' ? 'error' : 'rgba(224,108,108,0.45)')
+    }
+    if (surface === 'terminal') expect(Object.keys(hotkeys(root)).filter(x => x.startsWith('kd-'))).toEqual([])
+  }
+  const fake = fakeForwardEngine(k.store)
+  for (const c of storedKids(kid, withOdd)) for (const d of c.decisions) await forward(fake.$ as never, c as never, d as never, 'A', C4D)
+  expect(fake.sends).toEqual([])
+  // Own: the stored d1 has no flag and the stored queue entry d9 none either; on the terminal the fill is refused, so the press is queued.
+  const ui = await k.pane('terminal')
+  await $.turn.start({ text: 'x', turnId: 't1' })
+  await press4(ui, 'd-d1-0')
+  await k.settle()
+  expect(await toolCtx($)).toBeUndefined()
+  await endTurn4($, k, 't1')
+  expect(k.log.submits.map(s => s.text)).toEqual(['Karar (d9): A\nKarar (d1): Evet']) // the owner's own message, at the turn end
+  expect(k.log.sends).toEqual([])
+})
+
+// ---- E2 (one answer per decision), channel: pruning on absence, a failed read, a claim change or the 10-decision cut ----
+test('T4 E2 (B2a, Neon): a child file absent from one listing, then torn for one poll, keeps its answered decision; a second press sends nothing', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { store: KID_REC })
+  const ui = await k.pane('terminal')
+  await press4(ui, 'kd-hard-k1-0')
+  await k.settle()
+  const f = k.files[C4_KID] as F4
+  delete k.files[C4_KID]
+  await k.poll()
+  k.files[C4_KID] = f
+  await k.poll()
+  expect(texts4(byKey(await drawnOf(ui), 'kd-hard-k1'))).toContain('Gönderildi: A · hard oturumuna') // Neon B2a: "1-9 ile seç · hard oturumuna hemen gider"
+  await press4(ui, 'kd-hard-k1-1')
+  await k.settle()
+  k.files[C4_KID] = { text: '{"v":1,', age: 4 * MIN4 }
+  await k.poll()
+  k.files[C4_KID] = { ...f, age: 3 * MIN4 }
+  await k.poll()
+  expect(texts4(byKey(await drawnOf(ui), 'kd-hard-k1'))).toContain('Gönderildi: A · hard oturumuna')
+  await press4(ui, 'kd-hard-k1-1')
+  await k.settle()
+  expect(sent4(k)).toEqual(KARAR_A) // Neon B2a: sendsCount 2
+})
+
+const OLD4 = 'hard--aaaaaaa1.json'
+const NEW4 = 'hard--ddddddd4.json'
+const OLD4_SID = 'aaaaaaa1-0000-4000-8000-000000000001'
+const NEW4_SID = 'ddddddd4-0000-4000-8000-000000000004'
+const TWO_REC = Object.fromEntries([sess4(OLD4_SID, OLD4, hourAt(10)), sess4(NEW4_SID, NEW4, hourAt(11))])
+const twoClaims = () => ({ [OLD4]: { text: kid4({ sha: 'aaaaaaa0000000000000000000000000000000aa' }), age: 5 * MIN4 }, [NEW4]: { text: kid4({ sha: 'bbbbbbb0000000000000000000000000000000bb' }), age: 3 * MIN4 } })
+
+test('T4 E2 (B2b, Neon): the newest claimant stays the child while it cannot be read; the older claimed file never displaces it; its answer is kept and a second press sends nothing', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { store: TWO_REC, files: twoClaims() })
+  const ui = await k.pane('terminal')
+  await press4(ui, 'kd-hard-k1-0')
+  await k.settle()
+  ;(k.files[NEW4] as F4).age = 2 * MIN4
+  ;(k.files[NEW4] as F4).unreadable = true
+  await k.poll()
+  const during = await drawnOf(ui)
+  expect(texts4(byKey(during, 't-hard'))).toContain('Tur 2 · aday bbbbbbb') // Neon B2b: "Tur 2 · aday aaaaaaa"
+  expect(texts4(byKey(during, 'kd-hard-k1'))).toContain('Gönderildi: A · hard oturumuna')
+  await press4(ui, 'kd-hard-k1-1')
+  await k.settle()
+  ;(k.files[NEW4] as F4).unreadable = false
+  await k.poll()
+  expect(texts4(byKey(await drawnOf(ui), 'kd-hard-k1'))).toContain('Gönderildi: A · hard oturumuna')
+  await press4(ui, 'kd-hard-k1-1')
+  await k.settle()
+  expect(sent4(k)).toEqual([[NEW4_SID, `${PANE_HEAD4}\nKarar (k1): A`]]) // Neon B2b: sendsCount 2
+})
+
+test('T4 E2a (cut): an answered decision moved past the tenth keeps its answer; one the parsed file no longer has loses it', FOLDERS, async ($, on) => {
+  const filler = Array.from({ length: 11 }, (_, i) => ({ id: `q${i}`, kind: 'Soru', task: 'hard', text: `Soru ${i}`, options: ['X'] }))
+  const k = await cBoot($, on, { store: KID_REC })
+  const ui = await k.pane('terminal')
+  await press4(ui, 'kd-hard-k1-0')
+  await k.settle()
+  k.files[C4_KID] = { text: kid4({ decisions: [...filler, K1] }), age: 4 * MIN4 } // k1 is the 12th: not drawn, still in the file
+  await k.poll()
+  k.files[C4_KID] = { text: kid4({ decisions: [K1] }), age: 3 * MIN4 }
+  await k.poll()
+  expect(texts4(byKey(await drawnOf(ui), 'kd-hard-k1'))).toContain('Gönderildi: A · hard oturumuna')
+  await press4(ui, 'kd-hard-k1-1')
+  await k.settle()
+  expect(sent4(k)).toEqual(KARAR_A)
+  // Control: the file read and parsed without k1 drops the answer (the decision left the child's file).
+  k.files[C4_KID] = { text: kid4({ decisions: [P1] }), age: 2 * MIN4 }
+  await k.poll()
+  k.files[C4_KID] = { text: kid4({ decisions: [K1] }), age: 1 * MIN4 }
+  await k.poll()
+  expect(texts4(byKey(await drawnOf(ui), 'kd-hard-k1'))).toContain('1-9 ile seç · hard oturumuna hemen gider')
+})
+
+test('T4 E2a (24 h): an answer of a file that is not parsed is kept for 24 h and goes after that', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { store: KID_REC })
+  const ui = await k.pane('terminal')
+  await press4(ui, 'kd-hard-k1-0')
+  await k.settle()
+  const f = k.files[C4_KID] as F4
+  delete k.files[C4_KID]
+  k.gate.now = C4_NOW + 23 * HOUR4
+  await k.poll()
+  k.files[C4_KID] = f
+  await k.poll()
+  expect(texts4(byKey(await drawnOf(ui), 'kd-hard-k1'))).toContain('Gönderildi: A · hard oturumuna')
+  delete k.files[C4_KID]
+  k.gate.now = C4_NOW + DAY4 + MIN4
+  await k.poll()
+  k.files[C4_KID] = f
+  await k.poll()
+  expect(texts4(byKey(await drawnOf(ui), 'kd-hard-k1'))).toContain('1-9 ile seç · hard oturumuna hemen gider')
+})
+
+test('T4 E2b: an unreadable child is kept only while its own task is still written; a task removed and written again does not bring the stale child back', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { store: KID_REC })
+  const ui = await k.pane('terminal')
+  ;(k.files[C4_KID] as F4).unreadable = true
+  ;(k.files[C4_KID] as F4).age = 4 * MIN4
+  await k.poll()
+  expect(texts4(byKey(await drawnOf(ui), 't-hard'))).toContain('Review · 3/5') // kept for one unreadable poll
+  await k.setOwn(own4({ tasks: [{ id: 't2', title: 'Başka iş', stage: 'spec' }] }))
+  await k.setOwn(own4())
+  const root = await drawnOf(ui)
+  expect(keysWith(root, 'kd-hard-')).toEqual([])
+  expect(texts4(byKey(root, 't-hard'))).toContain('◇ ayrı oturum · hard · durum dosyası bekleniyor')
+})
+
+test('T4 E2 (sequence): through absent, unreadable, torn, older claimant, more than ten decisions and a failed listing, no decision of a file is ever sent twice', FOLDERS, async ($, on) => {
+  const K2 = { id: 'k2', kind: 'Ürün kararı', task: 'hard', text: 'Hangisi?', options: ['X', 'Y'] }
+  const filler = Array.from({ length: 11 }, (_, i) => ({ id: `q${i}`, kind: 'Soru', task: 'hard', text: `Soru ${i}`, options: ['Z'] }))
+  const store = { ...KID_REC, ...Object.fromEntries([sess4(OLD4_SID, OLD4, hourAt(10))]) }
+  const k = await cBoot($, on, { store, files: { [C4_KID]: { text: kid4({ decisions: [K1, K2] }), age: 5 * MIN4 } } })
+  const ui = await k.pane('terminal')
+  let age = 5 * MIN4
+  const write = (text: string, over: Partial<F4> = {}) => (k.files[C4_KID] = { text, age: (age -= 1000), ...over })
+  const good = kid4({ decisions: [K1, K2] })
+  const steps: [string, () => void][] = [
+    ['absent', () => delete k.files[C4_KID]],
+    ['back', () => write(good)],
+    ['older claimant', () => (k.files[OLD4] = { text: kid4({ decisions: [K1, K2] }), age: 50 * MIN4 })],
+    ['unreadable', () => write(good, { unreadable: true })],
+    ['readable', () => write(good)],
+    ['torn', () => write('{"v":1,"decisions":[')],
+    ['fixed', () => write(good)],
+    ['eleven before', () => write(kid4({ decisions: [...filler, K1, K2] }))],
+    ['absent with older', () => delete k.files[C4_KID]],
+    ['back', () => write(good)],
+    ['list fails', () => (k.gate.listFails = true)],
+    ['list back', () => (k.gate.listFails = false)],
+    ['older gone', () => delete k.files[OLD4]],
+    ['unreadable, older back', () => (write(good, { unreadable: true }), (k.files[OLD4] = { text: kid4({ decisions: [K1, K2] }), age: 50 * MIN4 }))],
+    ['readable', () => write(good)],
+  ]
+  const pressAll = async () => {
+    for (const key of ['kd-hard-k1-0', 'kd-hard-k1-1', 'kd-hard-k2-0', 'kd-hard-k2-1']) if (await ui.find({ key })) await ui.press({ key })
+    await k.settle()
+  }
+  await pressAll()
+  for (const [, step] of steps) {
+    step()
+    await k.poll()
+    await pressAll()
+  }
+  const per = new Map<string, number>()
+  for (const s of k.log.sends) {
+    const id = `${s.to} ${s.text.match(/Karar \(([^)]+)\)/)?.[1]}`
+    per.set(id, (per.get(id) ?? 0) + 1)
+  }
+  expect([...per].filter(([, n]) => n > 1)).toEqual([])
+  expect(per.get(`${C4_KID_SID} k1`)).toBe(1) // control: the presses do reach the child
+  expect(per.get(`${C4_KID_SID} k2`)).toBe(1)
+})
+
+// ---- cheap items ----
+test('T4 R-cheap (kindOf): U+0307 and zero-width characters (U+200B-U+200D, U+2060, U+FEFF) before or inside the kind do not hide Push onayı or Takıldı', async () => {
+  const kinds = ['̇ Push onayı', '​Push onayı', 'Pu​sh onayı', '﻿Push onayı', '⁠Push ‌onayı', '‍push onayi', '​Takıldı', 'Tak⁠ıldı · X']
+  const s = parseStatus(JSON.stringify({ v: 1, decisions: kinds.map((kind, i) => ({ id: `x${i}`, kind, text: 'Soru', options: ['A'] })) }))
+  expect(s.decisions.map(d => [d.push, d.stuck])).toEqual([[true, false], [true, false], [true, false], [true, false], [true, false], [true, false], [false, true], [false, true]])
+})
+
+for (const w of [46, 75])
+  test(`T4 R-cheap (R5 own, width ${w}): the own kind line and the seçildi caption are one truncating row`, async ($, on) => {
+    await kBoot($, on, TERM, { boxText: 'Karar (d1): Sonra' })
+    const root = await drawnOf(await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, bodyColumns: w } }))
+    const card = byKey(root, 'd-d1')
+    for (const re of [/^Ürün kararı$/, /^✓ seçildi: Sonra · Enter ile gider$/]) expect([String(re), textNode(card, re)?.props?.wrap]).toEqual([String(re), 'truncate-end'])
+  })
+
+for (const w of [46, 75])
+  test(`T4 R-cheap (R5 own, width ${w}): the queued, queued-push and Gönderildi captions are one truncating row`, async ($, on) => {
+    const k = await pBoot($, on, { surface: 'terminal', isFilled: false })
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, bodyColumns: w } })
+    await k.start('t1')
+    await ui.press({ key: 'd-d2-0' })
+    await ui.press({ key: 'd-d3-0' })
+    const wrapOf = async (key: string, text: string) => textNode(byKey(await drawnOf(ui), key), new RegExp(`^${text}$`))?.props?.wrap
+    expect([await wrapOf('d-d2', QUEUED), await wrapOf('d-d3', QUEUED_PUSH)]).toEqual(['truncate-end', 'truncate-end'])
+    expect((await k.tool()).context).toEqual([`${HEAD}\nKarar (d2): Evet`])
+    expect(await wrapOf('d-d2', 'Gönderildi: Evet')).toBe('truncate-end')
+  })
