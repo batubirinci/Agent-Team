@@ -7425,3 +7425,13 @@ test('T4 E1 (/clear, in flight): a press made while the poll\'s follow is carryi
   go()
   expect(((await ctx) ?? []).join('\n')).toContain('Karar (d1): Evet')
 })
+
+// noteStart: "a session presents the code" means another session's file; this session's own older record presenting it does not keep the code.
+test('T4 TR22 (own old record): a later marker start replaces a code that only this session\'s own record from before a /clear presents', FOLDERS, async ($, on) => {
+  const store = { ...bindStore(), ...Object.fromEntries([sess4(C4_OLD, 'main--aaaaaaaa.json', hourAt(10), boundOf4('m', MCODE, 'tok-old'))]) }
+  const k = await bindBoot($, on, { store, mine: { kids: { m: { code: MCODE, at: hourAt(9) } } } })
+  const code = 'n'.repeat(20)
+  await $.tool.call({ tool: 'Bash', command: `cd /x && claude --bg -n m "[Agent Team görev oturumu] task=m kod=${code}"`, tool_use_id: 'u1' } as never)
+  await k.settle()
+  expect(k.record()?.kids?.m?.code).toBe(code)
+})
