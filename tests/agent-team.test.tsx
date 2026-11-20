@@ -5645,9 +5645,30 @@ test('T4 C9: a child Push onayı has no Button on either surface, a fixed captio
       expect(texts4(card)).toContain(surface === 'terminal' ? 'Onayla / Reddet' : 'Onayla · Reddet')
     }
   }
+  // `forward` itself, on a small fake `$` (the test engine has no state noun): the guard is the function's own, not only the missing Button.
+  const sends: { to: string; text: string }[] = []
+  const atoms = new Map<string, { value: unknown; version: number }>()
+  const fake = {
+    state: {
+      get: async (ref: { key: string }) => atoms.get(ref.key) ?? { value: undefined, version: 0 },
+      set: async (ref: { key: string }, value: unknown) => {
+        const version = (atoms.get(ref.key)?.version ?? 0) + 1
+        atoms.set(ref.key, { value, version })
+        return { isSet: true, version }
+      },
+    },
+    session: {
+      id: async () => C4_SID,
+      send: async (a: { to: { sessionId: string }; text: string }) => (sends.push({ to: a.to.sessionId, text: a.text }), { isDelivered: true }),
+    },
+    store: { keys: async () => [...k.store.keys()], get: async (key: string) => k.store.get(key) },
+  }
   const child = { file: C4_KID, task: 'hard', name: 'hard', mtimeMs: C4_NOW, more: 0, count: 4, decisions: [] }
-  for (const [i, kind] of kinds.entries()) await forward($ as never, child, { id: `p${i}`, kind, text: 'Push?', options: ['Onayla'] }, 'Onayla')
-  await k.settle()
+  for (const [i, kind] of kinds.entries()) await forward(fake as never, child, { id: `p${i}`, kind, text: 'Push?', options: ['Onayla'] }, 'Onayla', C4D)
+  expect(sends).toEqual([])
+  // The control: the same call for a decision that is not a push does send (so the empty list above is the guard, not a call that never ran).
+  await forward(fake as never, child, { id: 'k1', kind: 'Ürün kararı', text: 'Hangisi?', options: ['A'] }, 'A', C4D)
+  expect(sends.map(x => [x.to, x.text])).toEqual(KARAR_A)
   expect(k.log.sends).toEqual([])
 })
 

@@ -345,12 +345,12 @@ async function sweep($: EngineInterface) {
 
 // Where a message for another team session goes: the ids of the store records (one per team session, machine-wide per plugin, read live) whose file is `file`
 // in the status folder, newest first, at most 3, never this session's own. The message goes to the first that delivers; a send that throws or is refused is the next try.
-async function sendTo($: EngineInterface, file: string, text: string) {
+async function sendTo($: EngineInterface, dir: string, file: string, text: string) {
   const mine = String(await $.session.id().catch(() => ''))
   const ids: { id: string; at: number }[] = []
   for (const key of await $.store.keys()) {
-    const r = key.startsWith('session:') ? parseRecord(await $.store.get(key), followed.dir) : undefined
-    if (r && r.file === `${followed.dir}/${file}` && key.slice(8) !== mine) ids.push({ id: key.slice(8), at: Date.parse(r.at) || 0 })
+    const r = key.startsWith('session:') ? parseRecord(await $.store.get(key), dir) : undefined
+    if (r && r.file === `${dir}/${file}` && key.slice(8) !== mine) ids.push({ id: key.slice(8), at: Date.parse(r.at) || 0 })
   }
   for (const { id } of ids.sort((a, b) => b.at - a.at).slice(0, 3)) {
     try {
@@ -363,13 +363,13 @@ async function sendTo($: EngineInterface, file: string, text: string) {
 // A main-pane press on a child's decision: one send to the child's session, never the box, the outbox or the Lead (the line must not reach this session's Lead).
 // A push approval is never forwarded (the card has no button for it either); one answer per decision; nothing waits in a queue: a failure is shown and the next press tries again.
 const sending = new Set<string>()
-export async function forward($: EngineInterface, c: Child, d: Decision, option: string) {
+export async function forward($: EngineInterface, c: Child, d: Decision, option: string, dir = followed.dir) {
   const key = `${c.file}\n${d.id}`
   if (isPush(d.kind) || sending.has(key)) return
   try {
     if ((await read($, forwards)).some(f => f.file === c.file && f.id === d.id && f.state === 'sent')) return
     sending.add(key)
-    const ok = await sendTo($, c.file, `${PANE_HEAD}\n${kararLine(d.id, option)}`).catch(() => false)
+    const ok = await sendTo($, dir, c.file, `${PANE_HEAD}\n${kararLine(d.id, option)}`).catch(() => false)
     await update($, forwards, fs => [...fs.filter(f => f.file !== c.file || f.id !== d.id), { file: c.file, id: d.id, option, state: ok ? ('sent' as const) : ('failed' as const), mtimeMs: c.mtimeMs }])
   } catch {} finally {
     sending.delete(key)
@@ -384,7 +384,7 @@ async function report($: EngineInterface, e: { answer: string; reason: string })
     if (surface !== 'terminal' || !(await read($, mode)).isOn) return
     const { file, data } = await read($, status)
     const text = data?.parent && reportText(e.answer, e.reason, data.parent.task, file)
-    if (text && data?.parent) await sendTo($, data.parent.file, text)
+    if (text && data?.parent) await sendTo($, followed.dir, data.parent.file, text)
   } catch {}
 }
 
