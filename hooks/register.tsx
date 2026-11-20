@@ -1,10 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { BindView, Child, Decision, DirEntry, Forward, Kid, Link, Mode, Other, Outbox, Press, Reopen, RoleStatus, SessionRecord, Status, StatusView, Task, TaskState } from '../types'
+import type { BindView, Child, Decision, DirEntry, Forward, Fresh, Kid, Link, Mode, Other, Outbox, Press, Reopen, RoleStatus, SessionRecord, Status, StatusView, Task, TaskState } from '../types'
 import type { Rec } from './status'
-import { ANNOUNCE, ASK_WHERE, KARAR, KEEP_MS, KIDS_MAX, MARKER, OPEN_ROW, PANE_HEAD, STAGE_LABELS, bandSegments, baseName, bindable, candidatesOf, childOf, clip, countStates, cut as shorten, decisionTask, detailScroll, expandHome, flat, isBlocking, isInside, isValid, joined, kararLine, kararLines, kidCaption, kidsOf, label, linksOf, markerOf, otherFiles, otherSession, othersOf, parentsOf, parseFolders, parseRecord, parseStatus, pushOf, readable, reopenLine, reportText, runningRoles, sessionLines, spinnerWord, stamp, stopped, trimSlash, withKarar } from './status'
-import { AMBER, BAD, CLAY, MUTED, OK, TRACK, dotSvg, meterSvg, stagesSvg } from './svg'
+import { ANNOUNCE, ASK_WHERE, KARAR, FRESH_MS, KEEP_MS, KIDS_MAX, MARKER, OPEN_ROW, PANE_HEAD, STAGE_LABELS, bandSegments, baseName, bindable, candidatesOf, childOf, clip, countStates, cut as shorten, decisionTask, detailScroll, expandHome, finishes, flat, isBlocking, isInside, isValid, joined, kararLine, kararLines, kidCaption, kidsOf, label, linksOf, markerOf, otherFiles, otherSession, othersOf, parentsOf, parseFolders, parseRecord, parseStatus, pushOf, readable, reopenLine, reportText, runningRoles, sections, sessionLines, spinnerWord, stamp, stopped, trimSlash, withKarar } from './status'
+import { AMBER, BAD, CLAY, MUTED, OK, TRACK, doneStagesSvg, dotSvg, meterSvg, stagesSvg } from './svg'
 import { BIND_EMPTY, BIND_LEAD, FRAMES, QUEUED, QUEUED_PUSH, TBOX, hk, termBand, termBanner, termBind, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termTasks, termUsage } from './terminal'
 
 const PANE = 'agent-team'
@@ -37,6 +37,10 @@ const forwards = atom({ plugin: 'agent-team', key: 'forwards' } as const, [] as 
 const links = atom({ plugin: 'agent-team', key: 'links' } as const, [] as Link[], { shape: 'links-1' })
 const bind = atom({ plugin: 'agent-team', key: 'bind' } as const, null as BindView | null, { shape: 'bind-1' })
 const othersOpen = atom({ plugin: 'agent-team', key: 'othersOpen' } as const, false, { shape: 'others-open-1' })
+// Tasks that just finished (id, when, the state they left): each stays in its section for FRESH_MS, then the poll drops it. And whether Biten is open.
+// Both are new: a value an older build stored has neither, and the `status` tag stays (an older parse has no `done`, which reads as not done).
+const fresh = atom({ plugin: 'agent-team', key: 'fresh' } as const, [] as Fresh[], { shape: 'fresh-1' })
+const doneOpen = atom({ plugin: 'agent-team', key: 'doneOpen' } as const, false, { shape: 'done-open-1' })
 // The decision lines now in the owner's prompt box (kararLines of the draft): on the terminal a button writes one and the box shows it picked.
 const karar = atom({ plugin: 'agent-team', key: 'karar' } as const, [] as string[], { shape: 'karar-1' })
 // Pane presses on their way to the Lead (`queue`, in press order) and the decisions whose line was delivered (`sent`: [id, option]; dropped
@@ -81,6 +85,7 @@ const ROSTER = [
 const STATE_CHIP: Record<TaskState, [string, string, string]> = {
   running: ['◐ Çalışıyor', 'rgba(217,119,87,0.18)', '#F0B9A5'],
   blocked: ['✗ Takıldı', 'rgba(224,108,108,0.22)', '#F2A3A3'],
+  done: ['✓ Bitti', 'rgba(78,154,71,0.20)', '#A8D5A2'],
   waiting: ['⏸ Bekliyor', 'rgba(229,192,123,0.18)', '#E5CC7A'],
 }
 const BLOCKED_EDGE = 'rgba(224,108,108,0.45)'
@@ -107,9 +112,9 @@ const DOT: Record<RoleStatus, string> = {
 
 // The status as the pane draws it: the tasks that have a task session joined to it (`kids`; the join runs first, so a reopen never counts a child's roles), and a
 // reopened session's file older than the start has its running roles drawn stopped (`cut`), until the Lead writes again.
-// The pane, the band, the spinner word and the tick all read this one answer.
-async function drawnStatus($: EngineInterface) {
-  const view = await read($, status)
+// The pane, the band, the spinner word and the tick all read this one answer; `was`: a view that is not the atom's (a finish compares the view before and after a read).
+async function drawnStatus($: EngineInterface, was?: StatusView) {
+  const view = was ?? (await read($, status))
   // Only a child whose task is bound to its file now is joined (an unbind, a conflict or a new binding takes effect at once).
   const ls = await read($, links)
   const kids = kidsOf(view.data, (await read($, children)).filter(c => ls.some(l => l.state === 'bound' && l.task === c.task && l.file === c.file)))
@@ -278,6 +283,15 @@ async function refresh($: EngineInterface, file: string) {
     return fail(`Durum dosyası okunamadı: ${err instanceof Error ? err.message : String(err)}`)
   }
   const view: StatusView = { file, mtime: mtimeMs, data, error: null }
+  // A finish: on the status as drawn (joined, reopen cut), before and after this read, never the raw parse. In its own try, before the status write: a clock or
+  // atom failure skips the motion and the read still lands. The first read of a file (no earlier parse) finishes nothing.
+  try {
+    if (prev.file === file && prev.data) {
+      const fin = finishes((await drawnStatus($, prev)).data, (await drawnStatus($, view)).data)
+      const at = fin.length ? await $.clock.now() : Number.NaN
+      if (Number.isFinite(at)) await update($, fresh, fs => [...fs.filter(f => !fin.some(x => x.id === f.id)), ...fin.map(x => ({ ...x, at }))])
+    }
+  } catch {}
   try {
     await update($, status, () => view)
   } catch (err) {
@@ -436,7 +450,8 @@ async function boundTask($: EngineInterface) {
 
 // This session's bindings (linksOf) ranked by the tasks its own file writes now: every reader of a binding (the view, a press, a bind, an unbind) asks here.
 async function linksNow($: EngineInterface, recs: readonly Rec[]) {
-  const open = new Set((await read($, status)).data?.tasks.filter(t => !t.generatedId).map(t => t.id) ?? [])
+  // A task with the effective `done` flag ranks after the live ones, so finished rows never take a live child's place in the cap.
+  const open = new Set((await read($, status)).data?.tasks.filter(t => !t.generatedId && !t.done).map(t => t.id) ?? [])
   return linksOf(recs, await selfId($), open)
 }
 
@@ -798,8 +813,14 @@ export const register: Register = (on, options) => {
     const poll = async () => {
       // The other files are read after this session's own: the join reads the own tasks as they are now.
       const done = await Promise.allSettled([follow($), refresh($, file)])
+      // The only thing that ends the 5 s of a finish: entries past FRESH_MS (or from a clock that went back) go. Nothing is read or written with none.
       try {
-        const now = JSON.stringify([parseRecord(await $.store.get(`session:${await selfId($)}`), dir)?.kids ?? null, (await read($, status)).data?.tasks.map(t => t.id) ?? []])
+        const stamps = await read($, fresh)
+        const t = stamps.length ? await $.clock.now() : Number.NaN
+        if (Number.isFinite(t) && stamps.some(f => t - f.at < 0 || t - f.at >= FRESH_MS)) await update($, fresh, fs => fs.filter(f => t - f.at >= 0 && t - f.at < FRESH_MS))
+      } catch {}
+      try {
+        const now = JSON.stringify([parseRecord(await $.store.get(`session:${await selfId($)}`), dir)?.kids ?? null, (await read($, status)).data?.tasks.map(t => (t.done ? `${t.id}!` : t.id)) ?? []])
         const fourth = polls++ % 4 === 0
         if (fourth || now !== was) {
           was = now
@@ -1013,6 +1034,8 @@ export const register: Register = (on, options) => {
     // The glyph of a running role turns on the terminal only; the desktop never reads the tick.
     const frame = term ? await read($, tick) : 0
     const now = await $.clock.now().catch(() => NaN)
+    const stamps = await read($, fresh)
+    const doneShown = await read($, doneOpen)
     const lines = await read($, karar)
     const out = await read($, outbox)
     // The task sessions: the rows under a joined task's state row, and the child decisions after the own ones (the answers forwarded to them: `fwd`).
@@ -1030,7 +1053,7 @@ export const register: Register = (on, options) => {
       return l?.state === 'bound' ? (l.by === 'owner' ? 'bağ: sahip bağladı' : 'bağ: başlatma kodu') : undefined
     }
     const rowColor = { warning: '#E5CC7A', error: BLOCKED_INK, success: undefined } as const
-    const sessionRows = (t: Task) => rows(t).map((l, i) => <Text key={`t-${t.id}-s-${i}`} size="caption" color={l.color && rowColor[l.color]} dimColor={!l.color}>{l.text}</Text>)
+    const sessionRows = (t: Task) => rows(t).map((l, i) => <Text key={`t-${t.id}-s-${i}`} size="caption" color={l.color && rowColor[l.color]} dimColor={!l.color} wrap="truncate-end">{l.text}</Text>)
     // What a Pause / Devam button adds to its label: queued behind a running turn, or already submitted as the owner (until the file changes).
     const note = (line: string) => (out.queue.some(q => q.line === line) ? 'sırada' : out.said.includes(line) ? 'gönderildi' : '')
     const labelled = (label: string, line: string) => (note(line) ? `${label} · ${note(line)}` : label)
@@ -1180,11 +1203,15 @@ export const register: Register = (on, options) => {
         </Box>
         <Box flexDirection="column">
           {Svg ? (
-            <Svg source={stagesSvg(t.stage, 5, t.state === 'blocked', t.state === 'running')} alt={`${STAGE_LABELS[t.stage]}, 5 aşamanın ${t.stage + 1}.`} />
+            t.state === 'done' ? (
+              <Svg source={doneStagesSvg(now - (stamps.find(f => f.id === t.id)?.at ?? Number.NaN))} alt={`Bitti, 5 aşamanın 5.`} />
+            ) : (
+              <Svg source={stagesSvg(t.stage, 5, t.state === 'blocked', t.state === 'running')} alt={`${STAGE_LABELS[t.stage]}, 5 aşamanın ${t.stage + 1}.`} />
+            )
           ) : (
             <Text size="caption">
               {STAGE_LABELS.map((_, i) => (
-                <Text color={i < t.stage ? 'text' : i === t.stage ? 'claude' : 'inactive'}>━━━ </Text>
+                <Text color={t.state === 'done' ? 'success' : i < t.stage ? 'text' : i === t.stage ? 'claude' : 'inactive'}>━━━ </Text>
               ))}
             </Text>
           )}
@@ -1342,7 +1369,8 @@ export const register: Register = (on, options) => {
         ['Haftalık', lim?.weeklyPct],
       ] as const
     ).filter((u): u is readonly [typeof u[0], number] => u[1] !== undefined)
-    const n = countStates(data?.tasks ?? [])
+    const sec = sections(data?.tasks ?? [], stamps, now)
+    const toggleDone = () => void update($, doneOpen, v => !v)
     const showOn = !!data && !m.isOn
     // Before the first read (file not yet known: session start, /clear, a reload) two empty cards stand in, not the onboarding text.
     const bar = (w: string) => <Box backgroundColor={TRACK} height={1} width={w} />
@@ -1475,9 +1503,9 @@ export const register: Register = (on, options) => {
 
         {term && data && data.decisions.length + kidTotal > 0 && termDecisions(ui, data.decisions, data.tasks, (d, o) => void pick($, running, d, o, true), lines, out, kids.map(child => ({ child, title: data.tasks.find(t => t.id === child.task)?.title, fwd })), (c, d, i) => void forward($, c, d, i))}
 
-        {term && data && data.tasks.length > 0 && termTasks(ui, data.tasks, n, showOn, id => void show(id), frame, rows)}
+        {term && data && data.tasks.length > 0 && termTasks(ui, sec, showOn, id => void show(id), frame, rows, doneShown, toggleDone)}
 
-        {term && data && termHint(ui, otherTotal > 0, !!reopenText)}
+        {term && data && termHint(ui, otherTotal > 0, !!reopenText, sec.done.length > 0)}
 
         {!term && data && data.decisions.length + kidTotal > 0 && (
           <Box flexDirection="column" gap="sm">
@@ -1495,12 +1523,53 @@ export const register: Register = (on, options) => {
         )}
 
         {!term && data && data.tasks.length > 0 && (
-          <Box flexDirection="column" gap="sm">
-            <Box flexDirection="row" justifyContent="space-between">
-              <Text weight="semibold">Görevler</Text>
-              <Text size="caption" dimColor>{`${n.running} çalışıyor${n.blocked ? ` · ${n.blocked} takıldı` : ''}${n.waiting ? ` · ${n.waiting} bekliyor` : ''} · ${data.tasks.length} görev`}</Text>
-            </Box>
-            {data.tasks.map(taskCard)}
+          <Box flexDirection="column" gap="md">
+            {[['Çalışan', sec.running], ['Bekleyen', sec.waiting]].map(([name, list]) => {
+              const blocked = (list as Task[]).filter(t => t.state === 'blocked').length
+              return (
+                (list as Task[]).length > 0 && (
+                  <Box key={`sec-${name}`} flexDirection="column" gap="sm">
+                    <Box flexDirection="row" alignItems="center" gap="xs">
+                      <Text weight="semibold">{name as string}</Text>
+                      <Text dimColor size="caption">{`${(list as Task[]).length} görev${blocked ? ` · ${blocked} takıldı` : ''}`}</Text>
+                    </Box>
+                    {(list as Task[]).map(taskCard)}
+                  </Box>
+                )
+              )
+            })}
+            {sec.done.length > 0 &&
+              (doneShown ? (
+                <Box key="sec-biten" flexDirection="column" gap="sm">
+                  <Box flexDirection="row" alignItems="center" justifyContent="space-between">
+                    <Box flexDirection="row" alignItems="center" gap="xs">
+                      <Text weight="semibold">Biten</Text>
+                      <Text dimColor size="caption">{`${sec.done.length} görev`}</Text>
+                    </Box>
+                    <Button key="done-toggle" label="Gizle" onPress={toggleDone} />
+                  </Box>
+                  <Box key="done-rows" {...CARD}>
+                    {sec.done.map(t => (
+                      <Box key={`t-${t.id}`} flexDirection="row" alignItems="center" gap="sm">
+                        <Text color="success">✓</Text>
+                        <Box flexGrow={1}>
+                          <Text wrap="truncate-end">{t.title}</Text>
+                        </Box>
+                        <Button key={`detail-${t.id}`} label="Ayrıntı ›" hover={{ color: 'claude' }} onPress={() => void show(t.id)} />
+                      </Box>
+                    ))}
+                  </Box>
+                </Box>
+              ) : (
+                <Box key="sec-biten" {...CARD} flexDirection="row" alignItems="center" hover={hover(CARD.borderColor)}>
+                  <Text color="success">✓</Text>
+                  <Box flexDirection="column" flexGrow={1}>
+                    <Text weight="semibold">Biten</Text>
+                    <Text size="caption" dimColor>{`${sec.done.length} görev`}</Text>
+                  </Box>
+                  <Button key="done-toggle" label="Göster" onPress={toggleDone} />
+                </Box>
+              ))}
           </Box>
         )}
       </Box>

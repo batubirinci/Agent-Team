@@ -94,7 +94,7 @@ Fields:
   A decision or task `id` counts only if it is 1-64 letters, digits, `.`, `_` or `-` and not used before in its list; any other (or
   missing) id is made up as `#<position>`, so an id-less decision is answered as `Karar (#<position>): <option>` (its place among the
   file's decisions) and no decision links to a made-up task id: write ids.
-- `tasks`: every task not yet reported (Flow 5). Write each task's `id`: a task without one still
+- `tasks`: every task not yet reported (Flow 5), and the reported ones with `done: true`. Write each task's `id`: a task without one still
   draws (the pane makes up an id), but no decision can link to it. `stage` is one of `spec`, `build`, `review`,
   `revise`, `report`. `round` is the review round (omit before the first review). `candidate` is
   the full SHA copied from Git (the pane shortens it); `blocking` / `followup` count open findings
@@ -103,19 +103,26 @@ Fields:
   reads (`inceliyor`, `teslim etti`, `sırada`, `BLOCKED · <why>`).
 - `wait` (optional, short, cut at 120 characters): why the task waits (`t2 bitmeden başlamaz`);
   write it for a task waiting on another task or on something outside the team.
-- Task state (the pane derives it; never written to the file), precedence blocked > running > waiting:
+- `done` (optional, `true`): the task is fully finished: its Flow-5 report is given, the work is landed or released as the owner approved,
+  and nothing of it waits on the team or on an owner decision. Write it instead of removing the row: the pane folds the task under
+  `Biten` (`Göster`, or `z` on the terminal). A note for the owner about a finished task goes in `wait`. Never write it while a decision
+  with `task` = this id is open (a `Push onayı` above all): the pane ignores it then. Set every role of that row to `done`, a task session's
+  `Görev oturumu` role too. To reopen the task remove `done`. Keep the 10 newest finished rows. A task session never writes `done`: the session
+  that started it writes `done` on its own row when it lands the work. Only the boolean `true` counts.
+- Task state (the pane derives it; never written to the file), precedence blocked > running > done > waiting:
   - `blocked`: any role has `status: "blocked"`, or any open decision with `task` = this task's id has
     a `kind` that, trimmed and lowercased with Turkish rules, starts with `takıldı` or `takildi`
     (both spellings count, any letter case: `Takıldı · Developer`, `takıldı`, `TAKILDI`, ` Takıldı`,
     `Takildi`, `TAKİLDİ` all match);
   - else `running`: any role has `status: "running"`;
+  - else `done`: the row has `done: true` and no open decision links to it (the chip reads `✓ Bitti`, the terminal `✓ bitti`; the reason is `wait`);
   - else `waiting` (also a task with no roles).
   The pane shows the state on every task (a chip on the desktop, a `◐ çalışıyor` / `✗ TAKILDI` /
   `⏸ bekliyor` line in the terminal) and a reason line: blocked, `senden <n> karar bekliyor` when
   `n` > 0 decisions link to the task (any kind), else the first blocked role's `state`; waiting,
-  `wait` if given, else none; running, none (`wait` if given). The task section's header counts the
-  states: `<r> çalışıyor · <b> takıldı · <w> bekliyor`; `takıldı` and `bekliyor` are left out at zero,
-  `çalışıyor` is always shown.
+  `wait` if given, else none; running, none (`wait` if given). The pane groups the tasks under `Çalışan`, `Bekleyen`
+  (blocked first) and `Biten` (folded to one row); a group without a task is not drawn. A task that has just become done stays in its place
+  for 5 s as `✓ Bitti`, then moves under `Biten`.
   On the terminal, while the pane is not drawn, a band above the prompt shows this session's `◆ <n> karar · ◐ <n> çalışıyor · ✗ <n> takıldı` (zero counts left out; nothing to
   say, no band) with a `t: pane` key; during a Lead turn the engine's spinner line names the first running role, `QA · inceliyor` (` +<n>` for more), and the running role's `◐` in the pane turns once a second.
 - `rounds` (optional, the task's detail view): one entry per review round, oldest first; the pane keeps the last 10 and

@@ -253,7 +253,7 @@ dead-child steps are in `references/task-sessions.md` (read it before the first 
   owner and not proof. `git -C <checkout> rev-parse <branch>` must equal the SHA in the note; read the report and
   the verdict files in the evidence folder; GO per Flow 4 for that exact SHA. Then "Landing and release" as
   written (the owner's standing rule there is what allows a local merge of a branch another session made).
-  Stage `report`, and the task row goes with the Flow-5 report: that removes the card and the link. The child
+  Stage `report` and `done: true` with the Flow-5 report (not in a task session): the card folds under `Biten` and keeps the link. If the child still shows a running or blocked role or an open decision, the card stays in its group. The child
   session stays as it is; the report says how to close it (`claude stop <id8>` then `claude rm <id8>`, or archive
   the row); closing needs the owner's yes.
 - **Watch and dead children.** At each long-run check also look at every task session (`claude agents --json`
@@ -332,7 +332,8 @@ dead-child steps are in `references/task-sessions.md` (read it before the first 
    the owner gets a short status report then. A new product decision or an owner-only area still
    goes to the owner.
 5. **Report** — what changed, candidate SHA, gates, every verdict, finding dispositions, open
-   items, coverage limits, the pilot row (`references/pilot.md`). Update the status record.
+   items, coverage limits, the pilot row (`references/pilot.md`). Update the status record: set the task's `done: true`
+   in the status file, and every role of it `done` (not in a task session: a task session never writes `done`).
 
 Every invocation has a task handle, the expected engine and a complete role-appropriate report (a
 Codex run also its unique output files, `references/gpt-roles.md`); one that returns without it

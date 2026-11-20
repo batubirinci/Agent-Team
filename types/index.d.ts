@@ -10,8 +10,8 @@ export type Round = { n: number; verdict: string; candidate?: string; note?: str
 
 export type Evidence = { label: string; path: string }
 
-// Derived by the parser, never read from the file: blocked > running > waiting.
-export type TaskState = 'running' | 'blocked' | 'waiting'
+// Derived by the parser, never read from the file: blocked > running > done > waiting.
+export type TaskState = 'running' | 'blocked' | 'done' | 'waiting'
 
 export type Task = {
   id: string
@@ -25,6 +25,8 @@ export type Task = {
   blocking?: number
   followup?: number
   wait?: string
+  // The effective `done: true` of the task's own row: the boolean true with no open decision linked to it. Absent = not done (an older stored value has none).
+  done?: true
   state: TaskState
   reason?: string
   roles: Role[]
@@ -113,6 +115,9 @@ export type Reopen = { since: number; line: boolean }
 export type BandCounts = { stale: boolean; decisions: number; running: number; blocked: number; others: number }
 export type BandSeg = { kind: 'stale' | 'karar' | 'running' | 'blocked' | 'others'; text: string }
 
+// A task that has just finished in this session's own file (its state before, `from`, and when, ms): it stays in the section it left for 5 s.
+export type Fresh = { id: string; at: number; from: Exclude<TaskState, 'done'> }
+
 // One entry of $.fs.list.
 export type DirEntry = { name: string; kind: string; size: number; mtimeMs: number; isLink: boolean }
 
@@ -128,6 +133,8 @@ declare module 'claude-code' {
       links: Shaped<Link[]>
       bind: Shaped<BindView | null>
       othersOpen: Shaped<boolean>
+      fresh: Shaped<Fresh[]>
+      doneOpen: Shaped<boolean>
       karar: Shaped<string[]>
       outbox: Shaped<Outbox>
       reopen: Shaped<Reopen>

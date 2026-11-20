@@ -2,8 +2,8 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
 import { forward } from '../hooks/register'
-import { ago, bandSegments, childOf, decisionTask, detailScroll, isInside, isPush, isStuck, joined, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseStatus, pickedAt, spinnerWord, stamp, summary, withKarar } from '../hooks/status'
-import { CLAY, MUTED, STUCK, TRACK, dotSvg, meterSvg, stagesSvg } from '../hooks/svg'
+import { ago, bandSegments, childOf, countStates, decisionTask, detailScroll, finishes, isInside, isPush, isStuck, joined, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseStatus, pickedAt, sections, spinnerWord, stamp, summary, withKarar } from '../hooks/status'
+import { CLAY, MUTED, OK, STUCK, TRACK, doneStagesSvg, dotSvg, meterSvg, stagesSvg } from '../hooks/svg'
 
 const fills = (svg: string) => [...svg.matchAll(/<rect [^>]*fill="([^"]+)"/g)].map(m => m[1])
 const widths = (svg: string) => [...svg.matchAll(/<rect [^>]*width="([\d.]+)"/g)].map(m => Number(m[1]))
@@ -1204,10 +1204,8 @@ test('terminal pane: header, bars, decisions, tasks, roles, candidate and hint l
 
   // Tasks (terminal-boxes design, Lead's brief; source for every string below): "GÖREVLER · <n> çalışıyor" left and a dim "<n> görev" right
   // on one row; each task is its own round Box in subtle (key t-<id>); the title row holds only the plain Button, bold, cut at the end.
-  const head = nodesOf(root).find(n => n.type === 'Box' && textOf(n) === 'GÖREVLER · 0 çalışıyor · 1 takıldı · 1 bekliyor2 görev')
-  expect(head?.props).toMatchObject({ flexDirection: 'row', justifyContent: 'space-between' })
-  expect(textNode(head as Node, /^GÖREVLER · 0 çalışıyor · 1 takıldı · 1 bekliyor$/)?.props?.weight).toBe('bold')
-  expect(textNode(head as Node, /^2 görev$/)?.props?.dimColor).toBe(true)
+  // pane-groups (A4): the header line is now the section header "BEKLEYEN · 2 · 1 takıldı" (no running task, so no ÇALIŞAN line).
+  expect(textNode(root, /^BEKLEYEN · 2 · 1 takıldı$/)?.props?.weight).toBe('bold')
   const box = nodesOf(root).find(n => n.props?.key === 't-t1') as Node
   // t1 has a blocked role, so its box is the blocked one (task-state design: border in error).
   expect(box.props).toMatchObject({ borderStyle: 'round', borderColor: 'error' })
@@ -1600,9 +1598,10 @@ test('terminal: header counts, a state line per task, blocked box and decision i
   // state line "◐ çalışıyor" claude bold / "✗ TAKILDI" error bold / "⏸ bekliyor" warning bold then " · <reason>" dim (error when blocked).
   await boot($, on, STATES)
   const root = await drawnOf(await $.ui.mount({ ...PANE, surface: 'terminal' }))
-  const head = nodesOf(root).find(n => n.props?.justifyContent === 'space-between' && textOf(n).startsWith('GÖREVLER')) as Node
-  expect(textOf(head)).toBe('GÖREVLER · 1 çalışıyor · 1 takıldı · 1 bekliyor3 görev')
-  const title = textNode(head, /^GÖREVLER/) as Node
+  // pane-groups (A4): section headers replace the one header line.
+  expect(textOf(textNode(root, /^ÇALIŞAN/) as Node)).toBe('ÇALIŞAN · 1')
+  const title = textNode(root, /^BEKLEYEN/) as Node
+  expect(textOf(title)).toBe('BEKLEYEN · 2 · 1 takıldı')
   expect(title.props?.weight).toBe('bold')
   expect(textNode(title, /^ · 1 takıldı$/)?.props).toMatchObject({ color: 'error', weight: 'bold' })
 
@@ -1642,20 +1641,22 @@ test('terminal: a header leaves out takıldı and bekliyor at zero, and keeps "�
   // Source: brief: "leaving out zero parts except çalışıyor". An old file with only running tasks reads as in 0.3.0.
   await boot($, on, JSON.stringify({ v: 1, tasks: [task({ roles: [run] }), task({ id: 't2', roles: [run] })] }))
   const root = await drawnOf(await $.ui.mount({ ...PANE, surface: 'terminal' }))
-  expect(textOf(nodesOf(root).find(n => n.props?.justifyContent === 'space-between' && textOf(n).startsWith('GÖREVLER')) as Node)).toBe('GÖREVLER · 2 çalışıyor2 görev')
+  expect(textOf(textNode(root, /^ÇALIŞAN/) as Node)).toBe('ÇALIŞAN · 2') // pane-groups (A4)
 })
 
 test('terminal: a header with only waiting tasks reads "0 çalışıyor · 1 bekliyor"', async ($, on) => {
   await boot($, on, JSON.stringify({ v: 1, tasks: [task({})] }))
   const root = await drawnOf(await $.ui.mount({ ...PANE, surface: 'terminal' }))
-  expect(textOf(nodesOf(root).find(n => n.props?.justifyContent === 'space-between' && textOf(n).startsWith('GÖREVLER')) as Node)).toBe('GÖREVLER · 0 çalışıyor · 1 bekliyor1 görev')
+  expect(textOf(textNode(root, /^BEKLEYEN/) as Node)).toBe('BEKLEYEN · 1') // pane-groups (A4)
 })
 
 test('desktop: header counts, a state chip and reason caption per task, blocked card and decision in red, red current stage part', async ($, on) => {
   // Source: brief "Task, desktop" and "Decisions": chip colors, caption, card border rgba(224,108,108,0.45), kind text #F2A3A3.
   await boot($, on, STATES)
   const root = await drawnOf(await $.ui.mount({ ...PANE, surface: 'desktop' }))
-  expect(textNode(root, /çalışıyor · /) && textOf(textNode(root, /çalışıyor · /) as Node)).toBe('1 çalışıyor · 1 takıldı · 1 bekliyor · 3 görev')
+  // pane-groups (A4): section headers replace the one header line.
+  expect(textNode(root, /^1 görev$/)).toBeDefined() // Çalışan
+  expect(textNode(root, /^2 görev · 1 takıldı$/)).toBeDefined() // Bekleyen
 
   const chips = [
     ['tb', '✗ Takıldı', 'rgba(224,108,108,0.22)', '#F2A3A3'],
@@ -1736,7 +1737,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
 test('desktop: the header leaves out takıldı and bekliyor at zero', async ($, on) => {
   await boot($, on, LOOSE)
   const root = await drawnOf(await $.ui.mount({ ...PANE, surface: 'desktop' }))
-  expect(textOf(textNode(root, /çalışıyor/) as Node)).toBe('2 çalışıyor · 2 görev')
+  expect(textNode(root, /^Çalışan$/)).toBeDefined() // pane-groups (A4)
+  expect(textNode(root, /^2 görev$/)).toBeDefined()
 })
 
 test('desktop: the blocked reason caption is #F2A3A3, any other reason is dim', async ($, on) => {
@@ -3581,7 +3583,8 @@ test('R1 (desktop): a reopened session shows the day in the header, the banner w
   const ui = await r.mount()
   expect(await ui.find({ type: 'Text', text: /^Lead · Opus 5\.5 · 14 Kas 22:10'de güncellendi$/ })).toBeDefined()
   expect((await bannerOf(ui))?.text).toMatch(BANNER)
-  expect(await ui.find({ type: 'Text', text: /^0 çalışıyor · 1 bekliyor · 1 görev$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Bekleyen$/ })).toBeDefined() // pane-groups (A4): a stopped task is waiting
+  expect(await ui.find({ type: 'Text', text: /^1 görev$/ })).toBeDefined()
   const dots = (await ui.findAll({ type: 'Svg' })).filter(s => s.props.width === 8).map(s => s.props.alt)
   expect(dots).toEqual(['boşta', 'bitti'])
   expect(await ui.find({ type: 'Text', text: /^durmuş olabilir · inceliyor$/ })).toBeDefined()
@@ -3597,7 +3600,7 @@ test('R1 (terminal): the same banner, the day in the header, 0 running in the co
   const root = await drawnOf(ui)
   expect(textNode(root, /14 Kas 22:10/)).toBeDefined()
   expect(textNode(root, BANNER)).toBeDefined()
-  expect(textNode(root, /^GÖREVLER · 0 çalışıyor · 1 bekliyor$/)).toBeDefined()
+  expect(textNode(root, /^BEKLEYEN · 1$/)).toBeDefined() // pane-groups (A4)
   expect(hotkeys(root)['reopen-ask']).toBe('r')
   await ui.press({ key: 'reopen-ask' })
   expect(r.log.sent).toEqual(['Nerede kaldık?'])
@@ -3610,7 +3613,8 @@ test('R2: once the file is rewritten (mtime after the start) there is no banner 
   const ui = await r.mount()
   expect(await bannerOf(ui)).toBeUndefined()
   expect(await ui.find({ key: 'reopen-ask' })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /^1 çalışıyor · 1 görev$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Çalışan$/ })).toBeDefined() // pane-groups (A4)
+  expect(await ui.find({ type: 'Text', text: /^1 görev$/ })).toBeDefined()
   expect((await ui.findAll({ type: 'Svg' })).filter(s => s.props.width === 8).map(s => s.props.alt)).toEqual(['çalışıyor', 'bitti'])
   // the day stays in the header: it is still the 14th's file
   expect(await ui.find({ type: 'Text', text: /14 Kas 22:10/ })).toBeDefined()
@@ -3666,7 +3670,7 @@ test('R4: after /clear (no session.start) there is no banner and no line, though
   const ui = await r.mount()
   expect(await ui.find({ type: 'Text', text: /Lead · Opus 5\.5/ })).toBeDefined() // the file is read again on the same path
   expect(await bannerOf(ui)).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /^1 çalışıyor · 1 görev$/ })).toBeDefined() // not stopped: the owner cleared, nothing was reopened
+  expect(await ui.find({ type: 'Text', text: /^Çalışan$/ })).toBeDefined() // not stopped: the owner cleared, nothing was reopened (pane-groups A4)
   await ui.unmount()
   expect(await r.prompt()).toEqual([])
 })
@@ -3701,8 +3705,9 @@ test('R7: a task that carries `session` (a live task session) is never drawn as 
   const r = await rBoot($, on, { status: reopenStatus([R_TASK, live]) })
   const ui = await r.mount()
   expect((await bannerOf(ui))?.text).toMatch(BANNER) // still 1 stopped role, the t1 one
-  expect(await ui.find({ type: 'Text', text: /^1 çalışıyor · 1 bekliyor · 2 görev$/ })).toBeDefined()
-  expect((await ui.findAll({ type: 'Svg' })).filter(s => s.props.width === 8).map(s => s.props.alt)).toEqual(['boşta', 'bitti', 'çalışıyor', 'bitti'])
+  expect(await ui.find({ type: 'Text', text: /^Çalışan$/ })).toBeDefined() // pane-groups (A4)
+  expect(await ui.find({ type: 'Text', text: /^Bekleyen$/ })).toBeDefined()
+  expect((await ui.findAll({ type: 'Svg' })).filter(s => s.props.width === 8).map(s => s.props.alt)).toEqual(['çalışıyor', 'bitti', 'boşta', 'bitti']) // pane-groups: Çalışan (the live session task) is drawn before Bekleyen, no longer in file order
   await ui.unmount()
   const line = (await r.prompt())[0] ?? ''
   expect(line).toContain('Seçim kutusu taşması · QA · GPT-6 Astra')
@@ -5317,7 +5322,7 @@ const cBoot = async (
   const files = o.files ?? defaultFiles4()
   // Revision 4: `hold` keeps a store.get of that key waiting until its promise settles (a follow in flight).
   const gate = { deliver: o.deliver ?? (() => true), storeFails: false, listFails: o.listFails ?? false, ownGone: false, now: C4_NOW, sid, isFilled: o.isFilled ?? true, turns: 0, deny: false, hold: undefined as { key: string; wait: Promise<void> } | undefined }
-  const log = { sends: [] as { to: string; text: string }[], reads: [] as string[], fills: [] as string[], submits: [] as { text: string; context?: readonly string[] }[], sets: [] as string[], writes: [] as string[], received: [] as string[] }
+  const log = { sends: [] as { to: string; text: string }[], reads: [] as string[], fills: [] as string[], submits: [] as { text: string; context?: readonly string[] }[], sets: [] as string[], writes: [] as string[], received: [] as string[], nowAt: [] as number[] }
   // Revision 3: the default store holds the binding of the fixture (the parent's `kids.hard`, the child's `bound`).
   const store = new Map<string, unknown>(Object.entries(o.store ?? KID_REC))
   on('store.get', (_, e) => {
@@ -5364,7 +5369,7 @@ const cBoot = async (
   })
   // Manual clock: `now` never moves; every clock.every period is held until fire() releases it (one poll = fire(500)).
   const held: { ms: number; fire: () => void }[] = []
-  on('clock.now', () => ({ value: gate.now }))
+  on('clock.now', () => (log.nowAt.push(log.sets.length), { value: gate.now }))
   on('clock.every', (_, e) => new Promise(go => held.push({ ms: e.ms, fire: () => go({ value: undefined }) })) as never)
   on('clock.after', () => new Promise(() => undefined) as never)
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -5457,7 +5462,7 @@ const cBoot = async (
   }
   return { files, disk, store, log, gate, settle, fire, poll, setOwn, pane, band, ownName, mineAdd, record, clear }
 }
-const ATOM_KEYS4 = ['mode', 'status', 'detail', 'others', 'children', 'forwards', 'links', 'bind', 'othersOpen', 'karar', 'outbox', 'reopen', 'placed', 'tick']
+const ATOM_KEYS4 = ['mode', 'status', 'detail', 'others', 'children', 'forwards', 'links', 'bind', 'othersOpen', 'karar', 'outbox', 'reopen', 'placed', 'tick', 'fresh', 'doneOpen']
 const texts4 = (root: Node) => nodesOf(root).filter(n => n.type === 'Text').map(textOf)
 const byKey = (root: Node, key: string) => {
   const n = nodesOf(root).find(x => x.props?.key === key)
@@ -5505,8 +5510,7 @@ test('T4 C2 (terminal): the card of the linked task shows the child stage, round
   const t = texts4(byKey(root, 't-hard'))
   for (const want of ['Sağlamlık', 'Review · 3/5', 'Tur 2 · aday 3f9a1c2', '1 blocking', 'QA · Opus', 'Developer · Sonnet 5.5', '◇ ayrı oturum · hard · bbbbbbbb · 11:55']) expect(t).toContain(want)
   expect(texts4(root)).not.toContain('Görev oturumu · hard') // the parent's own role row is replaced by the child's roles
-  expect(texts4(root)).toContain('GÖREVLER · 2 çalışıyor')
-  expect(texts4(root)).toContain('2 görev')
+  expect(texts4(root)).toContain('ÇALIŞAN · 2') // pane-groups (A4)
 })
 
 test('T4 C2 (desktop): the same card, the caption "ayrı oturum · hard · bbbbbbbb · son yazım 11:55", and the header counts', FOLDERS, async ($, on) => {
@@ -5515,7 +5519,8 @@ test('T4 C2 (desktop): the same card, the caption "ayrı oturum · hard · bbbbb
   const t = texts4(byKey(root, 't-hard'))
   for (const want of ['Sağlamlık', 'Tur 2', 'Review · 3/5', 'aday 3f9a1c2', '1 blocking', 'QA · Opus', 'Developer · Sonnet 5.5', 'ayrı oturum · hard · bbbbbbbb · son yazım 11:55']) expect(t).toContain(want)
   expect(texts4(root)).not.toContain('Görev oturumu · hard')
-  expect(texts4(root)).toContain('2 çalışıyor · 2 görev')
+  expect(texts4(root)).toContain('Çalışan') // pane-groups (A4)
+  expect(texts4(root)).toContain('2 görev')
 })
 
 test('T4 C2 (detail): the detail summary of a linked task carries the session row too', FOLDERS, async ($, on) => {
@@ -7436,4 +7441,624 @@ test('T4 TR22 (own old record): a later marker start replaces a code that only t
   await $.tool.call({ tool: 'Bash', command: `cd /x && claude --bg -n m "[Agent Team görev oturumu] task=m kod=${code}"`, tool_use_id: 'u1' } as never)
   await k.settle()
   expect(k.record()?.kids?.m?.code).toBe(code)
+})
+
+// ====================================================================================================================================================
+// pane-groups: finished tasks (`done: true`), the sections Çalışan / Bekleyen / Biten, the fold, and the completion motion.
+// Sources of every expected value below (nothing is read back from the implementation):
+//   OWNER  = tasks/pane-groups/owner-decisions.md (the four choices); SPEC = spec.md (criteria 27-28, amendments A1-A16);
+//   ANALYST = analyst-report.md section 3 (parse and join rules), section 4 (design contract, the animation numbers), section 5 (criteria 1-26).
+// ====================================================================================================================================================
+type K4 = Awaited<ReturnType<typeof cBoot>>
+const PGD = (id: string, extra: Record<string, unknown> = {}) => ({ id, title: `Görev ${id}`, stage: 'build', ...extra })
+const R_RUN = [tRole('Developer · Sonnet 5.5', 'yazıyor', 'running')]
+const R_DONE = [tRole('Developer · Sonnet 5.5', 'teslim etti', 'done')]
+const pgFile = (tasks: unknown[], decisions: unknown[] = [], updatedAt = '2026-11-20T11:59:00') => JSON.stringify({ v: 1, updatedAt, lead: 'Opus 5.5', decisions, tasks })
+// ANALYST section 5, fixture F (file order).
+const F_TASKS = [
+  PGD('A', { done: true, stage: 'report', wait: 'A notu', roles: R_DONE }),
+  PGD('B', { done: true, roles: R_RUN }),
+  PGD('C', { done: true, roles: [tRole('QA', 'başlatılamadı', 'blocked')] }),
+  PGD('D', { done: true }),
+  PGD('E', { done: true }),
+  PGD('F', { done: 'true' }),
+  PGD('G', { done: false }),
+]
+const F_DEC = [
+  { id: 'dp', kind: 'Push onayı', task: 'D', text: "main'e itelim mi?", options: ['Onayla', 'Reddet'] },
+  { id: 'de', kind: 'Takıldı · Developer', task: 'E', text: 'Ne yapalım?', options: ['Sürdür'] },
+]
+const F = pgFile(F_TASKS, F_DEC)
+const pgBoot = ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], own: string, o: Parameters<typeof cBoot>[2] = {}) => cBoot($, on, { surface: 'desktop', own, files: {}, mine: null, ...o })
+
+// A file with one finished task X, the task A that finishes, and a running Y.
+const A_RUN = { roles: R_RUN }
+const A_FIN = { done: true, stage: 'report', wait: 'A notu', roles: R_DONE }
+const base = (a: Record<string, unknown>, updatedAt?: string) => pgFile([PGD('X', { done: true, stage: 'report', roles: R_DONE }), PGD('A', a), PGD('Y', { roles: R_RUN })], [], updatedAt)
+
+const HEADS = /^(Çalışan|Bekleyen|Biten)$|^(ÇALIŞAN|BEKLEYEN|✓ BİTEN) · /
+const headOf = (s: string) => s.replace('✓ ', '').split(' ')[0]?.toLocaleLowerCase('tr') ?? ''
+// The drawn task cards and Biten rows in order, each as "<section>:<id>" (both surfaces).
+const layout = (root: Node) => {
+  let at = ''
+  const out: string[] = []
+  for (const n of nodesOf(root)) {
+    const key = String(n.props?.key ?? '')
+    if (n.type === 'Text' && HEADS.test(textOf(n))) at = headOf(textOf(n))
+    else if (/^t-[A-Za-z0-9]+$/.test(key) || (at === 'biten' && /^detail-[A-Za-z0-9]+$/.test(key) && !out.includes(`biten:${key.slice(7)}`))) out.push(`${at}:${key.replace(/^(t|detail)-/, '')}`)
+  }
+  return out
+}
+const setsOf = (k: K4) => {
+  const c: Record<string, number> = {}
+  for (const s of k.log.sets) c[s] = (c[s] ?? 0) + 1
+  return c
+}
+const since = (a: Record<string, number>, b: Record<string, number>) => Object.fromEntries(Object.entries(b).map(([key, v]) => [key, v - (a[key] ?? 0)] as const).filter(([, v]) => v !== 0))
+const DONE_ALT = 'Bitti, 5 aşamanın 5.'
+const doneSvgs = (root: Node) => nodesOf(root).filter(n => n.type === 'Svg' && n.props?.alt === DONE_ALT).map(n => String(n.props?.source))
+const chipOf = (root: Node, id: string) => texts4(byKey(root, `chip-state-${id}`))[0]
+const frozen = (k: K4, ms: number) => {
+  k.gate.now = C4_NOW + ms
+}
+
+// ---- pure: parse, count, joined, finishes, sections, the Svg (ANALYST criteria 1-8, A3, A7) ----
+test('pane-groups C1 (parse): the fixture F reads blocked > running > done > waiting; done is only the boolean true and never with a linked decision', async () => {
+  const s = parseStatus(F)
+  expect(Object.fromEntries(s.tasks.map(t => [t.id, t.state]))).toEqual({ A: 'done', B: 'running', C: 'blocked', D: 'waiting', E: 'blocked', F: 'waiting', G: 'waiting' })
+  // The effective flag (Task.done): true for the boolean true with no linked decision, absent for everything else.
+  expect(Object.fromEntries(s.tasks.map(t => [t.id, t.done]))).toEqual({ A: true, B: true, C: true, D: undefined, E: undefined, F: undefined, G: undefined })
+  expect(s.tasks[0]?.reason).toBe('A notu') // a done task's reason is its `wait`
+  for (const v of [1, 'yes', 0, null, [], {}]) expect(parseStatus(pgFile([PGD('A', { done: v })])).tasks[0]).toMatchObject({ state: 'waiting' })
+  expect(parseStatus(pgFile([{ title: 'Kimliksiz', stage: 'report', done: true }])).tasks[0]).toMatchObject({ state: 'done', generatedId: true }) // a task with no id can be done
+})
+
+test('pane-groups C2 (countStates): F counts running 1, blocked 2, waiting 3, done 1', async () => {
+  expect(countStates(parseStatus(F).tasks)).toEqual({ running: 1, blocked: 2, waiting: 3, done: 1 })
+})
+
+test('pane-groups C3 (no done): a file without `done` parses with no done key and no done state', async () => {
+  const s = parseStatus(STATUS)
+  expect(s.tasks.every(t => !('done' in t) && t.state !== 'done')).toBe(true)
+  expect(parseStatus(pgFile([PGD('A', { roles: R_DONE }), PGD('B')])).tasks.map(t => [t.state, 'done' in t])).toEqual([['waiting', false], ['waiting', false]])
+})
+
+const jOwn = (extra: Record<string, unknown>) => parseStatus(own4({ session: false, decisions: [], tasks: [{ id: 'hard', title: 'Sağlamlık', stage: 'report', wait: 'Ana not', ...extra }, { id: 't2', title: 'Başka iş', stage: 'spec' }] }))
+const jKid = (o: { roles?: unknown[]; decisions?: unknown[]; done?: boolean } = {}) =>
+  kidOf4(kid4({ decisions: o.decisions ?? [], tasks: [{ id: 'hard', title: 'Görev', stage: 'review', wait: 'Çocuk notu', ...(o.done && { done: true }), roles: o.roles ?? R_DONE }] }))
+const J = (own: ReturnType<typeof jOwn>, kid: ReturnType<typeof kidOf4>) => joined(own, [kid])?.tasks[0]
+
+test('pane-groups C4 + A3 + A7 (joined truth table): the parent flag finishes a quiet child; a running or blocked child, or a child decision, keeps the task out; a child never finishes a task', async () => {
+  const flagged = jOwn({ done: true })
+  // Parent flag + a child card that waits + no child decision -> done, and the reason is the parent's `wait` (not the child's).
+  expect(J(flagged, jKid())).toMatchObject({ state: 'done', done: true, reason: 'Ana not', session: { name: 'hard' } })
+  expect(J(flagged, jKid({ roles: KID_ROLES }))).toMatchObject({ state: 'running', done: true })
+  expect(J(flagged, jKid({ roles: [tRole('QA', 'takıldı', 'blocked')] }))).toMatchObject({ state: 'blocked', done: true })
+  // One open child decision keeps it waiting, with T4's usual reason (the child card's).
+  expect(J(flagged, jKid({ decisions: [K1] }))).toMatchObject({ state: 'waiting', reason: 'Çocuk notu' })
+  // No parent flag + the child's own card is done:true -> waiting; the child's done is never copied.
+  const unflagged = J(jOwn({}), jKid({ done: true }))
+  expect(unflagged).toMatchObject({ state: 'waiting' })
+  expect(unflagged?.done).toBeUndefined()
+  // A3: the child has no card (c present, k undefined): the parent's own state, except done with a child decision count other than 0 -> waiting.
+  const noCard = (count: number) => ({ ...jKid(), card: undefined, decisions: [], count })
+  expect(J(flagged, noCard(0))).toMatchObject({ state: 'done', reason: 'Ana not' })
+  expect(J(flagged, noCard(1))).toMatchObject({ state: 'waiting' })
+  expect(J(jOwn({}), noCard(1))).toMatchObject({ state: 'waiting' }) // a waiting parent stays waiting
+  expect(J(jOwn({ roles: R_RUN }), noCard(0))).toMatchObject({ state: 'running' })
+  // A parent with `session` and no child file at all: unchanged, done stays done.
+  expect(joined(jOwn({ done: true, session: { name: 'hard' } }), [])?.tasks[0]).toMatchObject({ state: 'done' })
+})
+
+test('pane-groups C5 (finishes): prev null gives none; not done -> done gives { id, from }; done -> done, a new task and a made-up id give nothing', async () => {
+  const at = (...tasks: unknown[]) => parseStatus(pgFile(tasks))
+  const was = at(PGD('A', { roles: R_RUN }), PGD('B', { wait: 'x' }), PGD('C', { roles: [tRole('QA', 'x', 'blocked')] }), PGD('D', { done: true, roles: R_DONE }), { title: 'Kimliksiz', stage: 'build' })
+  const now = at(PGD('A', A_FIN), PGD('B', { done: true }), PGD('C', { done: true, roles: R_DONE }), PGD('D', { done: true, roles: R_DONE }), PGD('N', { done: true }), { title: 'Kimliksiz', stage: 'build', done: true })
+  expect(finishes(null, now)).toEqual([])
+  expect(finishes(was, now)).toEqual([{ id: 'A', from: 'running' }, { id: 'B', from: 'waiting' }, { id: 'C', from: 'blocked' }])
+})
+
+test('pane-groups C6 (sections): F by state with blocked first in Bekleyen; a live fresh entry keeps a done task in the section it left; NaN or 5000 ms ends it', async () => {
+  const ids = (s: ReturnType<typeof sections>) => [s.running, s.waiting, s.done].map(l => l.map(t => t.id))
+  const tasks = parseStatus(F).tasks
+  expect(ids(sections(tasks, [], 0))).toEqual([['B'], ['C', 'E', 'D', 'F', 'G'], ['A']])
+  const at = 1_000_000
+  expect(ids(sections(tasks, [{ id: 'A', at, from: 'running' }], at))).toEqual([['A', 'B'], ['C', 'E', 'D', 'F', 'G'], []])
+  expect(ids(sections(tasks, [{ id: 'A', at, from: 'blocked' }], at + 4999))).toEqual([['B'], ['A', 'C', 'E', 'D', 'F', 'G'], []]) // blocked counts as waiting, and sits among the blocked
+  expect(ids(sections(tasks, [{ id: 'A', at, from: 'waiting' }], at + 100))).toEqual([['B'], ['C', 'E', 'A', 'D', 'F', 'G'], []]) // after the blocked, at its file-order place
+  for (const now of [Number.NaN, at + 5000, at + 9000, at - 1]) expect(ids(sections(tasks, [{ id: 'A', at, from: 'running' }], now))).toEqual([['B'], ['C', 'E', 'D', 'F', 'G'], ['A']])
+  expect(ids(sections(tasks, [{ id: 'B', at, from: 'waiting' }], at))).toEqual([['B'], ['C', 'E', 'D', 'F', 'G'], ['A']]) // an entry applies to done tasks only
+})
+
+test('pane-groups C7 (doneStagesSvg): five green segments of the stage line, no style, no animation', async () => {
+  const s = doneStagesSvg()
+  expect(s).toMatch(/^<svg [^>]*width="320" height="4"/)
+  expect(fills(s)).toEqual([OK, OK, OK, OK, OK]) // OK is the approved #4E9A47
+  expect(widths(s)).toEqual([60.8, 60.8, 60.8, 60.8, 60.8])
+  expect([...s.matchAll(/<rect x="([\d.]+)"/g)].map(m => Number(m[1]))).toEqual([0, 64.8, 129.6, 194.4, 259.2]) // (320 - 4 * 4) / 5 = 60.8, then + 4 each
+  expect(OK).toBe('#4E9A47')
+  expect(s).not.toContain('<style')
+  expect(s).not.toMatch(/animation|@keyframes/)
+})
+
+test('pane-groups C8 (doneStagesSvg(elapsed)): one style behind no-preference, once, fill both, delays i*150 - elapsed; 1200 and NaN are the static source', async () => {
+  const s = doneStagesSvg(500)
+  expect(s.match(/<style>/g)?.length).toBe(1)
+  expect(s.match(/@media \(prefers-reduced-motion: no-preference\)/g)?.length).toBe(1)
+  expect(s).not.toContain('<animate')
+  expect(s).toMatch(/@keyframes/)
+  const rules = [...s.matchAll(/animation:\s*([^;}]+)/g)].map(m => m[1] ?? '')
+  expect(rules.length).toBe(5)
+  for (const r of rules) {
+    expect(r).toMatch(/\b1 both\b/) // iteration count 1, fill-mode both
+    expect(r).toMatch(/300ms/)
+  }
+  expect(rules.map(r => Number(r.match(/(-?\d+(?:\.\d+)?)ms(?! ease)/g)?.at(-1)?.replace('ms', '')))).toEqual([-500, -350, -200, -50, 100])
+  expect(stripStyle(s)).toBe(doneStagesSvg())
+  expect(doneStagesSvg(1200)).toBe(doneStagesSvg())
+  expect(doneStagesSvg(Number.NaN)).toBe(doneStagesSvg())
+  expect(doneStagesSvg(-1)).toBe(doneStagesSvg())
+  // A negative delay is what makes a redraw resume instead of replaying: at 1199 ms the last segment's delay is 4 * 150 - 1199 = -599.
+  expect(doneStagesSvg(1199)).toMatch(/-599ms/)
+})
+
+// ---- desktop: sections, fold, detail (ANALYST 9-11, A11) ----
+test('pane-groups C9 (desktop): F draws Çalışan 1 görev, Bekleyen 5 görev · 2 takıldı, Biten 1 görev, in that order, and no Görevler; no running task, no Çalışan', FOLDERS, async ($, on) => {
+  const k = await pgBoot($, on, F)
+  const root = await drawnOf(await k.pane('desktop'))
+  const t = texts4(root)
+  const at = (s: string) => t.indexOf(s)
+  expect(at('Çalışan')).toBeGreaterThanOrEqual(0)
+  expect(at('Bekleyen')).toBeGreaterThan(at('Çalışan'))
+  expect(at('Biten')).toBeGreaterThan(at('Bekleyen'))
+  expect([t[at('Çalışan') + 1], t[at('Bekleyen') + 1], t[at('Biten') + 1]]).toEqual(['1 görev', '5 görev · 2 takıldı', '1 görev'])
+  expect(t).not.toContain('Görevler')
+  expect(t.some(x => /çalışıyor · /.test(x))).toBe(false) // the old count line is gone
+  expect(layout(root)).toEqual(['çalışan:B', 'bekleyen:C', 'bekleyen:E', 'bekleyen:D', 'bekleyen:F', 'bekleyen:G']) // Biten is folded
+})
+
+test('pane-groups C9 (desktop, no running task): a file with no running task has no Çalışan text', FOLDERS, async ($, on) => {
+  const k = await pgBoot($, on, pgFile([PGD('W', { wait: 'x' })]))
+  const t = texts4(await drawnOf(await k.pane('desktop')))
+  expect(t).not.toContain('Çalışan')
+  expect(t).toContain('Bekleyen')
+})
+
+test('pane-groups C10 + C11 + A10 + A11 (desktop fold): Göster opens one row per task; the toggle makes no other call first; Gizle folds; the row opens the detail with the green chip', FOLDERS, async ($, on) => {
+  const k = await pgBoot($, on, F)
+  const ui = await k.pane('desktop')
+  let root = await drawnOf(ui)
+  expect(nodesOf(root).some(n => n.props?.key === 't-A')).toBe(false)
+  expect(byKey(root, 'done-toggle').props?.label).toBe('Göster')
+  // A11: folded Biten is a plain CARD with a green ✓, `Biten`, `<n> görev` and the button; it has the pressable-card hover.
+  const card = nodesOf(root).filter(n => n.type === 'Box' && n.props?.borderStyle === 'round' && nodesOf(n).some(c => c.props?.key === 'done-toggle')).at(-1) as Node
+  expect(card.props).toMatchObject({ borderColor: 'rgba(128,128,128,0.28)', backgroundColor: 'rgba(128,128,128,0.10)' })
+  expect(hoverOf(card)).toBeDefined()
+  expect(textNode(card, /^✓$/)?.props?.color).toBe('success')
+  expect(texts4(card)).toEqual(expect.arrayContaining(['Biten', '1 görev']))
+  const snap = () => JSON.stringify([k.log.reads.length, k.log.writes.length, k.log.fills.length, k.log.submits.length, k.log.sends.length])
+  const before = snap()
+  const sets = k.log.sets.length
+  const clocks = k.log.nowAt.length
+  await ui.press({ key: 'done-toggle' })
+  expect(snap()).toBe(before) // A10: no fs, store, prompt or send call
+  expect(k.log.nowAt.slice(clocks).every(n => n > sets)).toBe(true) // A10: no clock call before the doneOpen write (each one saw it already)
+  expect(k.log.sets.slice(sets)).toEqual(['doneOpen']) // exactly one write
+  root = await drawnOf(ui) // and no poll ran: the tree shows the open group
+  expect(byKey(root, 'done-toggle').props?.label).toBe('Gizle')
+  const row = byKey(root, 't-A')
+  expect(row.props).toMatchObject({ flexDirection: 'row' })
+  expect(textNode(row, /^✓$/)?.props?.color).toBe('success')
+  expect(textNode(row, /^Görev A$/)?.props?.wrap).toBe('truncate-end')
+  expect(byKey(row, 'detail-A').props?.label).toBe('Ayrıntı ›')
+  expect(layout(root).filter(x => x.startsWith('biten'))).toEqual(['biten:A'])
+  await ui.press({ key: 'done-toggle' })
+  expect(byKey(await drawnOf(ui), 'done-toggle').props?.label).toBe('Göster')
+  // The detail of a finished task: chip `✓ Bitti` (A11: green tint, the green of svg.ts OK) and the `wait` text.
+  await ui.press({ key: 'done-toggle' })
+  await ui.press({ key: 'detail-A' })
+  root = await drawnOf(ui)
+  const chip = byKey(root, 'chip-state-A')
+  expect(chip.props?.backgroundColor).toBe('rgba(78,154,71,0.20)')
+  expect(textNode(chip, /^✓ Bitti$/)?.props?.color).toBe('#A8D5A2')
+  expect(texts4(root)).toContain('A notu')
+})
+
+// ---- desktop: the completion motion (ANALYST 12-18, A5, A6, A9) ----
+test('pane-groups C12 (no motion at opening): a file that already has done tasks draws no done card and writes no fresh, also after /clear, a reload, a resume and a rewrite that keeps done', FOLDERS, async ($, on) => {
+  const text = base(A_FIN)
+  const k = await pgBoot($, on, text)
+  const ui = await k.pane('desktop')
+  expect(doneSvgs(await drawnOf(ui))).toEqual([])
+  expect(setsOf(k).fresh).toBeUndefined()
+  k.clear('dddddddd-0000-4000-8000-000000000000') // /clear: a new id, every atom reset
+  await k.poll()
+  await k.setOwn(text)
+  expect(setsOf(k).fresh).toBeUndefined()
+  await $.session.start({ cwd: '/Users/x/Projeler/main', surface: 'desktop', isInteractive: true }) // a reload: the atoms are kept
+  await k.setOwn(base(A_FIN, '2026-11-20T11:59:30')) // a rewrite that leaves `done` as it was
+  expect(setsOf(k).fresh).toBeUndefined()
+  expect(doneSvgs(await drawnOf(ui))).toEqual([])
+  expect(layout(await drawnOf(ui))).toEqual(['çalışan:Y'])
+})
+
+test('pane-groups C12 (resume): a resumed start (store record, empty atoms) of a file with done tasks writes no fresh', FOLDERS, async ($, on) => {
+  const k = await pgBoot($, on, base(A_FIN), { store: { ...KID_REC, ...Object.fromEntries([sess4(C4_SID, 'main--aaaaaaaa.json', hourAt(11))]) } })
+  const ui = await k.pane('desktop')
+  await k.poll()
+  expect(setsOf(k).fresh).toBeUndefined()
+  expect(doneSvgs(await drawnOf(ui))).toEqual([])
+})
+
+test('pane-groups C13 + C14 (a finish): the card stays in its section as ✓ Bitti with the done Svg at elapsed 0; a redraw at 500 ms resumes at 500, from 1200 ms it is static', FOLDERS, async ($, on) => {
+  const k = await pgBoot($, on, base(A_RUN))
+  const ui = await k.pane('desktop')
+  expect(layout(await drawnOf(ui))).toEqual(['çalışan:A', 'çalışan:Y'])
+  await k.setOwn(base(A_FIN))
+  let root = await drawnOf(ui)
+  expect(layout(root)).toEqual(['çalışan:A', 'çalışan:Y']) // still in its former section
+  expect(chipOf(root, 'A')).toBe('✓ Bitti')
+  expect(svgOf(byKey(root, 't-A'), DONE_ALT)).toBe(doneStagesSvg(0))
+  const t = texts4(root)
+  expect(t[t.indexOf('Biten') + 1]).toBe('1 görev') // the count does not include it yet
+  // A card is the full card: its roles and reason stay.
+  expect(texts4(byKey(root, 't-A'))).toEqual(expect.arrayContaining(['Developer · Sonnet 5.5', 'A notu']))
+  frozen(k, 500)
+  await k.setOwn(base(A_FIN, '2026-11-20T11:59:40')) // the same content again: a redraw
+  root = await drawnOf(ui)
+  expect(svgOf(byKey(root, 't-A'), DONE_ALT)).toBe(doneStagesSvg(500))
+  frozen(k, 1200)
+  await k.setOwn(base(A_FIN, '2026-11-20T11:59:50'))
+  expect(svgOf(byKey(await drawnOf(ui), 't-A'), DONE_ALT)).toBe(doneStagesSvg())
+  expect(layout(await drawnOf(ui))).toEqual(['çalışan:A', 'çalışan:Y'])
+})
+
+test('pane-groups C15 (it closes by itself): at 5000 ms the card moves under Biten; the whole finish writes fresh 2, status 1, outbox 1 and then nothing for 10 s', FOLDERS, async ($, on) => {
+  const k = await pgBoot($, on, base(A_RUN))
+  const ui = await k.pane('desktop')
+  await ui.press({ key: 'done-toggle' }) // Biten open
+  const start = setsOf(k)
+  await k.setOwn(base(A_FIN))
+  expect(layout(await drawnOf(ui))).toEqual(['çalışan:A', 'çalışan:Y', 'biten:X'])
+  frozen(k, 4999)
+  await k.poll()
+  expect(layout(await drawnOf(ui)).slice(0, 1)).toEqual(['çalışan:A'])
+  frozen(k, 5000)
+  await k.poll()
+  const root = await drawnOf(ui)
+  expect(layout(root)).toEqual(['çalışan:Y', 'biten:X', 'biten:A']) // file order inside Biten, count +1
+  expect(texts4(root)[texts4(root).indexOf('Biten') + 1]).toBe('2 görev')
+  const end = setsOf(k)
+  expect(since(start, end)).toEqual({ fresh: 2, status: 1, outbox: 1 })
+  for (let i = 1; i <= 20; i++) {
+    frozen(k, 5000 + i * 500)
+    await k.poll()
+  }
+  expect(since(end, setsOf(k))).toEqual({}) // the following 10 s write nothing
+})
+
+test('pane-groups C16 (reopened inside 5 s): a normal card at once, no ✓ Bitti, no done Svg; a later finish plays again from 0', FOLDERS, async ($, on) => {
+  const k = await pgBoot($, on, base(A_RUN))
+  const ui = await k.pane('desktop')
+  await k.setOwn(base(A_FIN))
+  frozen(k, 2000)
+  await k.setOwn(base({ ...A_RUN, wait: 'A notu', stage: 'report' })) // `done` removed
+  let root = await drawnOf(ui)
+  expect(chipOf(root, 'A')).toBe('◐ Çalışıyor')
+  expect(doneSvgs(root)).toEqual([])
+  frozen(k, 3000)
+  await k.setOwn(base(A_FIN))
+  root = await drawnOf(ui)
+  expect(chipOf(root, 'A')).toBe('✓ Bitti')
+  expect(svgOf(byKey(root, 't-A'), DONE_ALT)).toBe(doneStagesSvg(0)) // the new entry replaced the old one: elapsed counts from the second finish
+})
+
+test('pane-groups C17 (D and E): a done flag with a linked Push onayı or Takıldı decision is never finished, never fresh, and the decision card is unchanged', FOLDERS, async ($, on) => {
+  const text = (flag: boolean) => pgFile([PGD('D', { ...(flag && { done: true }) }), PGD('E', { ...(flag && { done: true }) })], F_DEC)
+  const k = await pgBoot($, on, text(false))
+  const ui = await k.pane('desktop')
+  const was = JSON.stringify(byKey(await drawnOf(ui), 'd-dp'))
+  await k.setOwn(text(true))
+  const root = await drawnOf(ui)
+  expect(JSON.stringify(byKey(root, 'd-dp'))).toBe(was)
+  expect(layout(root)).toEqual(['bekleyen:E', 'bekleyen:D'])
+  expect(texts4(root)).not.toContain('Biten')
+  expect(setsOf(k).fresh).toBeUndefined()
+})
+
+const hardOwn = (flag: boolean) => own4({ decisions: [], tasks: [{ id: 'hard', title: 'Sağlamlık', stage: 'report', wait: 'Ana not', ...(flag && { done: true }), session: { name: 'hard' } }] })
+const hardKid = (o: { done?: boolean; decisions?: unknown[]; roles?: unknown[] } = {}) => kid4({ decisions: o.decisions ?? [], tasks: [{ id: 'hard', title: 'Görev', stage: 'review', ...(o.done && { done: true }), roles: o.roles ?? R_DONE }] })
+const joinCases: [string, boolean, string | undefined, string[]][] = [
+  ["a child card with done:true and no parent flag: waiting, never finished", false, hardKid({ done: true }), ['bekleyen:hard']],
+  ['the parent flag with a quiet child: under Biten', true, hardKid(), ['biten:hard']],
+  ['the parent flag with a running child: the child wins', true, undefined, ['çalışan:hard']],
+  ['the parent flag with an open child decision: Bekleyen, the decision card stays', true, kid4({ roles: R_DONE }), ['bekleyen:hard']],
+]
+for (const [name, flag, kid, want] of joinCases)
+  test(`pane-groups C18 (T4 join): ${name}`, FOLDERS, async ($, on) => {
+    const k = await cBoot($, on, { surface: 'desktop', own: hardOwn(flag), ...(kid && { files: { [C4_KID]: { text: kid, age: 5 * MIN4 } } }) })
+    const ui = await k.pane('desktop')
+    await ui.press({ key: 'done-toggle' }).catch(() => undefined) // Biten open, when there is one
+    const root = await drawnOf(ui)
+    expect(layout(root)).toEqual(want)
+    expect(setsOf(k).fresh).toBeUndefined() // present from the start: no motion
+    if (want[0] === 'bekleyen:hard' && flag) expect(byKey(root, 'kd-hard-k1').props?.borderStyle).toBe('round')
+  })
+
+test('pane-groups C18 (T4 join, no motion): a child file that changes under a flagged parent moves the card at once and never writes fresh', FOLDERS, async ($, on) => {
+  const own = own4({ decisions: [], tasks: [{ id: 'hard', title: 'Sağlamlık', stage: 'report', wait: 'Ana not', done: true, session: { name: 'hard' } }] })
+  const k = await cBoot($, on, { surface: 'desktop', own })
+  const ui = await k.pane('desktop')
+  expect(layout(await drawnOf(ui))).toEqual(['çalışan:hard'])
+  k.files[C4_KID] = { text: kid4({ decisions: [], tasks: [{ id: 'hard', title: 'Görev', stage: 'review', roles: R_DONE }] }), age: MIN4 }
+  await k.poll()
+  expect(layout(await drawnOf(ui))).toEqual([]) // straight under the folded Biten
+  expect(setsOf(k).fresh).toBeUndefined()
+})
+
+const CAP = '✓ bitti işaretli · oturum sürüyor'
+test('pane-groups C27 (caption, desktop): a flagged parent whose joined child keeps it live shows one dim row, in the card and the detail', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on, { surface: 'desktop', own: hardOwn(true), files: { [C4_KID]: { text: hardKid({ roles: KID_ROLES }), age: 5 * MIN4 } } })
+  const ui = await k.pane('desktop')
+  const root = await drawnOf(ui)
+  expect(texts4(byKey(root, 't-hard')).filter(x => x === CAP)).toEqual([CAP])
+  expect(textNode(byKey(root, 't-hard'), /^✓ bitti işaretli/)?.props).toMatchObject({ size: 'caption', dimColor: true, wrap: 'truncate-end' }) // spec A8/criterion 27: one row
+  await ui.press({ key: 'detail-hard' })
+  expect(texts4(await drawnOf(ui)).filter(x => x === CAP)).toEqual([CAP]) // the same helper feeds the detail
+})
+
+for (const [name, flag, kid] of [['under Biten (a quiet child)', true, hardKid()], ['without the flag', false, hardKid({ roles: KID_ROLES })]] as const)
+  test(`pane-groups C27 (caption, desktop): no row ${name}`, FOLDERS, async ($, on) => {
+    const k = await cBoot($, on, { surface: 'desktop', own: hardOwn(flag), files: { [C4_KID]: { text: kid, age: 5 * MIN4 } } })
+    const ui = await k.pane('desktop')
+    await ui.press({ key: 'done-toggle' }).catch(() => undefined)
+    expect(texts4(await drawnOf(ui))).not.toContain(CAP)
+  })
+
+test('pane-groups C27 (caption, terminal): one dim row, cut at the end, in the card and the detail', FOLDERS, async ($, on) => {
+  const own = own4({ decisions: [], tasks: [{ id: 'hard', title: 'Sağlamlık', stage: 'report', wait: 'Ana not', done: true, session: { name: 'hard' } }] })
+  const k = await cBoot($, on, { surface: 'terminal', own, files: { [C4_KID]: { text: kid4({ decisions: [] }), age: 5 * MIN4 } } })
+  const ui = await k.pane('terminal')
+  const row = textNode(byKey(await drawnOf(ui), 't-hard'), /^✓ bitti işaretli · oturum sürüyor$/)
+  expect(row?.props).toMatchObject({ wrap: 'truncate-end', dimColor: true })
+  await ui.press({ key: 'detail-hard' })
+  expect(textNode(byKey(await drawnOf(ui), 'detail-summary'), /^✓ bitti işaretli · oturum sürüyor$/)?.props).toMatchObject({ wrap: 'truncate-end', dimColor: true })
+})
+
+test('pane-groups A2 (cap): eight bound done tasks and one older live bound task: the live one is bound, a done one gives its place', FOLDERS, async ($, on) => {
+  const tasks = Array.from({ length: 9 }, (_, i) => ({ id: `t${i + 1}`, title: `Görev ${i + 1}`, stage: 'report', ...(i < 8 && { done: true, roles: R_DONE }) }))
+  const name = (i: number) => `k${i + 1}--0000000${i + 1}.json`
+  const sid = (i: number) => `0000000${i + 1}-0000-4000-8000-000000000000`
+  const files = Object.fromEntries(tasks.map((t, i) => [name(i), { text: kid4({ decisions: [], tasks: [{ id: t.id, title: 'K', stage: 'review', roles: [] }] }), age: (i + 1) * MIN4 }]))
+  const store = Object.fromEntries(tasks.map((t, i) => sess4(sid(i), name(i), hourAt(11), boundOf4(t.id, `code-${t.id}-0123456789`))))
+  const kids = Object.fromEntries(tasks.map((t, i) => [t.id, { code: `code-${t.id}-0123456789`, at: hourAt(10) - i * MIN4 }])) // t9 is the oldest
+  const k = await cBoot($, on, { surface: 'terminal', own: own4({ decisions: [], tasks }), files, store, mine: { kids } })
+  const root = await drawnOf(await k.pane('terminal'))
+  expect(texts4(byKey(root, 't-t9'))).toContain('Review · 3/5') // the live task is joined
+})
+
+test('pane-groups F1 (relink key): when the own file marks eight bound tasks done, the cap is re-ranked within one poll, so the older live task is joined at once', FOLDERS, async ($, on) => {
+  const task = (i: number, fin: boolean) => ({ id: `t${i + 1}`, title: `Görev ${i + 1}`, stage: 'report', ...(fin && { done: true, roles: R_DONE }) })
+  const name = (i: number) => `k${i + 1}--0000000${i + 1}.json`
+  const sid = (i: number) => `0000000${i + 1}-0000-4000-8000-000000000000`
+  const ids = Array.from({ length: 9 }, (_, i) => i)
+  const files = Object.fromEntries(ids.map(i => [name(i), { text: kid4({ decisions: [], tasks: [{ id: `t${i + 1}`, title: 'K', stage: 'review', roles: [] }] }), age: (i + 1) * MIN4 }]))
+  const store = Object.fromEntries(ids.map(i => sess4(sid(i), name(i), hourAt(11), boundOf4(`t${i + 1}`, `code-t${i + 1}-0123456789`))))
+  const kids = Object.fromEntries(ids.map(i => [`t${i + 1}`, { code: `code-t${i + 1}-0123456789`, at: hourAt(10) - i * MIN4 }])) // t9 is the oldest
+  const own = (fin: boolean) => own4({ decisions: [], tasks: ids.map(i => task(i, fin && i < 8)) })
+  const k = await cBoot($, on, { surface: 'terminal', own: own(false), files, store, mine: { kids } })
+  const ui = await k.pane('terminal')
+  expect(texts4(byKey(await drawnOf(ui), 't-t9'))).not.toContain('Review · 3/5') // all live: the eight newest are bound, t9 is not
+  await k.setOwn(own(true)) // one poll, not the 4th: only the changed done flags can trigger the re-rank
+  expect(texts4(byKey(await drawnOf(ui), 't-t9'))).toContain('Review · 3/5')
+})
+
+test('pane-groups A2 (link drops): a finished task whose link goes (here: the binding is removed) and whose roles are all done stays under Biten', FOLDERS, async ($, on) => {
+  const own = own4({ decisions: [], tasks: [{ id: 'hard', title: 'Sağlamlık', stage: 'report', done: true, wait: 'Ana not', session: { name: 'hard' }, roles: [tRole('Görev oturumu · hard', 'bitti', 'done')] }] })
+  const k = await cBoot($, on, { surface: 'desktop', own, files: { [C4_KID]: { text: kid4({ decisions: [], roles: R_DONE }), age: 5 * MIN4 } } })
+  const ui = await k.pane('desktop')
+  await ui.press({ key: 'done-toggle' })
+  expect(layout(await drawnOf(ui))).toEqual(['biten:hard'])
+  await k.mineAdd({ kids: undefined }) // the entry is gone: unbound
+  await k.poll()
+  await k.poll()
+  expect(layout(await drawnOf(ui))).toEqual(['biten:hard'])
+})
+
+test('pane-groups A5 (reopen): the first rewrite that marks a stopped task done lingers in Bekleyen (its drawn state), not in Çalışan', FOLDERS, async ($, on) => {
+  const resumed = { store: { ...Object.fromEntries([sess4(C4_SID, 'main--aaaaaaaa.json', hourAt(11))]) } }
+  const k = await pgBoot($, on, base(A_RUN), resumed)
+  const ui = await k.pane('desktop')
+  expect(layout(await drawnOf(ui))).toEqual(['bekleyen:A', 'bekleyen:Y']) // both drawn stopped (waiting)
+  k.disk.ownAge = 0 // the Lead writes now: after the start
+  await k.setOwn(base(A_FIN))
+  expect(layout(await drawnOf(ui))).toEqual(['çalışan:Y', 'bekleyen:A'])
+})
+
+test('pane-groups A6 (places): finishes from waiting and from blocked sit at their file-order place among their state; a bulk finish plays for every task; staggered finishes expire alone', FOLDERS, async ($, on) => {
+  const blockedRole = [tRole('QA', 'başlatılamadı', 'blocked')]
+  const file = (fin: Record<string, boolean>) =>
+    pgFile([
+      PGD('W', { wait: 'bekle', ...(fin.W && { done: true }) }),
+      PGD('Bk', { roles: fin.Bk ? R_DONE : blockedRole, ...(fin.Bk && { done: true }) }),
+      PGD('Bk2', { roles: blockedRole }),
+      PGD('R', { roles: fin.R ? R_DONE : R_RUN, ...(fin.R && { done: true }) }),
+      PGD('R2', { roles: fin.R2 ? R_DONE : R_RUN, ...(fin.R2 && { done: true }) }),
+      PGD('R3', { roles: fin.R3 ? R_DONE : R_RUN, ...(fin.R3 && { done: true }) }),
+    ])
+  const k = await pgBoot($, on, file({}))
+  const ui = await k.pane('desktop')
+  expect(layout(await drawnOf(ui))).toEqual(['çalışan:R', 'çalışan:R2', 'çalışan:R3', 'bekleyen:Bk', 'bekleyen:Bk2', 'bekleyen:W'])
+  await k.setOwn(file({ Bk: true }))
+  expect(layout(await drawnOf(ui))).toEqual(['çalışan:R', 'çalışan:R2', 'çalışan:R3', 'bekleyen:Bk', 'bekleyen:Bk2', 'bekleyen:W']) // from blocked: among the blocked
+  expect(chipOf(await drawnOf(ui), 'Bk')).toBe('✓ Bitti')
+  frozen(k, 3000)
+  await k.setOwn(file({ Bk: true, W: true, R: true, R2: true, R3: true })) // W from waiting, R, R2 and R3 from running: four more in ONE read (a cap of 3 would fail)
+  let root = await drawnOf(ui)
+  expect(layout(root)).toEqual(['çalışan:R', 'çalışan:R2', 'çalışan:R3', 'bekleyen:Bk', 'bekleyen:Bk2', 'bekleyen:W'])
+  expect(['W', 'R', 'R2', 'R3'].map(id => chipOf(root, id))).toEqual(['✓ Bitti', '✓ Bitti', '✓ Bitti', '✓ Bitti'])
+  expect(doneSvgs(root).length).toBe(5) // all five play: Bk and the four of one read
+  frozen(k, 5000) // the first finish (at 0) ends; the four of 3000 do not
+  await k.poll()
+  root = await drawnOf(ui)
+  expect(layout(root)).toEqual(['çalışan:R', 'çalışan:R2', 'çalışan:R3', 'bekleyen:Bk2', 'bekleyen:W'])
+  frozen(k, 8000)
+  await k.poll()
+  expect(layout(await drawnOf(ui))).toEqual(['bekleyen:Bk2'])
+})
+
+test('pane-groups A9 (fresh never blocks a read): a failing clock skips the motion and the status is still read; a clock stepped back drops the entry', FOLDERS, async ($, on) => {
+  const k = await pgBoot($, on, base(A_RUN))
+  const ui = await k.pane('desktop')
+  Object.defineProperty(k.gate, 'now', { get: () => { throw new Error('saat yok') }, configurable: true })
+  await k.setOwn(base(A_FIN))
+  Object.defineProperty(k.gate, 'now', { value: C4_NOW, writable: true, configurable: true })
+  expect(setsOf(k).fresh).toBeUndefined()
+  await ui.press({ key: 'done-toggle' })
+  expect(layout(await drawnOf(ui))).toEqual(['çalışan:Y', 'biten:X', 'biten:A']) // the status write happened; no motion, straight to Biten
+  // A backward step: an entry with now - at < 0 is dropped.
+  await k.setOwn(base({ ...A_RUN, wait: 'A notu' }))
+  await k.setOwn(base(A_FIN, '2026-11-20T11:59:10'))
+  expect(layout(await drawnOf(ui))).toContain('çalışan:A')
+  const was = setsOf(k)
+  frozen(k, -10_000)
+  await k.poll()
+  expect(since(was, setsOf(k))).toEqual({ fresh: 1 })
+  expect(layout(await drawnOf(ui))).toEqual(['çalışan:Y', 'biten:X', 'biten:A'])
+})
+
+test('pane-groups C28 + A15 (old stored values, desktop): atoms of the pre-pane-groups shape read as not done; nothing is Biten, fresh is never written; a later flag lingers and folds', FOLDERS, async ($, on) => {
+  const text = base({ ...A_RUN, wait: 'A notu' }).replace('"done":true,', '')
+  const old = { file: C4_OWN, mtime: C4_NOW - MIN4, data: parseStatus(text), error: null }
+  const k = await pgBoot($, on, text, { atoms: { status: { shape: 'status-5', value: old }, children: { shape: 'children-3', value: [] } } })
+  const ui = await k.pane('desktop')
+  const root = await drawnOf(ui)
+  expect(layout(root)).toEqual(['çalışan:A', 'çalışan:Y', 'bekleyen:X'])
+  expect(texts4(root)).not.toContain('Biten')
+  expect(setsOf(k).fresh).toBeUndefined()
+  await k.setOwn(base(A_FIN))
+  expect(layout(await drawnOf(ui))).toEqual(['çalışan:A', 'çalışan:Y', 'bekleyen:X']) // A and X both finish: both linger in their former sections
+  expect([chipOf(await drawnOf(ui), 'A'), chipOf(await drawnOf(ui), 'X')]).toEqual(['✓ Bitti', '✓ Bitti'])
+  frozen(k, 5000)
+  await k.poll()
+  expect(layout(await drawnOf(ui))).toEqual(['çalışan:Y'])
+})
+
+test('pane-groups C28 + A15 (old stored values, terminal): the same on the terminal', FOLDERS, async ($, on) => {
+  const text = pgFile([PGD('A', { ...A_RUN, wait: 'A notu' }), PGD('Y', { roles: R_RUN })])
+  const old = { file: C4_OWN, mtime: C4_NOW - MIN4, data: parseStatus(text), error: null }
+  const k = await pgBoot($, on, text, { surface: 'terminal', atoms: { status: { shape: 'status-5', value: old }, children: { shape: 'children-3', value: [] } } })
+  const ui = await k.pane('terminal')
+  expect(layout(await drawnOf(ui))).toEqual(['çalışan:A', 'çalışan:Y'])
+  expect(setsOf(k).fresh).toBeUndefined()
+  await k.setOwn(pgFile([PGD('A', A_FIN), PGD('Y', { roles: R_DONE })]))
+  expect(layout(await drawnOf(ui))).toEqual(['çalışan:A', 'bekleyen:Y'])
+  frozen(k, 5000)
+  await k.poll()
+  expect(texts4(await drawnOf(ui))).toContain('✓ BİTEN · 1')
+})
+
+// ---- terminal (ANALYST 21-25, A12, A13) ----
+test('pane-groups C21 (terminal): F draws ÇALIŞAN · 1, BEKLEYEN · 5 with " · 2 takıldı" in error bold, ✓ BİTEN · 1 with the z button göster; no GÖREVLER', FOLDERS, async ($, on) => {
+  const k = await pgBoot($, on, F, { surface: 'terminal' })
+  const root = await drawnOf(await k.pane('terminal'))
+  const t = texts4(root)
+  expect(t).toContain('ÇALIŞAN · 1')
+  expect(t).toContain('BEKLEYEN · 5 · 2 takıldı')
+  expect(t).toContain('✓ BİTEN · 1')
+  expect(t.some(x => x.startsWith('GÖREVLER'))).toBe(false)
+  expect(textNode(root, /^ · 2 takıldı$/)?.props).toMatchObject({ color: 'error', weight: 'bold' })
+  expect(textNode(root, /^BEKLEYEN · 5/)?.props?.weight).toBe('bold')
+  const toggle = byKey(root, 'done-toggle')
+  expect([toggle.props?.label, toggle.props?.hotkey, toggle.props?.plain]).toEqual(['göster', 'z', true])
+  expect(layout(root)).toEqual(['çalışan:B', 'bekleyen:C', 'bekleyen:E', 'bekleyen:D', 'bekleyen:F', 'bekleyen:G'])
+})
+
+test('pane-groups C22 + C23 + A13 (terminal keys and rows): keys follow the drawn order over acdefghijkmno, folded Biten takes none, opened rows take the next letters, each row is one cut Button; z is nobody\'s', FOLDERS, async ($, on) => {
+  const k = await pgBoot($, on, F, { surface: 'terminal' })
+  const ui = await k.pane('terminal')
+  let root = await drawnOf(ui)
+  expect(Object.fromEntries(['B', 'C', 'E', 'D', 'F', 'G'].map(id => [id, byKey(root, `detail-${id}`).props?.hotkey]))).toEqual({ B: 'a', C: 'c', E: 'd', D: 'e', F: 'f', G: 'g' })
+  expect(nodesOf(root).some(n => n.props?.key === 'detail-A')).toBe(false)
+  await ui.press({ key: 'done-toggle' })
+  root = await drawnOf(ui)
+  expect(byKey(root, 'done-toggle').props?.label).toBe('gizle')
+  // The row is one Box row: the pressable `detail-A` (hotkey h) holding the green ✓, then the title Text cut at the end (the Button prints its whole label and
+  // ignores a cut inside it: QA 2, live, 48 columns). Source: spec A13 + invariant 4 (every row is one row, wrap=truncate-end).
+  const row = byKey(root, 'row-A')
+  expect(row.props?.flexDirection).toBe('row')
+  expect(row.children?.length).toBe(2)
+  const [pick, title] = row.children as Node[]
+  expect(pick?.props).toMatchObject({ key: 'detail-A', hotkey: 'h', plain: true })
+  expect(textNode(pick as Node, /^✓$/)?.props?.color).toBe('success')
+  expect(title?.type).toBe('Text')
+  expect([textOf(title as Node), title?.props?.wrap]).toEqual(['Görev A', 'truncate-end'])
+  expect(layout(root).filter(x => x.startsWith('biten'))).toEqual(['biten:A'])
+  // One Button row: no state, stage or role rows for it.
+  const t = texts4(root)
+  expect(t.filter(x => /^✓ bitti/.test(x))).toEqual([])
+  expect(Object.values(hotkeys(root)).filter(h => h === 'z')).toEqual(['z']) // the toggle alone
+  await ui.press({ key: 'detail-A' })
+  expect(byKey(await drawnOf(ui), 'detail-back')).toBeDefined()
+})
+
+test('pane-groups C22 (the o rule): with team mode off pane-team-on keeps o and no task takes it, ', async ($, on) => {
+  const tasks = Array.from({ length: 13 }, (_, i) => PGD(`t${i}`, { wait: 'x' }))
+  const k = await pgBoot($, on, pgFile(tasks), { surface: 'terminal' })
+  const root = await drawnOf(await k.pane('terminal'))
+  const keys = Object.values(hotkeys(root)).filter(Boolean)
+  expect(hotkeys(root)['pane-team-on']).toBe('o')
+  expect(keys.filter(h => h === 'o')).toEqual(['o'])
+  expect(byKey(root, 'detail-t11').props?.hotkey).toBe('n') // the twelfth key of acdefghijkmn
+  expect(byKey(root, 'detail-t12').props?.hotkey).toBeUndefined()
+})
+
+test('pane-groups C24 + A13 (terminal finish): the box stays with ✓ bitti and five green segments, then moves under BİTEN; with no running role tick is never written', FOLDERS, async ($, on) => {
+  const status = pgFile([PGD('A', A_RUN), PGD('X', { done: true, stage: 'report', roles: R_DONE })])
+  const k = await tBoot($, on, { status, placed: true })
+  const ui = await k.pane()
+  await k.clock.advance(1000)
+  expect(tickCount(k).sets).toBe(1) // the control: a running role turns the tick
+  await k.change(pgFile([PGD('A', A_FIN), PGD('X', { done: true, stage: 'report', roles: R_DONE })]))
+  const ticks = tickCount(k).sets
+  let root = await drawnOf(ui)
+  expect(layout(root)).toEqual(['çalışan:A'])
+  const box = byKey(root, 't-A')
+  expect(parts(box.children?.[1] as Node)).toEqual([['✓ bitti', 'success', 'bold', false], [' · A notu', undefined, undefined, true]])
+  expect(nodesOf(box).filter(n => n.type === 'Text' && textOf(n) === '━━━ ').map(n => n.props?.color)).toEqual(['success', 'success', 'success', 'success', 'success'])
+  await k.clock.advance(3000) // no running role now: the tick stops
+  expect(tickCount(k).sets).toBe(ticks)
+  await k.clock.advance(2500)
+  root = await drawnOf(ui)
+  expect(layout(root)).toEqual([])
+  expect(texts4(root)).toContain('✓ BİTEN · 2')
+  expect(tickCount(k).sets).toBe(ticks)
+})
+
+const hintOf = (root: Node) => texts4(root).find(x => /esc/.test(x)) ?? ''
+test('pane-groups C25 + A12 (hint): z biten shows while the Biten group is drawn', FOLDERS, async ($, on) => {
+  const k = await pgBoot($, on, base(A_RUN), { surface: 'terminal' })
+  expect(hintOf(await drawnOf(await k.pane('terminal')))).toMatch(/z biten/) // X is finished already
+})
+
+test('pane-groups C25 + A12 (hint): no z biten without a finished task, nor while the only finished task lingers; it comes when Biten is drawn', FOLDERS, async ($, on) => {
+  const k = await pgBoot($, on, pgFile([PGD('A', A_RUN)]), { surface: 'terminal' })
+  const ui = await k.pane('terminal')
+  expect(hintOf(await drawnOf(ui))).not.toMatch(/z biten/)
+  await k.setOwn(pgFile([PGD('A', A_FIN)]))
+  expect(hintOf(await drawnOf(ui))).not.toMatch(/z biten/) // A lingers: no Biten group yet
+  frozen(k, 5000)
+  await k.poll()
+  expect(hintOf(await drawnOf(ui))).toMatch(/z biten/)
+})
+
+test('pane-groups A13 (termDetail): a finished task\'s detail shows ✓ bitti, the wait reason and five success segments', FOLDERS, async ($, on) => {
+  const k = await pgBoot($, on, base(A_FIN), { surface: 'terminal' })
+  const ui = await k.pane('terminal')
+  await ui.press({ key: 'done-toggle' })
+  await ui.press({ key: 'detail-A' })
+  const root = await drawnOf(ui)
+  const sum = byKey(root, 'detail-summary')
+  expect(parts(sum.children?.[1] as Node)).toEqual([['✓ bitti', 'success', 'bold', false], [' · A notu', undefined, undefined, true]])
+  expect(nodesOf(sum).filter(n => n.type === 'Text' && textOf(n) === '━━━ ').map(n => n.props?.color)).toEqual(['success', 'success', 'success', 'success', 'success'])
 })
