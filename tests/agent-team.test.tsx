@@ -3,6 +3,7 @@ import type { TestBody } from 'claude-code/testing'
 
 import { forward } from '../hooks/register'
 import { ago, bandSegments, childOf, countStates, decisionTask, detailScroll, finishes, isInside, isPush, isStuck, joined, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseStatus, pickedAt, sections, spinnerWord, stamp, summary, withKarar } from '../hooks/status'
+import { findingLine, roundsCaption, sevTag } from '../hooks/status'
 import { CLAY, MUTED, OK, STUCK, TRACK, doneStagesSvg, dotSvg, meterSvg, stagesSvg } from '../hooks/svg'
 
 const fills = (svg: string) => [...svg.matchAll(/<rect [^>]*fill="([^"]+)"/g)].map(m => m[1])
@@ -423,15 +424,15 @@ test('a task card opens its detail view with rounds and evidence, back returns, 
     // Terminal strings are the terminal-boxes design's (own tests below); here only what both surfaces share.
     for (const re of surface === 'terminal'
       ? [/^Seçim kutusu taşması$/, /^feat\/sel · aday bbbbbbb$/, /^TURLAR$/, /^Tur 1 · NO-GO · aaaaaaa$/, /^Tur 2 · GO · bbbbbbb$/, /^BLOCKING · introduced$/, /^Kutu iki nesneye taşıyor$/, /^src\/sel\.ts:42$/, /^LOW · pre-existing$/, /^Not: Aynı aile ikinci kez: mekanizma değişsin$/, /^KANIT$/] // the pressable evidence row's label is its Button (ev-open-0, asserted below)
-      : [/^Seçim kutusu taşması$/, /^feat\/sel$/, /bbbbbbb$/, /^GO · 2 tur$/, /^Turlar$/, /^Tur 1 · NO-GO$/, /^Tur 2 · GO$/, /^BLOCKING · introduced$/, /^Kutu iki nesneye taşıyor$/, /^src\/sel\.ts:42$/, /^LOW · pre-existing$/, /^Aynı aile ikinci kez: mekanizma değişsin$/, /^Kanıt$/]) {
+      : [/^Seçim kutusu taşması$/, /^feat\/sel$/, /bbbbbbb$/, /^GO$/, /^2 turda · 1 engelleyici kapandı$/, /^Turlar$/, /^Tur 1$/, /^NO-GO$/, /^Tur 2$/, /^ENGELLEYİCİ$/, /^Kutu iki nesneye taşıyor$/, /^src\/sel\.ts:42 · yeni · kapandı$/, /^DÜŞÜK$/, /^src\/old\.ts:7 · önceden vardı$/, /^Aynı aile ikinci kez: mekanizma değişsin$/, /^Kanıt$/]) {
       expect(await ui.find({ type: 'Text', text: re })).toBeDefined()
     }
     expect((await ui.findAll({ type: 'Text', text: /aaaaaaa$/ })).length).toBe(1)
-    // Design B: the path moved to the reader's header (no path Text in the detail), still no Link; each evidence row opens the reader (desktop: one document glyph Svg).
+    // Design B: the path moved to the reader's header (no path Text in the detail), still no Link; each evidence row opens the reader (desktop: the Svgs of the restyled detail: a dot per round (2), one rail under the first round, one dot per evidence row (1)).
     expect(await ui.find({ type: 'Link' })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /^\/Users\/x\/agent-team-evidence\/qa report\.md$/ })).toBeUndefined()
     expect(await ui.find({ key: 'ev-open-0' })).toBeDefined()
-    expect((await ui.findAll({ type: 'Svg' })).length).toBe(surface === 'desktop' ? 1 : 0)
+    expect((await ui.findAll({ type: 'Svg' })).length).toBe(surface === 'desktop' ? 4 : 0)
 
     await ui.press({ key: 'detail-ask' })
     await ui.press({ key: 'detail-back' })
@@ -503,9 +504,9 @@ test('with more than 10 rounds the last 10 are kept and the header reads the tru
   await $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'desktop', isInteractive: true })
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.press({ key: 'detail-t1' })
-  expect(await ui.find({ type: 'Text', text: /^NO-GO · 12 tur$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^Tur 12 · NO-GO$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^Tur 2 · GO$/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^12 turda$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Tur 12$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Tur 2$/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -1789,7 +1790,7 @@ test('criterion 1: an open detail shows the read error line, desktop and termina
     // The detail itself is unchanged: still open, with its title and rounds from the last good read.
     expect(keyed(root, 'detail-back')).toBeDefined()
     expect(textNode(root, /^Seçim kutusu taşması$/)).toBeDefined()
-    expect(textNode(root, /^Tur 2 · GO/)).toBeDefined()
+    expect(textNode(root, surface === 'desktop' ? /^Tur 2$/ : /^Tur 2 · GO/)).toBeDefined()
     await bad.press({ key: 'detail-back' })
     await bad.unmount()
   }
@@ -1805,8 +1806,8 @@ test('criterion 2: a round with n 0, missing or invalid gets its position (j+1),
     await ui.press({ key: 'detail-t1' })
     const root = await drawnOf(ui)
     expect(textNode(root, /Tur 0/)).toBeUndefined()
-    expect(textNode(root, /^Tur 1 · GO$/)).toBeDefined()
-    if (surface === 'desktop') expect(textNode(root, /^GO · 1 tur$/)).toBeDefined()
+    expect(textNode(root, surface === 'desktop' ? /^Tur 1$/ : /^Tur 1 · GO$/)).toBeDefined()
+    if (surface === 'desktop') expect(textNode(root, /^1 turda$/)).toBeDefined()
     await ui.press({ key: 'detail-back' })
     await ui.unmount()
   }
@@ -1834,9 +1835,11 @@ test('criterion 4: a finding without severity and origin draws the "what" line f
     const ui = await $.ui.mount({ ...PANE, surface })
     await ui.press({ key: 'detail-t1' })
     const root = await drawnOf(ui)
-    expect((keyed(root, 'round-0-f-0').children as Node[]).map(textOf)).toEqual(['Yalnız ne', 'a.ts:1'])
-    expect((keyed(root, 'round-0-f-1').children as Node[]).map(textOf)).toEqual(['LOW', 'Etiketli'])
-    expect((keyed(root, 'round-0-f-2').children as Node[]).map(textOf)).toEqual(['introduced', 'Kökenli'])
+    // Desktop (evidence-restyle): the tag is a Box beside the text column, the origin is Turkish and on the dim line after the text; a finding's Texts in order.
+    const lines = (j: number) => (surface === 'terminal' ? (keyed(root, `round-0-f-${j}`).children as Node[]).map(textOf) : nodesOf(keyed(root, `round-0-f-${j}`)).filter(n => n.type === 'Text').map(textOf))
+    expect(lines(0)).toEqual(['Yalnız ne', 'a.ts:1'])
+    expect(lines(1)).toEqual(surface === 'terminal' ? ['LOW', 'Etiketli'] : ['DÜŞÜK', 'Etiketli'])
+    expect(lines(2)).toEqual(surface === 'terminal' ? ['introduced', 'Kökenli'] : ['Kökenli', 'yeni'])
     await ui.press({ key: 'detail-back' })
     await ui.unmount()
   }
@@ -3951,8 +3954,9 @@ test('hardening C8: a finding severity "blocking" in any letter case is drawn li
     const ui = await $.ui.mount({ ...PANE, surface })
     await ui.press({ key: 'detail-t1' })
     const root = await drawnOf(ui)
-    for (const [severity, origin] of SEVERITIES) {
-      const tag = textNode(root, new RegExp(`^${severity} · ${origin}$`)) as Node
+    for (const [i, [severity, origin]] of SEVERITIES.entries()) {
+      // Desktop (evidence-restyle): the severity is a tag Text in its finding's card, in Turkish (blocking in any letter case: ENGELLEYİCİ; LOW: DÜŞÜK).
+      const tag = (surface === 'terminal' ? textNode(root, new RegExp(`^${severity} · ${origin}$`)) : textNode(keyed(root, `round-0-f-${i}`), severity === 'LOW' ? /^DÜŞÜK$/ : /^ENGELLEYİCİ$/)) as Node
       expect([surface, severity, tag.props?.color]).toEqual([surface, severity, severity === 'LOW' ? undefined : 'error'])
       expect([surface, severity, !!tag.props?.dimColor]).toEqual([surface, severity, severity === 'LOW' && surface === 'terminal'])
     }
@@ -8248,4 +8252,262 @@ test('biten-overflow R2 (desktop, Bağla): the bind rows follow the shrink rule 
   expect(rowKeys(root)).toContain(`bind-row-${LID}`)
   const r = rowRuleBreaks(root)
   expect([r.bad, r.checked >= 4]).toEqual([[], true])
+})
+
+// ===== evidence-restyle: the desktop detail's verdict line, Turlar timeline and Kanıt list (owner picked design A, "Zaman çizgisi"). =====
+// Sources of the expected values: the Lead's brief of the task (<evidence root>/tasks/evidence-restyle/dev-brief.md, "What A asks for, and the Lead's rules where the data
+// is thin" 1-4) and the design mock it names, written out by hand; the colours are the literals of hooks/svg.ts (OK, BAD, MUTED) and of the pane's STATE_CHIP / CHIP
+// constants. Nothing is read back from the implementation.
+const RS_GO_FILL = 'rgba(78,154,71,0.20)' // STATE_CHIP.done fill (the GO pill)
+const RS_NO_FILL = 'rgba(224,108,108,0.18)' // CHIP_BLOCKING (the NO-GO pill, the BLOCKING tag)
+const RS_GREY = 'rgba(128,128,128,0.2)' // CHIP (any other verdict, every other tag)
+const RS_DOT = { go: '#4E9A47', no: '#D9534F', other: '#8A8880' } // OK, BAD, MUTED
+const rsRounds = [
+  { n: 1, verdict: 'NO-GO', candidate: SHA_A, note: 'Normal yol doğru; gönderim başarısız olursa basış kayboluyor.', findings: [
+    { severity: 'BLOCKING', origin: 'introduced', what: 'Gönderim reddedilirse kart yine Gönderildi diyor', where: 'hooks/register.tsx:125' },
+    { severity: 'LOW', origin: 'pre-existing', what: 'Yedek yolun testi yok', where: 'tests/agent-team.test.tsx' },
+  ] },
+  { n: 2, verdict: 'GO', candidate: SHA_B, note: 'İki bulgu kapandı.', findings: [{ severity: 'LOW', what: 'Geri alma testi yok', where: 'tests/agent-team.test.tsx' }] },
+]
+const rsOpen = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], task: Record<string, unknown>) => {
+  await boot($, on, detailStatus(task))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'detail-t1' })
+  return { ui, root: async () => drawnOf(ui) }
+}
+const rsTexts = (root: Node) => nodesOf(root).filter(n => n.type === 'Text').map(textOf)
+const rsBox = (root: Node, key: string) => nodesOf(root).find(n => n.props?.key === key)
+
+test('evidence-restyle R1 (header): the last verdict is a pill and its dim line reads "2 turda · 1 engelleyici kapandı · 3 takip" for a GO after a NO-GO with one BLOCKING finding', async ($, on) => {
+  const { ui, root } = await rsOpen($, on, { rounds: rsRounds, followup: 3 })
+  const r = await root()
+  const pill = rsBox(r, 'detail-verdict') as Node
+  expect(pill.props).toMatchObject({ backgroundColor: RS_GO_FILL })
+  expect(textNode(pill, /^GO$/)?.props?.color).toBe('#A8D5A2') // STATE_CHIP.done ink
+  expect(textNode(r, /turda/) && textOf(textNode(r, /turda/) as Node)).toBe('2 turda · 1 engelleyici kapandı · 3 takip')
+  expect(textNode(r, /turda/)?.props?.dimColor).toBe(true)
+  expect(textNode(r, /^GO · 2 tur$/)).toBeUndefined() // the old caption is gone
+  await ui.unmount()
+})
+
+test('evidence-restyle R2 (header): a NO-GO last round has a red pill, no "kapandı" part and "engelleyici açık"', async ($, on) => {
+  const nogo = [{ n: 1, verdict: 'GO', findings: [{ severity: 'BLOCKING', what: 'eski', where: 'a.ts:1' }] }, { n: 2, verdict: 'NO-GO', findings: [{ severity: 'BLOCKING', what: 'yeni', where: 'b.ts:2' }] }]
+  const { ui, root } = await rsOpen($, on, { rounds: nogo, blocking: 2, followup: 1 })
+  const r = await root()
+  expect(rsBox(r, 'detail-verdict')?.props).toMatchObject({ backgroundColor: RS_NO_FILL })
+  expect(textNode(rsBox(r, 'detail-verdict') as Node, /^NO-GO$/)?.props?.color).toBe('error')
+  expect(textOf(textNode(r, /turda/) as Node)).toBe('2 turda · 2 engelleyici açık · 1 takip')
+  expect(rsTexts(r).some(t => /kapandı/.test(t))).toBe(false) // not in the caption, not on the earlier round's BLOCKING finding (the last verdict is not GO)
+  await ui.unmount()
+})
+
+test('evidence-restyle R2b (header): any other verdict is a grey pill with the true round number and no invented count', async ($, on) => {
+  const { ui, root } = await rsOpen($, on, { rounds: [{ n: 3, verdict: 'BEKLİYOR', findings: [] }] })
+  const r = await root()
+  expect(rsBox(r, 'detail-verdict')?.props).toMatchObject({ backgroundColor: RS_GREY })
+  expect(textNode(rsBox(r, 'detail-verdict') as Node, /^BEKLİYOR$/)?.props?.color).toBeUndefined()
+  expect(textOf(textNode(r, /turda/) as Node)).toBe('3 turda')
+  await ui.unmount()
+})
+
+test('evidence-restyle R2c (header): a task without rounds has no pill and no counts line', async ($, on) => {
+  const { ui, root } = await rsOpen($, on, {})
+  const r = await root()
+  expect([rsBox(r, 'detail-verdict'), textNode(r, /turda/)]).toEqual([undefined, undefined])
+  await ui.unmount()
+})
+
+test('evidence-restyle R3 (severity tags): BLOCKING (any case) is a red ENGELLEYİCİ tag, HIGH/MEDIUM/LOW/MINOR are grey Turkish tags, an unknown value is uppercased as written, none without a severity', async ($, on) => {
+  const sev = ['blocking', 'High', 'MEDIUM', 'low', 'Minor', 'critical', 'constructor']
+  const want = ['ENGELLEYİCİ', 'YÜKSEK', 'ORTA', 'DÜŞÜK', 'KÜÇÜK', 'CRITICAL', 'CONSTRUCTOR']
+  const { ui, root } = await rsOpen($, on, { rounds: [{ n: 1, verdict: 'NO-GO', findings: [...sev.map((severity, i) => ({ severity, what: `w${i}` })), { what: 'etiketsiz' }] }] })
+  const r = await root()
+  want.forEach((tag, i) => {
+    const card = rsBox(r, `round-0-f-${i}`) as Node
+    const t = textNode(card, new RegExp(`^${tag}$`)) as Node
+    expect([tag, t?.props?.color, t?.props?.weight]).toEqual([tag, i === 0 ? 'error' : undefined, 'semibold'])
+    expect([tag, nodesOf(card).find(n => n.type === 'Box' && n.children?.includes(t))?.props?.backgroundColor]).toEqual([tag, i === 0 ? RS_NO_FILL : RS_GREY])
+    expect(textNode(card, new RegExp(`^w${i}$`))).toBeDefined()
+  })
+  expect(rsTexts(rsBox(r, 'round-0-f-7') as Node)).toEqual(['etiketsiz'])
+  expect(['blocking', 'High', 'MEDIUM', 'low', 'Minor', 'critical', 'constructor', undefined, ''].map(sevTag)).toEqual([...want, undefined, undefined])
+  await ui.unmount()
+})
+
+test('evidence-restyle R4 (finding line): where, the origin in Turkish, and "kapandı" only on a BLOCKING finding of a round before the last when the last verdict is GO', async ($, on) => {
+  const rounds = [
+    { n: 1, verdict: 'NO-GO', findings: [{ severity: 'BLOCKING', origin: 'introduced', what: 'a', where: 'a.ts:1' }, { severity: 'LOW', origin: 'introduced', what: 'b', where: 'b.ts:2' }, { severity: 'BLOCKING', what: 'c' }, { severity: 'High', origin: 'regression', what: 'd' }] },
+    { n: 2, verdict: 'GO', findings: [{ severity: 'BLOCKING', origin: 'pre-existing', what: 'e', where: 'c.ts:3' }] },
+  ]
+  const { ui, root } = await rsOpen($, on, { rounds })
+  const r = await root()
+  const line = (key: string) => rsTexts(rsBox(r, key) as Node).slice(2) // after the tag and the text
+  expect(line('round-0-f-0')).toEqual(['a.ts:1 · yeni · kapandı'])
+  expect(line('round-0-f-1')).toEqual(['b.ts:2 · yeni']) // not blocking: never "kapandı"
+  expect(line('round-0-f-2')).toEqual(['kapandı']) // no where, no origin
+  expect(line('round-0-f-3')).toEqual(['regression']) // unknown origin as written
+  expect(line('round-1-f-0')).toEqual(['c.ts:3 · önceden vardı']) // the last round: nothing closed yet
+  const dim = textNode(rsBox(r, 'round-0-f-0') as Node, /^a\.ts:1/)
+  expect(dim?.props).toMatchObject({ size: 'caption', mono: true, dimColor: true })
+  expect(textOf(textNode(r, /turda/) as Node)).toBe('2 turda · 2 engelleyici kapandı') // the two BLOCKING findings of round 1
+  const f = (severity: string, origin?: string, where?: string) => ({ severity, origin, what: 'x', where })
+  expect([findingLine(f('LOW', 'Introduced'), false), findingLine(f('LOW', 'PRE-EXISTING', 'p:1'), true), findingLine(f('LOW'), false)]).toEqual(['yeni', 'p:1 · önceden vardı · kapandı', ''])
+  expect([roundsCaption({ rounds: [] }), roundsCaption({})]).toEqual(['', ''])
+  await ui.unmount()
+})
+
+test('evidence-restyle R5 (timeline): one verdict-coloured dot per round, a rail under every round but the last, then Tur N / the verdict / the short SHA, the note, and the findings', async ($, on) => {
+  const rounds = [...rsRounds, { n: 3, verdict: 'BEKLİYOR', candidate: SHA_B, findings: [] }]
+  const { ui, root } = await rsOpen($, on, { rounds })
+  const r = await root()
+  const dots = [0, 1, 2].map(i => String((nodesOf(rsBox(r, `round-${i}`) as Node).find(n => n.type === 'Svg' && /<circle/.test(String(n.props?.source))) as Node).props?.source))
+  expect(dots.map(d => d.match(/fill="(#[0-9A-F]{6})"/)?.[1])).toEqual([RS_DOT.no, RS_DOT.go, RS_DOT.other])
+  expect([0, 1, 2].map(i => nodesOf(rsBox(r, `round-${i}`) as Node).find(n => n.type === 'Svg')?.props?.width)).toEqual([12, 12, 12])
+  expect([0, 1, 2].map(i => !!rsBox(r, `round-${i}-rail`))).toEqual([true, true, false]) // no rail below the last round
+  expect(nodesOf(r).filter(n => n.type === 'Svg' && /<rect[^>]* height="2000"/.test(String(n.props?.source))).length).toBe(2)
+  expect(rsTexts(rsBox(r, 'round-0') as Node).slice(0, 4)).toEqual(['Tur 1', 'NO-GO', 'aaaaaaa', 'Normal yol doğru; gönderim başarısız olursa basış kayboluyor.']) // header row, then the note under it
+  expect(textNode(rsBox(r, 'round-0') as Node, /^Tur 1$/)?.props?.weight).toBe('semibold')
+  expect([textNode(rsBox(r, 'round-0') as Node, /^NO-GO$/)?.props?.color, textNode(rsBox(r, 'round-1') as Node, /^GO$/)?.props?.color, textNode(rsBox(r, 'round-2') as Node, /^BEKLİYOR$/)?.props?.color]).toEqual(['error', 'success', undefined])
+  expect(textNode(rsBox(r, 'round-0') as Node, /^aaaaaaa$/)?.props).toMatchObject({ size: 'caption', mono: true, dimColor: true })
+  expect(textNode(rsBox(r, 'round-0') as Node, /^Normal yol/)?.props?.dimColor).toBe(true)
+  const order = rsTexts(rsBox(r, 'round-0') as Node)
+  expect(order.indexOf('Normal yol doğru; gönderim başarısız olursa basış kayboluyor.')).toBeLessThan(order.indexOf('ENGELLEYİCİ')) // the note is above the findings, not below
+  expect(rsTexts(rsBox(r, 'round-2') as Node)).toEqual(['Tur 3', 'BEKLİYOR', 'bbbbbbb'])
+  await ui.unmount()
+})
+
+// An evidence boot for the desktop detail: files by path, a read that can be held, the status file served for any .json.
+const ER = '/Users/x/agent-team-evidence'
+const erBoot = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], evidence: [string, string][], files: Record<string, { text: string; size?: number; hold?: Promise<void> }>, rounds: unknown[] = rsRounds) => {
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('env.get', () => ({ value: '/Users/x' }))
+  on('fs.exists', () => ({ value: true }))
+  on('fs.stat', (_, e) => ({ value: { kind: 'file', size: files[e.path] ? files[e.path]!.size ?? files[e.path]!.text.length : 10, mtimeMs: 1, isLink: false, realPath: e.path } }))
+  on('fs.read', async (_, e) => {
+    if (e.path.endsWith('.json')) return { value: detailStatus({ rounds, evidence: evidence.map(([label, path]) => ({ label, path })) }) }
+    await files[e.path]?.hold
+    return { value: files[e.path]?.text ?? '' }
+  })
+  on('clock.every', () => ({ value: undefined }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.append', (_, e, next) => next(e))
+  await $.session.start({ cwd: '/Users/x/Projeler/shop', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const settle = async () => {
+    for (let i = 0; i < 10; i++) await new Promise(r => (globalThis as unknown as { setTimeout: (f: () => void, ms: number) => void }).setTimeout(() => r(undefined), 0))
+  }
+  // The press waits for every evidence read (evStep awaits them), so a test with a held read starts it and does not await it.
+  const open = () => ui.press({ key: 'detail-t1' })
+  return { ui, settle, open, opened: async () => { await open(); await settle() } }
+}
+const RS_EV: [string, string][] = [['QA raporu · tur 2', `${ER}/go.md`], ['QA raporu · tur 1', `${ER}/nogo.md`], ['Developer raporu', `${ER}/dev.md`], ['Boş', `${ER}/empty.md`], ['Dışarıda', '/etc/hosts']]
+const RS_FILES = {
+  [`${ER}/go.md`]: { text: '**VERDICT: GO**\nQA r2', size: 3891 },
+  [`${ER}/nogo.md`]: { text: 'GÖREV t1: NO-GO · tam inceleme\nikinci', size: 4710 },
+  [`${ER}/dev.md`]: { text: 'Bitti. Terminal dışındaki her yüzeyde basış sahibin mesajı olarak gider\nikinci', size: 926 },
+  [`${ER}/empty.md`]: { text: '', size: 0 },
+}
+
+test('evidence-restyle R6 (Kanıt list): one card, a row per file with a verdict dot, the label over one dim line, the size and a chevron; a rule between rows and none after the last', FOLDERS, async ($, on) => {
+  const { ui, opened } = await erBoot($, on, RS_EV, RS_FILES)
+  await opened()
+  const r = await drawnOf(ui)
+  const row = (i: number) => rsBox(r, `ev-${i}`) as Node
+  const dot = (i: number) => String(nodesOf(row(i)).find(n => n.type === 'Svg')?.props?.source).match(/fill="(#[0-9A-F]{6})"/)?.[1]
+  expect([0, 1, 2, 3, 4].map(dot)).toEqual([RS_DOT.go, RS_DOT.no, RS_DOT.other, RS_DOT.other, RS_DOT.other]) // GO chip, NO-GO chip, no chip, empty, refused
+  expect(nodesOf(row(0)).find(n => n.type === 'Svg')?.props).toMatchObject({ width: 8, height: 8 })
+  // The Button holds the label; the Texts are the one dim line, the size, the chevron.
+  expect(await Promise.all([0, 1, 2].map(async i => (await ui.find({ key: `ev-open-${i}` }))?.text))).toEqual(['QA raporu · tur 2', 'QA raporu · tur 1', 'Developer raporu'])
+  expect(rsTexts(row(0))).toEqual(['GO', '3,8 KB', '›'])
+  expect(rsTexts(row(1))).toEqual(['NO-GO · tam inceleme', '4,6 KB', '›'])
+  expect(rsTexts(row(2))).toEqual(['Bitti. Terminal dışındaki her yüzeyde basış sahibin mesajı olarak gider', '926 B', '›'])
+  expect(textNode(row(1), /^NO-GO · tam inceleme$/)?.props).toMatchObject({ size: 'caption', dimColor: true, wrap: 'truncate-end' })
+  expect(textNode(row(0), /^3,8 KB$/)?.props).toMatchObject({ size: 'caption', dimColor: true })
+  // One card holds the rows; the rules sit between them only (the Box has no single-edge border).
+  const card = nodesOf(r).find(n => n.children?.includes(row(0))) as Node
+  expect(card.props).toMatchObject({ borderStyle: 'round', padding: 0, gap: 0 })
+  expect(kidsOf(card).map(k => k.props?.key)).toEqual(['ev-0', 'ev-rule-1', 'ev-1', 'ev-rule-2', 'ev-2', 'ev-rule-3', 'ev-3', 'ev-rule-4', 'ev-4'])
+  expect(nodesOf(r).filter(n => n.type === 'Svg' && /preserveAspectRatio="none"/.test(String(n.props?.source))).length).toBe(4)
+  expect(['ev-rule-1', 'ev-rule-4'].map(k => keyed(r, k).props?.overflow)).toEqual(['hidden', 'hidden']) // a rule wider than the card is clipped, not drawn past it
+  expect(textNode(r, /^Kanıt$/)?.props).toMatchObject({ size: 'caption', weight: 'semibold', dimColor: true })
+  expect(nodesOf(r).some(n => n.type === 'Button' && /^ev-open/.test(String(n.props?.key)) && n.props?.label !== undefined && String(n.props.label).length > 40)).toBe(false) // no big per-file chip
+  await ui.unmount()
+})
+
+test('evidence-restyle R7 (Kanıt press): a loaded row opens the same reader; only loaded rows have the Button, the chevron and the hover', FOLDERS, async ($, on) => {
+  const { ui, settle, opened } = await erBoot($, on, RS_EV, RS_FILES)
+  await opened()
+  const r = await drawnOf(ui)
+  const row = (i: number) => rsBox(r, `ev-${i}`) as Node
+  expect([0, 1, 2, 3, 4].map(i => !!keyed(r, `ev-open-${i}`))).toEqual([true, true, true, false, false])
+  expect([0, 1, 2, 3, 4].map(i => rsTexts(row(i)).includes('›'))).toEqual([true, true, true, false, false])
+  expect([0, 1, 2, 3, 4].map(i => hoverOf(row(i)))).toEqual([{ backgroundColor: HOVER_FILL }, { backgroundColor: HOVER_FILL }, { backgroundColor: HOVER_FILL }, undefined, undefined])
+  await ui.press({ key: 'ev-open-1' })
+  await settle()
+  const reader = await drawnOf(ui)
+  expect(keyed(reader, 'reader-back')).toBeDefined()
+  expect(keyed(reader, 'detail-back')).toBeUndefined()
+  expect(textNode(reader, /^QA raporu · tur 1$/)).toBeDefined() // the reader of the pressed row, with its label
+  await ui.press({ key: 'reader-back' })
+  await settle()
+  expect(keyed(await drawnOf(ui), 'ev-open-1')).toBeDefined() // back in the detail
+  await ui.unmount()
+})
+
+test('evidence-restyle R8 (Kanıt status): refused and empty rows keep their status text, with no Button, size only for the empty one, no chevron', FOLDERS, async ($, on) => {
+  const { ui, opened } = await erBoot($, on, RS_EV, RS_FILES)
+  await opened()
+  const r = await drawnOf(ui)
+  const row = (i: number) => rsBox(r, `ev-${i}`) as Node
+  expect(rsTexts(row(3))).toEqual(['Boş', 'boş dosya', '0 B'])
+  expect(rsTexts(row(4))).toEqual(['Dışarıda', 'kanıt kökünün dışında: gösterilmiyor']) // refused: no size, no chevron
+  expect(textNode(row(4), /^kanıt kökünün/)?.props).toMatchObject({ dimColor: true, wrap: 'truncate-end' })
+  expect(textNode(row(4), /^Dışarıda$/)?.props?.wrap).toBe('truncate-end')
+  await ui.unmount()
+})
+
+test('evidence-restyle R8b (Kanıt status): a row whose file is not read yet shows "okunuyor…" with no Button, size or chevron', async ($, on) => {
+  // Source: the existing detail test (team mode off: nothing is read, so every row is loading). The label is a Text, the dot grey.
+  const { ui, root } = await rsOpen($, on, { evidence: [{ label: 'QA raporu', path: `${ER}/go.md` }] })
+  const r = await root()
+  expect(rsTexts(rsBox(r, 'ev-0') as Node)).toEqual(['QA raporu', 'okunuyor…'])
+  expect(keyed(r, 'ev-open-0')).toBeUndefined()
+  expect(hoverOf(rsBox(r, 'ev-0') as Node)).toBeUndefined()
+  expect(String(nodesOf(rsBox(r, 'ev-0') as Node).find(n => n.type === 'Svg')?.props?.source)).toContain(`fill="${RS_DOT.other}"`)
+  await ui.unmount()
+})
+
+test('evidence-restyle R9 (row rule): with 120-character labels, notes and findings the rows stay inside the row rule, and every text column may shrink', FOLDERS, async ($, on) => {
+  const long = { n: 1, verdict: 'NO-GO', candidate: SHA_A, note: LONG120, findings: [{ severity: 'BLOCKING', origin: 'introduced', what: LONG120, where: LONG120 }] }
+  const { ui, opened } = await erBoot($, on, [[LONG120, `${ER}/go.md`], [LONG120, `${ER}/empty.md`]], RS_FILES, [long, { n: 2, verdict: 'GO', findings: [] }])
+  await opened()
+  const r = await drawnOf(ui)
+  const broken = rowRuleBreaks(r)
+  expect(broken.bad).toEqual([])
+  const FILL_PROPS = { flexGrow: 1, flexShrink: 1, minWidth: 0 }
+  const column = (n: Node, at: number) => kidsOf(n).filter(k => k.type === 'Box' && hasText(k)).at(at) as Node // the text side: the last Box with a Text (an evidence row: the first, the size and chevron follow it)
+  for (const key of ['round-0', 'round-1', 'round-0-f-0', 'ev-0', 'ev-1']) expect([key, column(keyed(r, key), key.startsWith('ev') ? 0 : -1).props]).toEqual([key, expect.objectContaining(FILL_PROPS)])
+  expect(textNode(column(keyed(r, 'round-0-f-0'), -1), new RegExp(`^${LONG120}$`))).toBeDefined() // the long finding is in the shrinking column
+  expect(kidsOf(keyed(r, 'round-0-f-0')).find(k => k.type === 'Box' && hasText(k) && !k.props?.flexGrow)?.props?.flexShrink).toBe(0) // the tag keeps its size
+  expect(keyed(r, 'detail-verdict').props?.flexShrink).toBe(0)
+  expect(kidsOf(keyed(r, 'ev-1')).at(-1)?.props).toMatchObject({ flexShrink: 0 }) // the size and chevron do not wrap
+  expect(kidsOf(keyed(r, 'round-0')).find(k => !hasText(k))?.props).toMatchObject({ flexShrink: 0 }) // the dot column
+  expect(textNode(keyed(r, 'ev-1'), /^uzun-ad-/)?.props?.wrap).toBe('truncate-end') // an unloaded row's label is a Text cut at the end (a loaded row's is the Button)
+  await ui.unmount()
+})
+
+test('evidence-restyle R10 (colours, scroll): the detail draws theme keys and the pane\'s rgba / Svg constants only, none of the design mock\'s dark-only hex, and no inner scroll', FOLDERS, async ($, on) => {
+  const { ui, opened } = await erBoot($, on, RS_EV, RS_FILES)
+  await opened()
+  const r = await drawnOf(ui)
+  const text = JSON.stringify(r)
+  for (const hex of ['#ECEAE4', '#2F2E2B', '#262624', '#B9B6AE', '#9E9B93', '#3A3936', '#1F3A27', '#8FD3A0', '#4A2622', '#F2A595', '#E5826F', '#7CC28A', '#6B6963', '#C9C6BE']) expect(text).not.toContain(hex)
+  const inkOf = (n: Node) => n.props?.color
+  // (the state chip above the verdict line is the old design's: its hex inks are not in this task)
+  const mine = ['detail-verdict', 'round-0', 'round-1', 'ev-0', 'ev-1', 'ev-2', 'ev-3', 'ev-4'].flatMap(k => nodesOf(keyed(r, k)))
+  expect(new Set(mine.filter(n => n.type === 'Text' && inkOf(n) !== undefined).map(inkOf))).toEqual(new Set(['error', 'success', '#A8D5A2']))
+  expect(nodesOf(r).filter(n => n.props?.backgroundColor !== undefined).every(n => /^rgba\(/.test(String(n.props?.backgroundColor)))).toBe(true)
+  expect(nodesOf(r).some(n => n.props?.overflow === 'scroll' || n.props?.overflowY !== undefined)).toBe(false)
+  await ui.unmount()
 })
