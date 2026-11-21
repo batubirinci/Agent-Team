@@ -8365,6 +8365,7 @@ test('evidence-restyle R5 (timeline): one verdict-coloured dot per round, a rail
   expect([0, 1, 2].map(i => nodesOf(rsBox(r, `round-${i}`) as Node).find(n => n.type === 'Svg')?.props?.width)).toEqual([12, 12, 12])
   expect([0, 1, 2].map(i => !!rsBox(r, `round-${i}-rail`))).toEqual([true, true, false]) // no rail below the last round
   expect(nodesOf(r).filter(n => n.type === 'Svg' && /<rect[^>]* height="2000"/.test(String(n.props?.source))).length).toBe(2)
+  expect(nodesOf(keyed(r, 'round-0-rail')).find(n => n.props?.position === 'absolute')?.props).toMatchObject({ position: 'absolute', top: 0, bottom: 0, overflow: 'hidden' }) // the rail takes no room and is clipped to the round's height
   expect(rsTexts(rsBox(r, 'round-0') as Node).slice(0, 4)).toEqual(['Tur 1', 'NO-GO', 'aaaaaaa', 'Normal yol doğru; gönderim başarısız olursa basış kayboluyor.']) // header row, then the note under it
   expect(textNode(rsBox(r, 'round-0') as Node, /^Tur 1$/)?.props?.weight).toBe('semibold')
   expect([textNode(rsBox(r, 'round-0') as Node, /^NO-GO$/)?.props?.color, textNode(rsBox(r, 'round-1') as Node, /^GO$/)?.props?.color, textNode(rsBox(r, 'round-2') as Node, /^BEKLİYOR$/)?.props?.color]).toEqual(['error', 'success', undefined])
