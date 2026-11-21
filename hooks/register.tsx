@@ -3,8 +3,8 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { BindView, Child, Decision, DirEntry, EvRec, EvRow, Evidence, Forward, Fresh, Kid, Link, Mode, Other, Outbox, Press, Reader, Reopen, RoleStatus, SessionRecord, Status, StatusView, Task, TaskState, TermEvRow } from '../types'
 import type { Rec } from './status'
-import { ANNOUNCE, ASK_WHERE, EV_BODY, EV_HEAD, KARAR, FRESH_MS, KEEP_MS, KIDS_MAX, MARKER, OPEN_ROW, PANE_HEAD, REFUSED, STAGE_LABELS, bandSegments, baseName, bindable, candidatesOf, childOf, clip, countStates, cut as shorten, decisionTask, detailScroll, evCheck, evExt, fmtSize, evHomeOf, evLoad, evMeta, evPaths, evRootOf, evRows, evWidth, expandHome, finishes, flat, isBlocking, isInside, isMdPath, isValid, joined, kararLine, kararLines, kidCaption, kidsOf, label, linksOf, markerOf, md, mdCut, mdRaw, one, otherFiles, otherSession, othersOf, parentsOf, parseFolders, parseRecord, parseStatus, pushOf, readable, readerScroll, reopenLine, reportText, runningRoles, sameStat, sections, sessionLines, spinnerWord, stamp, stopped, trimSlash, withKarar } from './status'
-import { AMBER, BAD, CLAY, MUTED, OK, TRACK, doneStagesSvg, dotSvg, evBarSvg, evDocSvg, meterSvg, stagesSvg } from './svg'
+import { ANNOUNCE, ASK_WHERE, EV_BODY, EV_HEAD, KARAR, FRESH_MS, KEEP_MS, KIDS_MAX, MARKER, OPEN_ROW, PANE_HEAD, REFUSED, STAGE_LABELS, bandSegments, baseName, bindable, candidatesOf, childOf, clip, countStates, cut as shorten, decisionTask, detailScroll, evCheck, evExt, findingLine, fmtSize, evHomeOf, evLoad, evMeta, evPaths, evRootOf, evRows, evWidth, expandHome, finishes, flat, isBlocking, isClosed, isInside, isMdPath, isValid, joined, kararLine, kararLines, kidCaption, kidsOf, label, linksOf, markerOf, md, mdCut, mdRaw, one, otherFiles, otherSession, othersOf, parentsOf, parseFolders, parseRecord, parseStatus, pushOf, readable, readerScroll, reopenLine, reportText, roundsCaption, runningRoles, sameStat, sections, sessionLines, sevTag, spinnerWord, stamp, stopped, trimSlash, withKarar } from './status'
+import { AMBER, BAD, CLAY, MUTED, OK, RAIL_SVG, RULE_SVG, TRACK, doneStagesSvg, dotSvg, evBarSvg, evDotSvg, meterSvg, stagesSvg } from './svg'
 import { BIND_EMPTY, BIND_LEAD, FRAMES, QUEUED, QUEUED_PUSH, TBOX, hk, termBand, termBanner, termBind, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termReader, termTasks, termUsage } from './terminal'
 
 const PANE = 'agent-team'
@@ -100,6 +100,13 @@ const BLOCKED_EDGE = 'rgba(224,108,108,0.45)'
 const BLOCKED_INK = '#F2A3A3'
 const CHIP_BLOCKING = 'rgba(224,108,108,0.18)'
 const CHIP = 'rgba(128,128,128,0.2)'
+// A verdict's looks in the desktop detail: the Svg dot, the theme ink of its word, and the pill's fill and ink (GO: the done chip's fill with the theme's success ink, which reads on a light and a dark pane; NO-GO: the blocking chip's; any other: grey).
+const VERDICT = {
+  go: { hex: OK, ink: 'success', fill: STATE_CHIP.done[1], pill: 'success' },
+  no: { hex: BAD, ink: 'error', fill: CHIP_BLOCKING, pill: 'error' },
+  other: { hex: MUTED, ink: undefined, fill: CHIP, pill: undefined },
+} as const
+const verdictOf = (v: string) => (v === 'GO' ? VERDICT.go : v.startsWith('NO') ? VERDICT.no : VERDICT.other)
 
 const DOT_HEX: Record<RoleStatus, string> = { running: CLAY, done: OK, blocked: BAD, waiting: MUTED, idle: MUTED }
 const DOT_ALT: Record<RoleStatus, string> = {
@@ -1143,8 +1150,8 @@ export const register: Register = (on, options) => {
     // On the terminal every Button is plain with its key; a card is a single-line box in a theme color.
     const key = (k: string) => (term ? hk(k) : {})
     const card = term ? TBOX : CARD
-    const dot = (hex: string, themeKey: string, alt: string, pulse = false) =>
-      Svg ? <Svg source={dotSvg(hex, pulse)} alt={alt} width={8} height={8} /> : <Text color={themeKey}>●</Text>
+    const dot = (hex: string, themeKey: string, alt: string, pulse = false, size = 8) =>
+      Svg ? <Svg source={dotSvg(hex, pulse)} alt={alt} width={size} height={size} /> : <Text color={themeKey}>●</Text>
     const m = await modeNow($, true)
     const other = await read($, others)
     const otherOpen = await read($, othersOpen)
@@ -1404,42 +1411,39 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
-    // An evidence entry in the detail (desktop): the document glyph and, beside it, the label with its meta (a Button holds strings and Text only; pressable only when
-    // the file loaded as text) and the first lines of the file or a report's verdict chip. The path moved to the reader's header.
+    // An evidence row in the detail (desktop): a status dot (a report's chip: green GO, red NO-GO, else grey), the label (a Button holds strings and Text only, so the
+    // press is the label's; pressable only when the file loaded as text) over one dim line (the report's verdict and summary, the first line, or the status text), the
+    // size and a chevron. The return flash plays on the dot. The path is in the reader's header.
     const evEntry = (t: Task, e: Evidence, i: number) => {
       const r = evRowOf(e)
       const ok = r.state === 'ok'
       const flash = rd.left && rd.left.at !== null && rd.left.path === e.path && (t.evidence ?? []).findIndex(x => x.path === e.path) === i ? now - rd.left.at : Number.NaN
-      const meta = evMeta(r)
       const p = r.preview ?? {}
       const status = r.state === 'refused' ? r.line : r.state === 'empty' || (ok && !p.chip && !p.l1) ? 'boş dosya' : r.state === 'loading' ? 'okunuyor…' : undefined
-      const chip = p.chip === 'GO' ? ([STATE_CHIP.done[1], STATE_CHIP.done[2]] as const) : ([CHIP_BLOCKING, 'error'] as const)
+      const line = status ?? (p.chip ? [p.chip, p.summary ?? p.l2].filter(Boolean).join(' · ') : p.l1)
+      const v = p.chip ? verdictOf(p.chip) : VERDICT.other
+      // Only a file that passed the size rule has a size in its record (ok, empty); a refused row never does.
+      const size = r.size !== undefined ? fmtSize(r.size) : undefined
       return (
-        <Box key={`ev-${i}`} {...CARD} flexDirection="row" alignItems="flex-start" hover={ok ? hover(CARD.borderColor) : undefined}>
-          {Svg && <Svg source={evDocSvg(flash)} alt="Belge" width={14} height={14} />}
+        <Box key={`ev-${i}`} flexDirection="row" alignItems="center" gap="sm" padding="sm" hover={ok ? { backgroundColor: 'rgba(128,128,128,0.16)' } : undefined}>
+          {Svg ? <Svg source={evDotSvg(v.hex, flash)} alt={p.chip ?? 'Kanıt'} width={8} height={8} /> : <Text color={v.ink ?? 'inactive'}>●</Text>}
           <Box flexDirection="column" {...FILL}>
             {ok ? (
               <Button key={`ev-open-${i}`} onPress={() => void evOpen(t, e.path)}>
-                {r.label}
-                <Text size="caption" dimColor>{` ${meta}`}</Text>
-                {' ›'}
+                <Text wrap="truncate-end">{r.label}</Text>
               </Button>
             ) : (
               <Text wrap="truncate-end">{r.label}</Text>
             )}
-            {!ok && <Text size="caption" dimColor>{meta}</Text>}
-            {status && <Text size="caption" dimColor wrap="truncate-end">{status}</Text>}
-            {ok && p.chip && (
-              <Box flexDirection="row" alignItems="center" gap="xs">
-                <Box key={`ev-chip-${i}`} backgroundColor={chip[0]} paddingX="xs">
-                  <Text size="caption" weight="medium" color={chip[1]}>{p.chip}</Text>
-                </Box>
-                {p.summary && <Text size="caption" wrap="truncate-end">{p.summary}</Text>}
-              </Box>
-            )}
-            {ok && !p.chip && p.l1 && <Text size="caption" wrap="truncate-end">{p.l1}</Text>}
-            {ok && p.l2 && <Text size="caption" dimColor wrap="truncate-end">{p.l2}</Text>}
+            {line && <Text size="caption" dimColor wrap="truncate-end">{line}</Text>}
           </Box>
+          {/* The size and the chevron keep their width: a Text beside a shrinking column would wrap "6,7 KB" onto two lines (seen in the proxy render). */}
+          {(size || ok) && (
+            <Box flexShrink={0} flexDirection="row" gap="sm">
+              {size && <Text size="caption" dimColor>{size}</Text>}
+              {ok && <Text dimColor>›</Text>}
+            </Box>
+          )}
         </Box>
       )
     }
@@ -1496,36 +1500,78 @@ export const register: Register = (on, options) => {
             {t.candidate && <Text size="caption" mono dimColor>{clip(t.candidate, 7)}</Text>}
             {canBind(t) && <Button key="detail-bind" label="Bağla" onPress={() => void openBind($, t.id)} />}
             {boundBy(t) && <Button key="detail-unbind" label="Bağı çöz" onPress={() => void unbindTask($, t.id)} />}
-            {last && <Text size="caption" dimColor>{`${last.verdict} · ${last.n} tur`}</Text>}
+            {last && (
+              <Box flexDirection="row" alignItems="center" gap="sm">
+                <Box key="detail-verdict" flexShrink={0} backgroundColor={verdictOf(last.verdict).fill} paddingX="xs">
+                  <Text size="caption" weight="semibold" color={verdictOf(last.verdict).pill}>{last.verdict}</Text>
+                </Box>
+                <Text dimColor>{roundsCaption(t)}</Text>
+              </Box>
+            )}
           </Box>
           {t.rounds && (
             <Box flexDirection="column" gap="sm">
-              <Text weight="semibold">Turlar</Text>
-              {t.rounds.map((r, i) => (
-                <Box key={`round-${i}`} {...card}>
-                  <Box flexDirection="row" justifyContent="space-between" gap="sm">
-                    <Text weight="semibold" color={r.verdict === 'GO' ? 'success' : r.verdict.startsWith('NO') ? 'error' : undefined}>{`Tur ${r.n} · ${r.verdict}`}</Text>
-                    {r.candidate && <Text size="caption" mono dimColor>{clip(r.candidate, 7)}</Text>}
-                  </Box>
-                  {r.findings.map((f, j) => {
-                    const tag = [f.severity, f.origin].filter(Boolean).join(' · ')
-                    return (
-                    <Box key={`round-${i}-f-${j}`} flexDirection="column">
-                      {!!tag && <Text size="caption" weight="medium" color={isBlocking(f) ? 'error' : undefined}>{tag}</Text>}
-                      <Text>{f.what}</Text>
-                      {f.where && <Text size="caption" mono dimColor>{f.where}</Text>}
+              <Text size="caption" weight="semibold" dimColor>Turlar</Text>
+              <Box flexDirection="column">
+                {t.rounds.map((r, i) => {
+                  const v = verdictOf(r.verdict)
+                  const next = i < t.rounds!.length - 1
+                  return (
+                    <Box key={`round-${i}`} flexDirection="row" gap="sm">
+                      {/* The timeline: the verdict's dot and, joined to the next round's, a rail (absolute, clipped: it takes no room, so it is as tall as the round). */}
+                      <Box flexDirection="column" alignItems="center" flexShrink={0} paddingTop="xs">
+                        {dot(v.hex, v.ink ?? 'inactive', `Tur ${r.n}: ${r.verdict}`, false, 12)}
+                        {next && Svg && (
+                          <Box key={`round-${i}-rail`} flexGrow={1} position="relative">
+                            <Box position="absolute" top={0} bottom={0} left={0} overflow="hidden">
+                              <Svg source={RAIL_SVG} alt="Tur çizgisi" width={2} height={2000} />
+                            </Box>
+                          </Box>
+                        )}
+                      </Box>
+                      <Box flexDirection="column" gap="xs" paddingBottom={next ? 'md' : 0} {...FILL}>
+                        <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="sm">
+                          <Box flexDirection="row" alignItems="center" gap="xs">
+                            <Text weight="semibold">{`Tur ${r.n}`}</Text>
+                            <Text weight="medium" color={v.ink}>{r.verdict}</Text>
+                          </Box>
+                          {r.candidate && <Text size="caption" mono dimColor>{clip(r.candidate, 7)}</Text>}
+                        </Box>
+                        {r.note && <Text dimColor>{r.note}</Text>}
+                        {r.findings.map((f, j) => {
+                          const tag = sevTag(f.severity)
+                          const line = findingLine(f, isClosed(t, i, f))
+                          return (
+                            <Box key={`round-${i}-f-${j}`} {...CARD} flexDirection="row" alignItems="flex-start">
+                              {tag && (
+                                <Box flexShrink={0} backgroundColor={isBlocking(f) ? CHIP_BLOCKING : CHIP} paddingX="xs">
+                                  <Text size="caption" weight="semibold" color={isBlocking(f) ? 'error' : undefined}>{tag}</Text>
+                                </Box>
+                              )}
+                              <Box flexDirection="column" {...FILL}>
+                                <Text>{f.what}</Text>
+                                {line && <Text size="caption" mono dimColor>{line}</Text>}
+                              </Box>
+                            </Box>
+                          )
+                        })}
+                      </Box>
                     </Box>
-                    )
-                  })}
-                  {r.note && <Text size="caption" dimColor>{r.note}</Text>}
-                </Box>
-              ))}
+                  )
+                })}
+              </Box>
             </Box>
           )}
           {t.evidence && (
             <Box flexDirection="column" gap="xs">
-              <Text weight="semibold">Kanıt</Text>
-              {t.evidence.map((e, i) => evEntry(t, e, i))}
+              <Text size="caption" weight="semibold" dimColor>Kanıt</Text>
+              {/* One card, a row per file; the Box has no single-edge border, so a 1 px Svg rule divides the rows (its Box clips the rule to the card's width). */}
+              <Box {...CARD} padding={0} gap={0}>
+                {t.evidence.flatMap((e, i) => [
+                  ...(i > 0 && Svg ? [<Box key={`ev-rule-${i}`} overflow="hidden"><Svg source={RULE_SVG} alt="Çizgi" height={1} /></Box>] : []),
+                  evEntry(t, e, i),
+                ])}
+              </Box>
             </Box>
           )}
           {/* The composer is the app's own here (a fill is a draft the owner never sees): the question is a press, one line. */}

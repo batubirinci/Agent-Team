@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { EV_BODY, EV_CHARS, EV_HEAD, clean, evCheck, evExt, evHomeOf, evLoad, evPreview, evRootOf, evRows, evWidth, fmtSize, md, one, readerScroll, termText, wrapLine } from '../hooks/status'
-import { evBarSvg, evDocSvg } from '../hooks/svg'
+import { evBarSvg, evDotSvg } from '../hooks/svg'
 import type { EvStat } from '../types'
 
 // Evidence view (design B). Expected values come from <evidence root>/tasks/evidence-view: "A" = analyst-report.md, "F" = spec-fixes.md;
@@ -185,10 +185,11 @@ test('criterion 28 (F §5.2): readerScroll names where the pane goes', async () 
   expect(readerScroll('agent-team', -1)).toBeUndefined()
 })
 
+const RED = '#D9534F'
 const stripStyle = (s: string) => s.replace(/<style>[\s\S]*?<\/style>/g, '')
 
-test('criterion 27 (A §5.2, F 5.1): the bar and the glyph are one-shot functions of elapsed time, CSS only, gated by reduced motion', async () => {
-  // Source: A §5.2 "The two Svgs": bar fill 280 ms + band 520 ms starting at 120 ms, window 0 <= elapsed < 640; glyph flash 700 ms, window 0 <= elapsed < 700.
+test('criterion 27 (A §5.2, F 5.1): the bar and the dot are one-shot functions of elapsed time, CSS only, gated by reduced motion', async () => {
+  // Source: A §5.2 "The two Svgs": bar fill 280 ms + band 520 ms starting at 120 ms, window 0 <= elapsed < 640; the return flash (moved from the document glyph to the row's dot by evidence-restyle) 700 ms, window 0 <= elapsed < 700.
   const at0 = evBarSvg(0)
   expect(at0).toContain('@keyframes fill')
   expect(at0).toContain('@keyframes band')
@@ -204,15 +205,23 @@ test('criterion 27 (A §5.2, F 5.1): the bar and the glyph are one-shot function
   expect(stripStyle(at0)).toBe(still)
   expect(stripStyle(at300)).toBe(still)
   expect(still).toMatch(/^<svg [^>]*width="320" height="4"/)
-  expect(evDocSvg(0)).toContain('@keyframes flash')
-  expect(evDocSvg(0)).toMatch(/flash 700ms [^;}]* 0ms 1 both/)
-  expect(evDocSvg(250)).toMatch(/flash 700ms [^;}]* -250ms 1 both/)
-  expect(evDocSvg(699)).toContain('@keyframes flash')
-  for (const e of [700, 9999, -1, Number.NaN, undefined]) expect(evDocSvg(e)).not.toMatch(/animation|@keyframes|<style/)
-  const doc = evDocSvg(Number.NaN)
-  expect(stripStyle(evDocSvg(10))).toBe(doc)
-  expect(doc).toMatch(/^<svg [^>]*width="14" height="14"/)
-  for (const s of [at0, at300, doc, evDocSvg(10)]) {
+  expect(evDotSvg(RED, 0)).toContain('@keyframes flash')
+  expect(evDotSvg(RED, 0)).toMatch(/flash 700ms [^;}]* 0ms 1 both/)
+  expect(evDotSvg(RED, 250)).toMatch(/flash 700ms [^;}]* -250ms 1 both/)
+  expect(evDotSvg(RED, 699)).toContain('@keyframes flash')
+  for (const e of [700, 9999, -1, Number.NaN, undefined]) expect(evDotSvg(RED, e)).not.toMatch(/animation|@keyframes|<style/)
+  const dot = evDotSvg(RED, Number.NaN)
+  expect(stripStyle(evDotSvg(RED, 10))).toBe(dot)
+  expect(dot).toMatch(/^<svg [^>]*width="8" height="8"/)
+  // Revision 2 (Neon M3): a flashing dot has exactly one reduced-motion gate around its animation, and flashes from clay to its own colour.
+  for (const e of [0, 250, 699]) {
+    const flashing = evDotSvg('#112233', e)
+    expect(flashing.match(/@media \(prefers-reduced-motion: no-preference\)\{@keyframes flash[^<]*\}<\/style>/g)?.length).toBe(1)
+    expect(flashing.match(/@media/g)?.length).toBe(1)
+    expect(flashing).toContain('@keyframes flash{from{fill:#D97757}to{fill:#112233}}')
+    expect(flashing).not.toContain('#8A8880') // not the muted grey of the old glyph
+  }
+  for (const s of [at0, at300, dot, evDotSvg(RED, 10)]) {
     expect(s).not.toContain('<animate')
     expect(s.match(/@media/g)?.length ?? 1).toBe(1)
   }

@@ -51,6 +51,29 @@ export const pushOf = (d: { push?: unknown }) => d.push !== false
 // A finding that blocks, "BLOCKING" in any letter case: one rule for the parser's cap order and for both drawings.
 export const isBlocking = (f: Finding) => f.severity?.toLowerCase() === 'blocking'
 
+// The desktop detail's round texts (evidence-restyle). A Map, not an object: the file is untrusted and a key like "constructor" must not find a function.
+const SEVERITY = new Map([['blocking', 'ENGELLEYİCİ'], ['high', 'YÜKSEK'], ['medium', 'ORTA'], ['low', 'DÜŞÜK'], ['minor', 'KÜÇÜK']])
+const ORIGIN = new Map([['introduced', 'yeni'], ['pre-existing', 'önceden vardı']])
+// The severity tag: the Turkish word of a known severity (any letter case), any other value uppercased as written, nothing without one.
+export const sevTag = (severity?: string) => (severity ? SEVERITY.get(severity.toLowerCase()) ?? severity.toUpperCase() : undefined)
+// A finding's dim line: where, the origin in Turkish (an unknown one as written), and "kapandı" (`closed`: the caller's rule; the file records no round that closed it).
+export const findingLine = (f: Finding, closed: boolean) => [f.where, f.origin && (ORIGIN.get(f.origin.toLowerCase()) ?? f.origin), closed && 'kapandı'].filter(Boolean).join(' · ')
+// Whether a finding is drawn closed: a BLOCKING one in a round before the last of a task whose last verdict is GO (GO leaves no blocking finding open), and only while the
+// task's own `blocking` count is 0: a file that says a blocker is open as well as GO contradicts itself, and nothing is drawn closed then.
+export const isClosed = (t: Pick<Task, 'rounds' | 'blocking'>, i: number, f: Finding) => {
+  const rounds = t.rounds ?? []
+  return (t.blocking ?? 0) <= 0 && rounds.at(-1)?.verdict === 'GO' && i < rounds.length - 1 && isBlocking(f)
+}
+// The line beside the last verdict: "2 turda · 1 engelleyici kapandı · 3 takip". Every number is the file's own (the last round's n, the earlier rounds' BLOCKING
+// findings, the task's blocking and followup counts). A blocker listed in several rounds counts once: distinct (what, where) pairs.
+export const roundsCaption = (t: Pick<Task, 'rounds' | 'blocking' | 'followup'>) => {
+  const rounds = t.rounds ?? []
+  const last = rounds.at(-1)
+  if (!last) return ''
+  const closed = new Set(rounds.flatMap((r, i) => r.findings.filter(f => isClosed(t, i, f)).map(f => `${f.what}\n${f.where ?? ''}`))).size
+  return [`${last.n} turda`, closed > 0 && `${closed} engelleyici kapandı`, (t.blocking ?? 0) > 0 && `${t.blocking} engelleyici açık`, (t.followup ?? 0) > 0 && `${t.followup} takip`].filter(Boolean).join(' · ')
+}
+
 // The file is written by the Lead (a model): read it as untrusted data, keep what is well formed.
 export function parseStatus(text: string): Status {
   const raw: unknown = JSON.parse(text)

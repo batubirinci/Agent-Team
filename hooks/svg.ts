@@ -75,9 +75,14 @@ export function evBarSvg(elapsed = Number.NaN): string {
   return svg(w, `${motion}${rect(0, w, TRACK)}${rect(0, w, CLAY).replace('/>', ' class="fill"/>')}<rect class="band" x="0" width="40" height="${H}" fill="rgba(255,255,255,0.45)" opacity="0"/>`)
 }
 
-// The document glyph of an evidence row (14 x 14, outline). `elapsed` ms since the reader was left: the outline fades from clay to muted once in 700 ms.
-export const EV_DOC_MS = 700
-export function evDocSvg(elapsed = Number.NaN): string {
-  const motion = elapsed >= 0 && elapsed < EV_DOC_MS ? MOTION(`@keyframes flash{from{stroke:${CLAY}}to{stroke:${MUTED}}}path{animation:flash 700ms ease-out ${n(-elapsed)}ms 1 both}`) : ''
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14">${motion}<path d="M3 1.5h5.5l3 3v8h-8.5zM8.5 1.5v3h3" fill="none" stroke="${MUTED}" stroke-width="1.2" stroke-linejoin="round"/></svg>`
+// The status dot of an evidence row (8 x 8). `elapsed` ms since the reader was left: the dot fades from clay to its own color once in 700 ms.
+export const EV_DOT_MS = 700
+export function evDotSvg(color: string, elapsed = Number.NaN): string {
+  const motion = elapsed >= 0 && elapsed < EV_DOT_MS ? MOTION(`@keyframes flash{from{fill:${CLAY}}to{fill:${color}}}circle{animation:flash 700ms ease-out ${n(-elapsed)}ms 1 both}`) : ''
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8">${motion}<circle cx="4" cy="4" r="4" fill="${color}"/></svg>`
 }
+
+// The detail's hairlines (a Box has no single-edge border). The rail joins one round's dot to the next: 2 x 2000, far taller than a round, clipped by the Box it sits
+// in. The rule divides the evidence rows: 1000 x 1 stretched to the slot (preserveAspectRatio none).
+export const RAIL_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2000" viewBox="0 0 2 2000"><rect width="2" height="2000" rx="1" fill="${TRACK}"/></svg>`
+export const RULE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1" viewBox="0 0 1000 1" preserveAspectRatio="none"><rect width="1000" height="1" fill="${TRACK}"/></svg>`
