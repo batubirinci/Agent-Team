@@ -8361,14 +8361,14 @@ test('evidence-restyle R4b (closed): a blocker in an intermediate round of a GO 
   const b = (what: string, where: string) => ({ severity: 'BLOCKING', what, where })
   const rounds = [
     { n: 1, verdict: 'NO-GO', findings: [b('A', 'a.ts:1')] },
-    { n: 2, verdict: 'NO-GO', findings: [b('A', 'a.ts:1'), b('B', 'b.ts:2')] },
+    { n: 2, verdict: 'NO-GO', findings: [b('A', 'a.ts:1'), b('B', 'b.ts:2'), b('A', 'c.ts:3')] },
     { n: 3, verdict: 'GO', findings: [] },
   ]
   const { ui, root } = await rsOpen($, on, { rounds })
   const r = await root()
   expect(rsTexts(rsBox(r, 'round-1-f-1') as Node)).toEqual(['ENGELLEYİCİ', 'B', 'b.ts:2 · kapandı']) // round 2 of 3: i = 1
   expect(rsTexts(rsBox(r, 'round-0-f-0') as Node)).toEqual(['ENGELLEYİCİ', 'A', 'a.ts:1 · kapandı'])
-  expect(textOf(textNode(r, /turda/) as Node)).toBe('3 turda · 2 engelleyici kapandı') // A and B, not three
+  expect(textOf(textNode(r, /turda/) as Node)).toBe('3 turda · 3 engelleyici kapandı') // A at a.ts:1 (listed twice, once), B, and A at c.ts:3 (same what, other where: its own); four listings, three blockers
   await ui.unmount()
 })
 
