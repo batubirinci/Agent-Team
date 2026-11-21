@@ -8457,10 +8457,11 @@ test('evidence-restyle R7 (Kanıt press): a loaded row opens the same reader; on
 })
 
 test('evidence-restyle R8 (Kanıt status): refused and empty rows keep their status text, with no Button, size only for the empty one, no chevron', FOLDERS, async ($, on) => {
-  const { ui, opened } = await erBoot($, on, RS_EV, RS_FILES)
+  const { ui, opened } = await erBoot($, on, [...RS_EV, ['Büyük', `${ER}/big.md`]], { ...RS_FILES, [`${ER}/big.md`]: { text: 'x', size: 1_048_577 } })
   await opened()
   const r = await drawnOf(ui)
   const row = (i: number) => rsBox(r, `ev-${i}`) as Node
+  expect(rsTexts(row(5))).toEqual(['Büyük', 'çok büyük (1,0 MB): gösterilmiyor']) // refused for its size: the size is not drawn beside the refusal (a refused file's stat may be a link's target's)
   expect(rsTexts(row(3))).toEqual(['Boş', 'boş dosya', '0 B'])
   expect(rsTexts(row(4))).toEqual(['Dışarıda', 'kanıt kökünün dışında: gösterilmiyor']) // refused: no size, no chevron
   expect(textNode(row(4), /^kanıt kökünün/)?.props).toMatchObject({ dimColor: true, wrap: 'truncate-end' })
