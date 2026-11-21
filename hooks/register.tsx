@@ -1422,7 +1422,8 @@ export const register: Register = (on, options) => {
       const status = r.state === 'refused' ? r.line : r.state === 'empty' || (ok && !p.chip && !p.l1) ? 'boş dosya' : r.state === 'loading' ? 'okunuyor…' : undefined
       const line = status ?? (p.chip ? [p.chip, p.summary].filter(Boolean).join(' · ') : p.l1)
       const v = p.chip ? verdictOf(p.chip) : VERDICT.other
-      const size = (ok || r.state === 'empty') && r.size !== undefined ? fmtSize(r.size) : undefined
+      // Only a file that passed the size rule has a size in its record (ok, empty); a refused row never does.
+      const size = r.size !== undefined ? fmtSize(r.size) : undefined
       return (
         <Box key={`ev-${i}`} flexDirection="row" alignItems="center" gap="sm" padding="sm" hover={ok ? { backgroundColor: 'rgba(128,128,128,0.16)' } : undefined}>
           {Svg ? <Svg source={evDotSvg(v.hex, flash)} alt={p.chip ?? 'Kanıt'} width={8} height={8} /> : <Text color={v.ink ?? 'inactive'}>●</Text>}
