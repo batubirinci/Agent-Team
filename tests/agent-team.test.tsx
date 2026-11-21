@@ -8283,7 +8283,7 @@ test('evidence-restyle R1 (header): the last verdict is a pill and its dim line 
   const r = await root()
   const pill = rsBox(r, 'detail-verdict') as Node
   expect(pill.props).toMatchObject({ backgroundColor: RS_GO_FILL })
-  expect(textNode(pill, /^GO$/)?.props?.color).toBe('#A8D5A2') // STATE_CHIP.done ink
+  expect(textNode(pill, /^GO$/)?.props?.color).toBe('success') // the theme key (revision 2: the done chip's pale hex ink is 1.33:1 on a light pane)
   expect(textNode(r, /turda/) && textOf(textNode(r, /turda/) as Node)).toBe('2 turda · 1 engelleyici kapandı · 3 takip')
   expect(textNode(r, /turda/)?.props?.dimColor).toBe(true)
   expect(textNode(r, /^GO · 2 tur$/)).toBeUndefined() // the old caption is gone
@@ -8356,6 +8356,33 @@ test('evidence-restyle R4 (finding line): where, the origin in Turkish, and "kap
   await ui.unmount()
 })
 
+test('evidence-restyle R4b (closed): a blocker in an intermediate round of a GO task is drawn closed, and one listed in two rounds counts once', async ($, on) => {
+  // Source: the brief's rule (BLOCKING in a round before the last, last verdict GO) and Neon's finding M2.3a: the same (what, where) in two NO-GO rounds is one blocker.
+  const b = (what: string, where: string) => ({ severity: 'BLOCKING', what, where })
+  const rounds = [
+    { n: 1, verdict: 'NO-GO', findings: [b('A', 'a.ts:1')] },
+    { n: 2, verdict: 'NO-GO', findings: [b('A', 'a.ts:1'), b('B', 'b.ts:2')] },
+    { n: 3, verdict: 'GO', findings: [] },
+  ]
+  const { ui, root } = await rsOpen($, on, { rounds })
+  const r = await root()
+  expect(rsTexts(rsBox(r, 'round-1-f-1') as Node)).toEqual(['ENGELLEYİCİ', 'B', 'b.ts:2 · kapandı']) // round 2 of 3: i = 1
+  expect(rsTexts(rsBox(r, 'round-0-f-0') as Node)).toEqual(['ENGELLEYİCİ', 'A', 'a.ts:1 · kapandı'])
+  expect(textOf(textNode(r, /turda/) as Node)).toBe('3 turda · 2 engelleyici kapandı') // A and B, not three
+  await ui.unmount()
+})
+
+test('evidence-restyle R2d (closed): a GO whose task still has blocking > 0 draws nothing closed', async ($, on) => {
+  // Source: Neon M2.1 / the Lead's adjudication: GO with blocking > 0 contradicts itself; no "kapandı" part and no "kapandı" on a finding.
+  const rounds = [{ n: 1, verdict: 'NO-GO', findings: [{ severity: 'BLOCKING', what: 'A', where: 'a.ts:1' }] }, { n: 2, verdict: 'GO', findings: [] }]
+  const { ui, root } = await rsOpen($, on, { rounds, blocking: 1 })
+  const r = await root()
+  expect(textOf(textNode(r, /turda/) as Node)).toBe('2 turda · 1 engelleyici açık')
+  expect(rsTexts(r).some(t => /kapandı/.test(t))).toBe(false)
+  expect(rsTexts(rsBox(r, 'round-0-f-0') as Node)).toEqual(['ENGELLEYİCİ', 'A', 'a.ts:1'])
+  await ui.unmount()
+})
+
 test('evidence-restyle R5 (timeline): one verdict-coloured dot per round, a rail under every round but the last, then Tur N / the verdict / the short SHA, the note, and the findings', async ($, on) => {
   const rounds = [...rsRounds, { n: 3, verdict: 'BEKLİYOR', candidate: SHA_B, findings: [] }]
   const { ui, root } = await rsOpen($, on, { rounds })
@@ -8365,7 +8392,7 @@ test('evidence-restyle R5 (timeline): one verdict-coloured dot per round, a rail
   expect([0, 1, 2].map(i => nodesOf(rsBox(r, `round-${i}`) as Node).find(n => n.type === 'Svg')?.props?.width)).toEqual([12, 12, 12])
   expect([0, 1, 2].map(i => !!rsBox(r, `round-${i}-rail`))).toEqual([true, true, false]) // no rail below the last round
   expect(nodesOf(r).filter(n => n.type === 'Svg' && /<rect[^>]* height="2000"/.test(String(n.props?.source))).length).toBe(2)
-  expect(nodesOf(keyed(r, 'round-0-rail')).find(n => n.props?.position === 'absolute')?.props).toMatchObject({ position: 'absolute', top: 0, bottom: 0, overflow: 'hidden' }) // the rail takes no room and is clipped to the round's height
+  expect(nodesOf(keyed(r, 'round-0-rail')).find(n => n.props?.position === 'absolute')?.props).toMatchObject({ position: 'absolute', top: 0, bottom: 0, left: 0, overflow: 'hidden' }) // the rail takes no room and is clipped to the round's height
   expect(rsTexts(rsBox(r, 'round-0') as Node).slice(0, 4)).toEqual(['Tur 1', 'NO-GO', 'aaaaaaa', 'Normal yol doğru; gönderim başarısız olursa basış kayboluyor.']) // header row, then the note under it
   expect(textNode(rsBox(r, 'round-0') as Node, /^Tur 1$/)?.props?.weight).toBe('semibold')
   expect([textNode(rsBox(r, 'round-0') as Node, /^NO-GO$/)?.props?.color, textNode(rsBox(r, 'round-1') as Node, /^GO$/)?.props?.color, textNode(rsBox(r, 'round-2') as Node, /^BEKLİYOR$/)?.props?.color]).toEqual(['error', 'success', undefined])
@@ -8418,11 +8445,11 @@ test('evidence-restyle R6 (Kanıt list): one card, a row per file with a verdict
   const dot = (i: number) => String(nodesOf(row(i)).find(n => n.type === 'Svg')?.props?.source).match(/fill="(#[0-9A-F]{6})"/)?.[1]
   expect([0, 1, 2, 3, 4].map(dot)).toEqual([RS_DOT.go, RS_DOT.no, RS_DOT.other, RS_DOT.other, RS_DOT.other]) // GO chip, NO-GO chip, no chip, empty, refused
   expect(nodesOf(row(0)).find(n => n.type === 'Svg')?.props).toMatchObject({ width: 8, height: 8 })
-  // The Button holds the label; the Texts are the one dim line, the size, the chevron.
+  // The Button holds the label (a Text); then come the one dim line, the size, the chevron.
   expect(await Promise.all([0, 1, 2].map(async i => (await ui.find({ key: `ev-open-${i}` }))?.text))).toEqual(['QA raporu · tur 2', 'QA raporu · tur 1', 'Developer raporu'])
-  expect(rsTexts(row(0))).toEqual(['GO', '3,8 KB', '›'])
-  expect(rsTexts(row(1))).toEqual(['NO-GO · tam inceleme', '4,6 KB', '›'])
-  expect(rsTexts(row(2))).toEqual(['Bitti. Terminal dışındaki her yüzeyde basış sahibin mesajı olarak gider', '926 B', '›'])
+  expect(rsTexts(row(0))).toEqual(['QA raporu · tur 2', 'GO · QA r2', '3,8 KB', '›']) // a chip without a summary shows the report's second line (l2) after it
+  expect(rsTexts(row(1))).toEqual(['QA raporu · tur 1', 'NO-GO · tam inceleme', '4,6 KB', '›'])
+  expect(rsTexts(row(2))).toEqual(['Developer raporu', 'Bitti. Terminal dışındaki her yüzeyde basış sahibin mesajı olarak gider', '926 B', '›'])
   expect(textNode(row(1), /^NO-GO · tam inceleme$/)?.props).toMatchObject({ size: 'caption', dimColor: true, wrap: 'truncate-end' })
   expect(textNode(row(0), /^3,8 KB$/)?.props).toMatchObject({ size: 'caption', dimColor: true })
   // One card holds the rows; the rules sit between them only (the Box has no single-edge border).
@@ -8457,15 +8484,19 @@ test('evidence-restyle R7 (Kanıt press): a loaded row opens the same reader; on
 })
 
 test('evidence-restyle R8 (Kanıt status): refused and empty rows keep their status text, with no Button, size only for the empty one, no chevron', FOLDERS, async ($, on) => {
-  const { ui, opened } = await erBoot($, on, [...RS_EV, ['Büyük', `${ER}/big.md`]], { ...RS_FILES, [`${ER}/big.md`]: { text: 'x', size: 1_048_577 } })
+  // Rows (the pane keeps 6 evidence items): 0 a loaded report, 1 empty, 2 outside the root, 3 too big, 4 blank text.
+  const { ui, opened } = await erBoot($, on, [RS_EV[2]!, RS_EV[3]!, RS_EV[4]!, ['Büyük', `${ER}/big.md`], ['Boşluk', `${ER}/blank.md`]], { ...RS_FILES, [`${ER}/big.md`]: { text: 'x', size: 1_048_577 }, [`${ER}/blank.md`]: { text: '  \n\n ', size: 5 } })
   await opened()
   const r = await drawnOf(ui)
   const row = (i: number) => rsBox(r, `ev-${i}`) as Node
-  expect(rsTexts(row(5))).toEqual(['Büyük', 'çok büyük (1,0 MB): gösterilmiyor']) // refused for its size: the size is not drawn beside the refusal (a refused file's stat may be a link's target's)
-  expect(rsTexts(row(3))).toEqual(['Boş', 'boş dosya', '0 B'])
-  expect(rsTexts(row(4))).toEqual(['Dışarıda', 'kanıt kökünün dışında: gösterilmiyor']) // refused: no size, no chevron
-  expect(textNode(row(4), /^kanıt kökünün/)?.props).toMatchObject({ dimColor: true, wrap: 'truncate-end' })
-  expect(textNode(row(4), /^Dışarıda$/)?.props?.wrap).toBe('truncate-end')
+  expect(rsTexts(row(1))).toEqual(['Boş', 'boş dosya', '0 B'])
+  expect(rsTexts(row(2))).toEqual(['Dışarıda', 'kanıt kökünün dışında: gösterilmiyor']) // refused: no size, no chevron
+  expect(rsTexts(row(3))).toEqual(['Büyük', 'çok büyük (1,0 MB): gösterilmiyor']) // refused for its size: the size is not drawn beside the refusal (a refused file's stat may be a link's target's)
+  expect([2, 3].map(i => kidsOf(row(i)).length)).toEqual([2, 2]) // ... and no empty size Box: the dot and the text column only (revision 2)
+  expect(rsTexts(row(4))).toEqual(['Boşluk', 'boş dosya', '5 B', '›']) // a loaded file with nothing to show says so (the label is the Text in its Button)
+  expect(keyed(r, 'ev-open-4')).toBeDefined()
+  expect(textNode(row(2), /^kanıt kökünün/)?.props).toMatchObject({ dimColor: true, wrap: 'truncate-end' })
+  expect(textNode(row(2), /^Dışarıda$/)?.props?.wrap).toBe('truncate-end')
   await ui.unmount()
 })
 
@@ -8493,6 +8524,7 @@ test('evidence-restyle R9 (row rule): with 120-character labels, notes and findi
   expect(textNode(column(keyed(r, 'round-0-f-0'), -1), new RegExp(`^${LONG120}$`))).toBeDefined() // the long finding is in the shrinking column
   expect(kidsOf(keyed(r, 'round-0-f-0')).find(k => k.type === 'Box' && hasText(k) && !k.props?.flexGrow)?.props?.flexShrink).toBe(0) // the tag keeps its size
   expect(keyed(r, 'detail-verdict').props?.flexShrink).toBe(0)
+  expect(kidsOf(keyed(r, 'ev-open-0')).map(k => [k.type, k.props?.wrap])).toEqual([['Text', 'truncate-end']]) // a loaded row's label is cut at the end, inside its Button (revision 2)
   expect(kidsOf(keyed(r, 'ev-1')).at(-1)?.props).toMatchObject({ flexShrink: 0 }) // the size and chevron do not wrap
   expect(kidsOf(keyed(r, 'round-0')).find(k => !hasText(k))?.props).toMatchObject({ flexShrink: 0 }) // the dot column
   expect(textNode(keyed(r, 'ev-1'), /^uzun-ad-/)?.props?.wrap).toBe('truncate-end') // an unloaded row's label is a Text cut at the end (a loaded row's is the Button)
@@ -8508,7 +8540,7 @@ test('evidence-restyle R10 (colours, scroll): the detail draws theme keys and th
   const inkOf = (n: Node) => n.props?.color
   // (the state chip above the verdict line is the old design's: its hex inks are not in this task)
   const mine = ['detail-verdict', 'round-0', 'round-1', 'ev-0', 'ev-1', 'ev-2', 'ev-3', 'ev-4'].flatMap(k => nodesOf(keyed(r, k)))
-  expect(new Set(mine.filter(n => n.type === 'Text' && inkOf(n) !== undefined).map(inkOf))).toEqual(new Set(['error', 'success', '#A8D5A2']))
+  expect(new Set(mine.filter(n => n.type === 'Text' && inkOf(n) !== undefined).map(inkOf))).toEqual(new Set(['error', 'success']))
   expect(nodesOf(r).filter(n => n.props?.backgroundColor !== undefined).every(n => /^rgba\(/.test(String(n.props?.backgroundColor)))).toBe(true)
   expect(nodesOf(r).some(n => n.props?.overflow === 'scroll' || n.props?.overflowY !== undefined)).toBe(false)
   await ui.unmount()

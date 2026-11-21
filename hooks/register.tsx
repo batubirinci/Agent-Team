@@ -100,9 +100,9 @@ const BLOCKED_EDGE = 'rgba(224,108,108,0.45)'
 const BLOCKED_INK = '#F2A3A3'
 const CHIP_BLOCKING = 'rgba(224,108,108,0.18)'
 const CHIP = 'rgba(128,128,128,0.2)'
-// A verdict's looks in the desktop detail: the Svg dot, the theme ink of its word, and the pill's fill and ink (GO: the done chip's; NO-GO: the blocking chip's; any other: grey).
+// A verdict's looks in the desktop detail: the Svg dot, the theme ink of its word, and the pill's fill and ink (GO: the done chip's fill with the theme's success ink, which reads on a light and a dark pane; NO-GO: the blocking chip's; any other: grey).
 const VERDICT = {
-  go: { hex: OK, ink: 'success', fill: STATE_CHIP.done[1], pill: STATE_CHIP.done[2] },
+  go: { hex: OK, ink: 'success', fill: STATE_CHIP.done[1], pill: 'success' },
   no: { hex: BAD, ink: 'error', fill: CHIP_BLOCKING, pill: 'error' },
   other: { hex: MUTED, ink: undefined, fill: CHIP, pill: undefined },
 } as const
@@ -1420,7 +1420,7 @@ export const register: Register = (on, options) => {
       const flash = rd.left && rd.left.at !== null && rd.left.path === e.path && (t.evidence ?? []).findIndex(x => x.path === e.path) === i ? now - rd.left.at : Number.NaN
       const p = r.preview ?? {}
       const status = r.state === 'refused' ? r.line : r.state === 'empty' || (ok && !p.chip && !p.l1) ? 'boş dosya' : r.state === 'loading' ? 'okunuyor…' : undefined
-      const line = status ?? (p.chip ? [p.chip, p.summary].filter(Boolean).join(' · ') : p.l1)
+      const line = status ?? (p.chip ? [p.chip, p.summary ?? p.l2].filter(Boolean).join(' · ') : p.l1)
       const v = p.chip ? verdictOf(p.chip) : VERDICT.other
       // Only a file that passed the size rule has a size in its record (ok, empty); a refused row never does.
       const size = r.size !== undefined ? fmtSize(r.size) : undefined
@@ -1430,7 +1430,7 @@ export const register: Register = (on, options) => {
           <Box flexDirection="column" {...FILL}>
             {ok ? (
               <Button key={`ev-open-${i}`} onPress={() => void evOpen(t, e.path)}>
-                {r.label}
+                <Text wrap="truncate-end">{r.label}</Text>
               </Button>
             ) : (
               <Text wrap="truncate-end">{r.label}</Text>
@@ -1438,10 +1438,12 @@ export const register: Register = (on, options) => {
             {line && <Text size="caption" dimColor wrap="truncate-end">{line}</Text>}
           </Box>
           {/* The size and the chevron keep their width: a Text beside a shrinking column would wrap "6,7 KB" onto two lines (seen in the proxy render). */}
-          <Box flexShrink={0} flexDirection="row" gap="sm">
-            {size && <Text size="caption" dimColor>{size}</Text>}
-            {ok && <Text dimColor>›</Text>}
-          </Box>
+          {(size || ok) && (
+            <Box flexShrink={0} flexDirection="row" gap="sm">
+              {size && <Text size="caption" dimColor>{size}</Text>}
+              {ok && <Text dimColor>›</Text>}
+            </Box>
+          )}
         </Box>
       )
     }
@@ -1521,7 +1523,7 @@ export const register: Register = (on, options) => {
                         {dot(v.hex, v.ink ?? 'inactive', `Tur ${r.n}: ${r.verdict}`, false, 12)}
                         {next && Svg && (
                           <Box key={`round-${i}-rail`} flexGrow={1} position="relative">
-                            <Box position="absolute" top={0} bottom={0} overflow="hidden">
+                            <Box position="absolute" top={0} bottom={0} left={0} overflow="hidden">
                               <Svg source={RAIL_SVG} alt="Tur çizgisi" width={2} height={2000} />
                             </Box>
                           </Box>
@@ -1538,7 +1540,7 @@ export const register: Register = (on, options) => {
                         {r.note && <Text dimColor>{r.note}</Text>}
                         {r.findings.map((f, j) => {
                           const tag = sevTag(f.severity)
-                          const line = findingLine(f, isClosed(t.rounds!, i, f))
+                          const line = findingLine(f, isClosed(t, i, f))
                           return (
                             <Box key={`round-${i}-f-${j}`} {...CARD} flexDirection="row" alignItems="flex-start">
                               {tag && (

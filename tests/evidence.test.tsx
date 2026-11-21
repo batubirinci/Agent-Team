@@ -213,6 +213,14 @@ test('criterion 27 (A §5.2, F 5.1): the bar and the dot are one-shot functions 
   const dot = evDotSvg(RED, Number.NaN)
   expect(stripStyle(evDotSvg(RED, 10))).toBe(dot)
   expect(dot).toMatch(/^<svg [^>]*width="8" height="8"/)
+  // Revision 2 (Neon M3): a flashing dot has exactly one reduced-motion gate around its animation, and flashes from clay to its own colour.
+  for (const e of [0, 250, 699]) {
+    const flashing = evDotSvg('#112233', e)
+    expect(flashing.match(/@media \(prefers-reduced-motion: no-preference\)\{@keyframes flash[^<]*\}<\/style>/g)?.length).toBe(1)
+    expect(flashing.match(/@media/g)?.length).toBe(1)
+    expect(flashing).toContain('@keyframes flash{from{fill:#D97757}to{fill:#112233}}')
+    expect(flashing).not.toContain('#8A8880') // not the muted grey of the old glyph
+  }
   for (const s of [at0, at300, dot, evDotSvg(RED, 10)]) {
     expect(s).not.toContain('<animate')
     expect(s.match(/@media/g)?.length ?? 1).toBe(1)
