@@ -2,9 +2,9 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { BindView, Child, Decision, DirEntry, EvRec, EvRow, Evidence, Forward, Fresh, Kid, Link, Mode, Other, Outbox, Press, Reader, Reopen, RoleStatus, SessionRecord, Status, StatusView, Task, TaskState, TermEvRow } from '../types'
-import type { Rec } from './status'
-import { ANNOUNCE, ASK_WHERE, EV_BODY, EV_HEAD, KARAR, FRESH_MS, KEEP_MS, KIDS_MAX, MARKER, OPEN_ROW, PANE_HEAD, REFUSED, STAGE_LABELS, bandSegments, baseName, bindable, candidatesOf, childOf, clip, countStates, cut as shorten, decisionTask, detailScroll, evCheck, evExt, findingLine, fmtSize, evHomeOf, evLoad, evMeta, evPaths, evRootOf, evRows, evWidth, expandHome, finishes, flat, isBlocking, isClosed, isInside, isMdPath, isValid, joined, kararLine, kararLines, kidCaption, kidsOf, label, linksOf, markerOf, md, mdCut, mdRaw, one, otherFiles, otherSession, othersOf, parentsOf, parseFolders, parseRecord, parseStatus, pushOf, readable, readerScroll, reopenLine, reportText, roundsCaption, runningRoles, sameStat, sections, sessionLines, sevTag, spinnerWord, stamp, stopped, trimSlash, withKarar } from './status'
-import { AMBER, BAD, CLAY, MUTED, OK, RAIL_SVG, RULE_SVG, TRACK, doneStagesSvg, dotSvg, evBarSvg, evDotSvg, meterSvg, stagesSvg } from './svg'
+import type { Rec, Tab } from './status'
+import { ANNOUNCE, ASK_WHERE, EV_BODY, EV_HEAD, KARAR, FRESH_MS, KEEP_MS, KIDS_MAX, MARKER, OPEN_ROW, PANE_HEAD, REFUSED, STAGE_LABELS, bandSegments, baseName, bindable, candidatesOf, childOf, clip, countStates, cut as shorten, decisionTask, decisionTitle, detailScroll, evCheck, evExt, findingLine, fmtSize, evHomeOf, evLoad, evMeta, evPaths, evRootOf, evRows, evWidth, expandHome, finishes, flat, isBlocking, isClosed, isInside, isMdPath, isValid, joined, kararLine, kararLines, kidCaption, kidsOf, label, linksOf, markerOf, md, mdCut, mdRaw, nowRole, one, otherFiles, otherSession, othersOf, parentsOf, parseFolders, parseRecord, parseStatus, pushOf, readable, readerScroll, reopenLine, reportText, roundsCaption, runningRoles, sameStat, sections, sessionLines, sevTag, spinnerWord, stamp, stopped, tabOf, trimSlash, withKarar } from './status'
+import { AMBER, BAD, CLAY, LOCK_SVG, MUTED, OK, RAIL_SVG, RULE_SVG, TRACK, doneStagesSvg, dotSvg, evBarSvg, evDotSvg, meterSvg, stagesSvg } from './svg'
 import { BIND_EMPTY, BIND_LEAD, FRAMES, QUEUED, QUEUED_PUSH, TBOX, hk, termBand, termBanner, termBind, termDecisions, termFooter, termHeader, termDetail, termHint, termOthers, termReader, termTasks, termUsage } from './terminal'
 
 const PANE = 'agent-team'
@@ -45,6 +45,8 @@ const othersOpen = atom({ plugin: 'agent-team', key: 'othersOpen' } as const, fa
 // Both are new: a value an older build stored has neither, and the `status` tag stays (an older parse has no `done`, which reads as not done).
 const fresh = atom({ plugin: 'agent-team', key: 'fresh' } as const, [] as Fresh[], { shape: 'fresh-1' })
 const doneOpen = atom({ plugin: 'agent-team', key: 'doneOpen' } as const, false, { shape: 'done-open-1' })
+// The list's tab the owner picked (null: none yet, the first that has tasks shows). Desktop only, session state.
+const tab = atom({ plugin: 'agent-team', key: 'tab' } as const, null as Tab | null, { shape: 'tab-1' })
 // The decision lines now in the owner's prompt box (kararLines of the draft): on the terminal a button writes one and the box shows it picked.
 const karar = atom({ plugin: 'agent-team', key: 'karar' } as const, [] as string[], { shape: 'karar-1' })
 // Pane presses on their way to the Lead (`queue`, in press order) and the decisions whose line was delivered (`sent`: [id, option]; dropped
@@ -100,6 +102,8 @@ const BLOCKED_EDGE = 'rgba(224,108,108,0.45)'
 const BLOCKED_INK = '#F2A3A3'
 const CHIP_BLOCKING = 'rgba(224,108,108,0.18)'
 const CHIP = 'rgba(128,128,128,0.2)'
+// The "Senin sıran" band's soft clay fill (reads on a light and a dark pane).
+const BAND = 'rgba(217,119,87,0.10)'
 // A verdict's looks in the desktop detail: the Svg dot, the theme ink of its word, and the pill's fill and ink (GO: the done chip's fill with the theme's success ink, which reads on a light and a dark pane; NO-GO: the blocking chip's; any other: grey).
 const VERDICT = {
   go: { hex: OK, ink: 'success', fill: STATE_CHIP.done[1], pill: 'success' },
@@ -1228,8 +1232,38 @@ export const register: Register = (on, options) => {
 
     const errorLine = error && <Text color="error" size="caption">{error}</Text>
 
+    // A decision card's head: a push approval's padlock, the kind on the left and the task's title on the right (dim, cut). A push decision's `meta` (the exact action)
+    // sits in an inset box; any other keeps the dim mono line. Two options stack in a column (a Button has no width or height prop: the A mock's full-width 44 px
+    // buttons are not possible), three or more wrap in a row.
+    const cardHead = (left: string | undefined, title: string | undefined, push: boolean, ink: string) =>
+      !!(push || left || title) && (
+        <Box flexDirection="row" alignItems="center" gap="xs">
+          {push && Svg && <Svg source={LOCK_SVG} alt="Push onayı" width={14} height={14} />}
+          {!!left && (
+            <Box flexShrink={1} minWidth={0}>
+              <Text size="caption" weight="medium" color={ink} wrap="truncate-end">{left}</Text>
+            </Box>
+          )}
+          {!!title && (
+            <Box {...FILL} flexDirection="row" justifyContent="flex-end">
+              <Text size="caption" dimColor wrap="truncate-end">{title}</Text>
+            </Box>
+          )}
+        </Box>
+      )
+    const cardMeta = (d: Decision) =>
+      d.meta &&
+      (d.push ? (
+        <Box backgroundColor={CHIP} padding="sm">
+          <Text size="caption" mono>{d.meta}</Text>
+        </Box>
+      ) : (
+        <Text size="caption" mono dimColor>{d.meta}</Text>
+      ))
+    const optionsBox = (n: number) => (n === 2 ? ({ flexDirection: 'column', gap: 'xs' } as const) : ({ flexDirection: 'row', gap: 'xs', flexWrap: 'wrap' } as const))
+
     const decisionCard = (d: Decision) => {
-      const { kind, blocked } = decisionTask(d, data?.tasks ?? [])
+      const { blocked } = decisionTask(d, data?.tasks ?? [])
       // The desktop card shows what was delivered, or waits in the outbox: the draft is the engine's, the owner never sees it there.
       const queued = out.queue.find(q => q.id === d.id)
       const sentTo = queued ? undefined : out.sent.find(([id]) => id === d.id)?.[1]
@@ -1238,12 +1272,12 @@ export const register: Register = (on, options) => {
       return (
       <Box key={`d-${d.id}`} {...CARD} borderColor={edge} hover={hover(edge)}>
         <Box flexDirection="column">
-          {kind && <Text size="caption" weight="medium" color={blocked ? BLOCKED_INK : 'claude'}>{kind}</Text>}
+          {cardHead(d.kind, decisionTitle(d, data?.tasks ?? []), d.push, blocked ? BLOCKED_INK : 'claude')}
           <Text>{d.text}</Text>
-          {d.meta && <Text size="caption" mono dimColor>{d.meta}</Text>}
+          {cardMeta(d)}
         </Box>
         {d.options.length > 0 && (
-          <Box flexDirection="row" gap="xs" flexWrap="wrap">
+          <Box {...optionsBox(d.options.length)}>
             {d.options.map((o, i) => (
               <Button
                 key={`d-${d.id}-${i}`}
@@ -1274,15 +1308,15 @@ export const register: Register = (on, options) => {
       return (
         <Box key={`kd-${c.task}-${d.id}`} {...CARD} borderColor={edge} hover={hover(edge)}>
           <Box flexDirection="column">
-            <Text size="caption" weight="medium" color={stuck ? BLOCKED_INK : 'claude'}>{[d.kind, data?.tasks.find(t => t.id === c.task)?.title, `◇ ${c.name}`].filter(Boolean).join(' · ')}</Text>
+            {cardHead([d.kind, `◇ ${c.name}`].filter(Boolean).join(' · '), data?.tasks.find(t => t.id === c.task)?.title, d.push, stuck ? BLOCKED_INK : 'claude')}
             <Text>{d.text}</Text>
-            {d.meta && <Text size="caption" mono dimColor>{d.meta}</Text>}
+            {cardMeta(d)}
           </Box>
           {d.options.length > 0 &&
             (pushOf(d) ? (
               <Text size="caption" dimColor>{d.options.map(o => shorten(o, 60)).join(' · ')}</Text>
             ) : (
-              <Box flexDirection="row" gap="xs" flexWrap="wrap">
+              <Box {...optionsBox(d.options.length)}>
                 {d.options.map((o, i) => (
                   <Button key={`kd-${c.task}-${d.id}-${i}`} label={i === at ? `✓ ${shorten(o, 60)}` : shorten(o, 60)} variant={i === Math.max(at, 0) ? 'primary' : 'secondary'} onPress={() => void forward($, c, d, i)} />
                 ))}
@@ -1345,69 +1379,91 @@ export const register: Register = (on, options) => {
     const reason = (t: Task) =>
       t.reason && <Text size="caption" color={t.state === 'blocked' ? BLOCKED_INK : undefined} dimColor={t.state !== 'blocked'}>{t.reason}</Text>
 
+    // The stage bar (card and detail): the Svg, or on a pane with none five text segments.
+    const stageBar = (t: Task) =>
+      Svg ? (
+        t.state === 'done' ? (
+          <Svg source={doneStagesSvg(now - (stamps.find(f => f.id === t.id)?.at ?? Number.NaN))} alt={`Bitti, 5 aşamanın 5.`} />
+        ) : (
+          <Svg source={stagesSvg(t.stage, 5, t.state === 'blocked', t.state === 'running')} alt={`${STAGE_LABELS[t.stage]}, 5 aşamanın ${t.stage + 1}.`} />
+        )
+      ) : (
+        <Text size="caption">
+          {STAGE_LABELS.map((_, i) => (
+            <Text color={t.state === 'done' ? 'success' : i < t.stage ? 'text' : i === t.stage ? 'claude' : 'inactive'}>━━━ </Text>
+          ))}
+        </Text>
+      )
+    // The "now" line: the role the task is about (nowRole), its dot and `name · state`, cut; `+N rol` for the others (the card only: the detail lists every role below).
+    const nowLine = (t: Task, more: boolean) => {
+      const n = nowRole(t)
+      return (
+        n && (
+          <Box key={`now-${t.id}`} flexDirection="row" alignItems="center" gap="xs" {...FILL}>
+            {dot(DOT_HEX[n.role.status], DOT[n.role.status], DOT_ALT[n.role.status], n.role.status === 'running')}
+            <Box {...FILL}>
+              <Text wrap="truncate-end">{n.text}</Text>
+            </Box>
+            {more && n.more > 0 && (
+              <Box flexShrink={0}>
+                <Text size="caption" dimColor>{`+${n.more} rol`}</Text>
+              </Box>
+            )}
+          </Box>
+        )
+      )
+    }
+    // The title as a press (a Box has no onPress): the Button's children are the title and a chevron, in the text side of the row (the evidence row's shape).
+    const pressTitle = (t: Task, weight?: 'semibold') => (
+      <Box {...FILL}>
+        <Button key={`detail-${t.id}`} label={`Ayrıntı: ${t.title}`} hover={{ color: 'claude' }} onPress={() => void show(t.id)}>
+          <Text weight={weight} wrap="truncate-end">{t.title}</Text>
+          <Text dimColor wrap="truncate-end">›</Text>
+        </Button>
+      </Box>
+    )
+
     const taskCard = (t: Task) => (
       <Box key={`t-${t.id}`} {...CARD} borderColor={t.state === 'blocked' ? BLOCKED_EDGE : CARD.borderColor} hover={hover(t.state === 'blocked' ? BLOCKED_EDGE : CARD.borderColor)}>
-        <Box flexDirection="column">
-          <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="sm">
-            <Text weight="semibold" wrap="truncate-end">{t.title}</Text>
-            <Box flexDirection="row" alignItems="center" gap="xs">
+        <Box flexDirection="column" gap="xs">
+          <Box flexDirection="row" alignItems="center" gap="sm">
+            {pressTitle(t, 'semibold')}
+            <Box flexDirection="row" alignItems="center" gap="xs" flexShrink={0}>
               {t.round !== undefined && <Text size="caption" dimColor>Tur {t.round}</Text>}
               {stateChip(t)}
             </Box>
           </Box>
           {reason(t)}
+          {nowLine(t, true)}
           {sessionRows(t)}
           {canBind(t) && <Button key={`bind-${t.id}`} label="Bağla" onPress={() => void openBind($, t.id)} />}
           {t.branch && <Text size="caption" mono dimColor wrap="truncate-end">{t.branch}</Text>}
         </Box>
-        <Box flexDirection="column">
-          {Svg ? (
-            t.state === 'done' ? (
-              <Svg source={doneStagesSvg(now - (stamps.find(f => f.id === t.id)?.at ?? Number.NaN))} alt={`Bitti, 5 aşamanın 5.`} />
-            ) : (
-              <Svg source={stagesSvg(t.stage, 5, t.state === 'blocked', t.state === 'running')} alt={`${STAGE_LABELS[t.stage]}, 5 aşamanın ${t.stage + 1}.`} />
-            )
-          ) : (
-            <Text size="caption">
-              {STAGE_LABELS.map((_, i) => (
-                <Text color={t.state === 'done' ? 'success' : i < t.stage ? 'text' : i === t.stage ? 'claude' : 'inactive'}>━━━ </Text>
-              ))}
-            </Text>
-          )}
-          <Text size="caption" dimColor>{`${STAGE_LABELS[t.stage]} · ${t.stage + 1}/5`}</Text>
-        </Box>
-        {t.roles.length > 0 && (
-          <Box flexDirection="column" gap="xs">
-            {t.roles.map((r, i) => (
-              <Box key={`t-${t.id}-r-${i}`} flexDirection="row" justifyContent="space-between" alignItems="center" gap="sm">
-                <Box flexDirection="row" alignItems="center" gap="xs">
-                  {dot(DOT_HEX[r.status], DOT[r.status], DOT_ALT[r.status], r.status === 'running')}
-                  <Text wrap="truncate-end">{r.name}</Text>
-                </Box>
-                <Text size="caption" color={r.status === 'blocked' ? 'error' : undefined} dimColor={r.status !== 'blocked'}>{r.state}</Text>
+        <Box flexDirection="column" gap="xs">
+          {stageBar(t)}
+          <Box flexDirection="row" gap="xs">
+            {STAGE_LABELS.map((l, i) => (
+              <Box key={`t-${t.id}-l-${i}`} {...FILL}>
+                <Text size="caption" weight={t.state !== 'done' && i === t.stage ? 'semibold' : undefined} color={t.state !== 'done' && i === t.stage ? 'claude' : undefined} dimColor={t.state === 'done' || i !== t.stage} wrap="truncate-end">{l}</Text>
               </Box>
             ))}
-            {!!t.moreRoles && <Text size="caption" dimColor>{`+${t.moreRoles} rol`}</Text>}
+          </Box>
+        </Box>
+        {(t.candidate || !!t.blocking || !!t.followup) && (
+          <Box flexDirection="row" alignItems="center" gap="sm" flexWrap="wrap">
+            {t.candidate && <Text size="caption" mono dimColor>{clip(t.candidate, 7)}</Text>}
+            {!!t.blocking && (
+              <Box key={`chip-blocking-${t.id}`} backgroundColor={CHIP_BLOCKING} paddingX="xs">
+                <Text size="caption" color="error" weight="medium">{`${t.blocking} engelleyici`}</Text>
+              </Box>
+            )}
+            {!!t.followup && (
+              <Box key={`chip-followup-${t.id}`} backgroundColor={CHIP} paddingX="xs">
+                <Text size="caption">{`${t.followup} takip`}</Text>
+              </Box>
+            )}
           </Box>
         )}
-        {t.candidate && (
-          <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="sm">
-            <Text size="caption" mono dimColor>aday {clip(t.candidate, 7)}</Text>
-            <Box flexDirection="row" gap="xs">
-              {!!t.blocking && (
-                <Box key={`chip-blocking-${t.id}`} backgroundColor={CHIP_BLOCKING} paddingX="xs">
-                  <Text size="caption" color="error" weight="medium">{`${t.blocking} blocking`}</Text>
-                </Box>
-              )}
-              {!!t.followup && (
-                <Box key={`chip-followup-${t.id}`} backgroundColor={CHIP} paddingX="xs">
-                  <Text size="caption">{`${t.followup} follow-up`}</Text>
-                </Box>
-              )}
-            </Box>
-          </Box>
-        )}
-        <Button key={`detail-${t.id}`} label="Ayrıntı ›" hover={{ color: 'claude' }} onPress={() => void show(t.id)} />
       </Box>
     )
 
@@ -1488,27 +1544,57 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column" gap="md" padding="sm">
           <Button key="detail-back" label="‹ Görevler" {...key('b')} onPress={() => void show(null, t.id)} />
           {errorLine}
-          <Box flexDirection="column">
+          <Box flexDirection="column" gap="xs">
             <Text size="heading" weight="semibold">{t.title}</Text>
+            {/* One meta line: the state, the round, the branch (mono, cut) and the candidate's short SHA (which appears only here). */}
             <Box flexDirection="row" alignItems="center" gap="xs">
               {stateChip(t)}
-              {reason(t)}
+              {t.round !== undefined && <Text size="caption" dimColor>{`Tur ${t.round}`}</Text>}
+              <Box {...FILL}>{t.branch && <Text size="caption" mono dimColor wrap="truncate-end">{t.branch}</Text>}</Box>
+              {t.candidate && <Text size="caption" mono dimColor>{clip(t.candidate, 7)}</Text>}
             </Box>
+            {reason(t)}
+          </Box>
+          {/* The "now" card: the now line and the stage, the stage bar, every role, the task session rows and the bind buttons. */}
+          <Box key="detail-now" {...CARD}>
+            <Box flexDirection="row" alignItems="center" gap="sm">
+              {nowLine(t, false) || <Box {...FILL} />}
+              <Box flexShrink={0}>
+                <Text size="caption" dimColor>{`${STAGE_LABELS[t.stage]} · ${t.stage + 1}/5`}</Text>
+              </Box>
+            </Box>
+            {stageBar(t)}
+            {t.roles.length > 0 && (
+              <Box flexDirection="column" gap="xs">
+                {t.roles.map((r, i) => (
+                  <Box key={`t-${t.id}-r-${i}`} flexDirection="row" justifyContent="space-between" alignItems="center" gap="sm">
+                    <Box flexDirection="row" alignItems="center" gap="xs">
+                      {dot(DOT_HEX[r.status], DOT[r.status], DOT_ALT[r.status], r.status === 'running')}
+                      <Text wrap="truncate-end">{r.name}</Text>
+                    </Box>
+                    <Text size="caption" color={r.status === 'blocked' ? 'error' : undefined} dimColor={r.status !== 'blocked'}>{r.state}</Text>
+                  </Box>
+                ))}
+                {!!t.moreRoles && <Text size="caption" dimColor>{`+${t.moreRoles} rol`}</Text>}
+              </Box>
+            )}
             {sessionRows(t)}
             {boundBy(t) && <Text size="caption" dimColor>{boundBy(t)}</Text>}
-            {t.branch && <Text size="caption" mono dimColor wrap="truncate-end">{t.branch}</Text>}
-            {t.candidate && <Text size="caption" mono dimColor>{clip(t.candidate, 7)}</Text>}
-            {canBind(t) && <Button key="detail-bind" label="Bağla" onPress={() => void openBind($, t.id)} />}
-            {boundBy(t) && <Button key="detail-unbind" label="Bağı çöz" onPress={() => void unbindTask($, t.id)} />}
-            {last && (
-              <Box flexDirection="row" alignItems="center" gap="sm">
-                <Box key="detail-verdict" flexShrink={0} backgroundColor={verdictOf(last.verdict).fill} paddingX="xs">
-                  <Text size="caption" weight="semibold" color={verdictOf(last.verdict).pill}>{last.verdict}</Text>
-                </Box>
-                <Text dimColor>{roundsCaption(t)}</Text>
+            {(canBind(t) || boundBy(t)) && (
+              <Box flexDirection="row" gap="xs">
+                {canBind(t) && <Button key="detail-bind" label="Bağla" onPress={() => void openBind($, t.id)} />}
+                {boundBy(t) && <Button key="detail-unbind" label="Bağı çöz" onPress={() => void unbindTask($, t.id)} />}
               </Box>
             )}
           </Box>
+          {last && (
+            <Box flexDirection="row" alignItems="center" gap="sm">
+              <Box key="detail-verdict" flexShrink={0} backgroundColor={verdictOf(last.verdict).fill} paddingX="xs">
+                <Text size="caption" weight="semibold" color={verdictOf(last.verdict).pill}>{last.verdict}</Text>
+              </Box>
+              <Text dimColor>{roundsCaption(t)}</Text>
+            </Box>
+          )}
           {t.rounds && (
             <Box flexDirection="column" gap="sm">
               <Text size="caption" weight="semibold" dimColor>Turlar</Text>
@@ -1669,6 +1755,11 @@ export const register: Register = (on, options) => {
     ).filter((u): u is readonly [typeof u[0], number] => u[1] !== undefined)
     const sec = sections(data?.tasks ?? [], stamps, now)
     const toggleDone = () => void update($, doneOpen, v => !v)
+    const picked = await read($, tab)
+    const tabs = [['running', 'Çalışan', sec.running], ['waiting', 'Bekleyen', sec.waiting], ['done', 'Biten', sec.done]] as const
+    const shown = tabOf(picked, { running: sec.running.length, waiting: sec.waiting.length, done: sec.done.length })
+    const stuck = sec.waiting.filter(t => t.state === 'blocked').length
+    const doneNewest = [...sec.done].reverse()
     const showOn = !!data && !m.isOn
     // Before the first read (file not yet known: session start, /clear, a reload) two empty cards stand in, not the onboarding text.
     const bar = (w: string) => <Box backgroundColor={TRACK} height={1} width={w} />
@@ -1708,16 +1799,16 @@ export const register: Register = (on, options) => {
           <Box flexDirection="column" {...FILL}>
             <Text size="title" wrap="truncate-end">Agent Team</Text>
             <Text size="caption" dimColor wrap="truncate-end">
-              {[data?.lead && `Lead · ${data.lead}`, updated && `${updated}'de güncellendi`, !m.isOn && 'mod kapalı']
+              {[data && note(data.paused ? 'Devam et' : 'Pause') && labelled(data.paused ? 'Devam' : 'Pause', data.paused ? 'Devam et' : 'Pause'), data?.lead && `Lead · ${data.lead}`, updated && `${updated}'de güncellendi`, !m.isOn && 'mod kapalı']
                 .filter(Boolean)
                 .join(' · ') || 'Lead'}
             </Text>
           </Box>
           {data &&
             (data.paused ? (
-              fixed(<Button key="resume" label={labelled('Devam', 'Devam et')} onPress={() => void press($, running, { line: 'Devam et' })} />)
+              fixed(<Button key="resume" label="Takımı devam ettir" onPress={() => void press($, running, { line: 'Devam et' })}>▶</Button>)
             ) : (
-              fixed(<Button key="pause" label={labelled('Pause', 'Pause')} onPress={() => void press($, running, { line: 'Pause' })} />)
+              fixed(<Button key="pause" label="Takımı duraklat" onPress={() => void press($, running, { line: 'Pause' })}>⏸</Button>)
             ))}
         </Box>
         )}
@@ -1787,7 +1878,7 @@ export const register: Register = (on, options) => {
                 <Box key={`lim-${label}`} flexDirection="column" gap="xs" flexGrow={1}>
                   <Box flexDirection="row" justifyContent="space-between">
                     <Text size="caption" dimColor>{label}</Text>
-                    <Text size="caption" tabular>{`%${pct}`}</Text>
+                    <Text size="caption" tabular color={pct >= 80 ? 'warning' : undefined}>{`%${pct}`}</Text>
                   </Box>
                   <Svg source={meterSvg(pct)} alt={`${label} kullanım %${pct}`} />
                 </Box>
@@ -1807,10 +1898,14 @@ export const register: Register = (on, options) => {
 
         {!term && data && data.decisions.length + kidTotal > 0 && (
           <Box flexDirection="column" gap="sm">
-            <Box flexDirection="row" alignItems="center" gap="xs">
-              {dot(CLAY, 'claude', 'karar bekliyor')}
-              <Text weight="semibold">Senin sıran</Text>
-              <Text dimColor size="caption">{`${data.decisions.length + kidTotal} karar`}</Text>
+            <Box key="karar-band" {...CARD} flexDirection="row" alignItems="center" gap="sm" borderColor="rgba(217,119,87,0.35)" backgroundColor={BAND}>
+              <Box key="karar-count" flexShrink={0} backgroundColor={STATE_CHIP.running[1]} paddingX="sm">
+                <Text size="caption" weight="semibold" color="claude">{`${data.decisions.length + kidTotal}`}</Text>
+              </Box>
+              <Box flexDirection="column" {...FILL}>
+                <Text weight="semibold" wrap="truncate-end">Senin sıran</Text>
+                <Text dimColor size="caption" wrap="truncate-end">{`${data.decisions.length + kidTotal} karar bekliyor`}</Text>
+              </Box>
             </Box>
             {data.decisions.map(decisionCard)}
             {kids.flatMap(c => [
@@ -1822,52 +1917,32 @@ export const register: Register = (on, options) => {
 
         {!term && data && data.tasks.length > 0 && (
           <Box flexDirection="column" gap="md">
-            {[['Çalışan', sec.running], ['Bekleyen', sec.waiting]].map(([name, list]) => {
-              const blocked = (list as Task[]).filter(t => t.state === 'blocked').length
-              return (
-                (list as Task[]).length > 0 && (
-                  <Box key={`sec-${name}`} flexDirection="column" gap="sm">
-                    <Box flexDirection="row" alignItems="center" gap="xs">
-                      <Text weight="semibold">{name as string}</Text>
-                      <Text dimColor size="caption">{`${(list as Task[]).length} görev${blocked ? ` · ${blocked} takıldı` : ''}`}</Text>
-                    </Box>
-                    {(list as Task[]).map(taskCard)}
-                  </Box>
-                )
-              )
-            })}
-            {sec.done.length > 0 &&
-              (doneShown ? (
-                <Box key="sec-biten" flexDirection="column" gap="sm">
-                  <Box flexDirection="row" alignItems="center" justifyContent="space-between">
-                    <Box flexDirection="row" alignItems="center" gap="xs" {...FILL}>
-                      <Text weight="semibold" wrap="truncate-end">Biten</Text>
-                      <Text dimColor size="caption" wrap="truncate-end">{`${sec.done.length} görev`}</Text>
-                    </Box>
-                    {fixed(<Button key="done-toggle" label="Gizle" onPress={toggleDone} />)}
-                  </Box>
-                  <Box key="done-rows" {...CARD}>
-                    {sec.done.map(t => (
-                      <Box key={`t-${t.id}`} flexDirection="row" alignItems="center" gap="sm">
-                        <Text color="success">✓</Text>
-                        <Box {...FILL}>
-                          <Text wrap="truncate-end">{t.title}</Text>
-                        </Box>
-                        {fixed(<Button key={`detail-${t.id}`} label="Ayrıntı ›" hover={{ color: 'claude' }} onPress={() => void show(t.id)} />)}
-                      </Box>
-                    ))}
-                  </Box>
-                </Box>
-              ) : (
-                <Box key="sec-biten" {...CARD} flexDirection="row" alignItems="center" hover={hover(CARD.borderColor)}>
-                  <Text color="success">✓</Text>
-                  <Box flexDirection="column" {...FILL}>
-                    <Text weight="semibold" wrap="truncate-end">Biten</Text>
-                    <Text size="caption" dimColor wrap="truncate-end">{`${sec.done.length} görev`}</Text>
-                  </Box>
-                  {fixed(<Button key="done-toggle" label="Göster" onPress={toggleDone} />)}
-                </Box>
+            {/* Count pills pick one list (a Button has no pill radius: the A mock's round pills are not possible). Bekleyen holds the blocked tasks and says how many, so none hides behind another tab. */}
+            <Box flexDirection="row" gap="xs" flexWrap="wrap">
+              {tabs.filter(t => t[2].length > 0).map(([k, name, list]) => (
+                <Button key={`tab-${k}`} label={`${name} ${list.length}${k === 'waiting' && stuck ? ` · ${stuck} takıldı` : ''}`} variant={k === shown ? 'primary' : 'secondary'} onPress={() => void update($, tab, () => k)} />
               ))}
+            </Box>
+            {shown === 'running' && sec.running.map(taskCard)}
+            {shown === 'waiting' && sec.waiting.map(taskCard)}
+            {shown === 'done' && (
+              <Box key="sec-biten" {...CARD}>
+                <Box flexDirection="row" alignItems="center" gap="xs">
+                  <Text weight="semibold">Biten</Text>
+                  <Box {...FILL}>
+                    <Text dimColor size="caption" wrap="truncate-end">{sec.done.length > 3 && !doneShown ? `son 3 · tümü ${sec.done.length}` : `${sec.done.length} görev`}</Text>
+                  </Box>
+                </Box>
+                {/* The newest (last in the file) first; the file has no version or day to show beside a row. */}
+                {(doneShown ? doneNewest : doneNewest.slice(0, 3)).map(t => (
+                  <Box key={`t-${t.id}`} flexDirection="row" alignItems="center" gap="sm">
+                    <Text color="success">✓</Text>
+                    {pressTitle(t)}
+                  </Box>
+                ))}
+                {sec.done.length > 3 && <Button key="done-toggle" label={doneShown ? 'Gizle' : 'Tümünü göster'} onPress={toggleDone} />}
+              </Box>
+            )}
           </Box>
         )}
       </Box>

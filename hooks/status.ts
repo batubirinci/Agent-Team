@@ -271,10 +271,24 @@ export function sections(tasks: readonly Task[], fresh: readonly Fresh[], now: n
 }
 
 // The task a decision names (if it is in the file): its title joins the kind line, a blocked one draws the card in error.
+const linkedTask = (d: Omit<Decision, 'push' | 'stuck'>, tasks: readonly Task[]) => (d.task ? tasks.find(x => x.id === d.task && !x.generatedId) : undefined)
 export function decisionTask(d: Omit<Decision, 'push' | 'stuck'>, tasks: readonly Task[]) {
-  const t = d.task ? tasks.find(x => x.id === d.task && !x.generatedId) : undefined
+  const t = linkedTask(d, tasks)
   return { kind: [d.kind, t?.title].filter(Boolean).join(' · ') || undefined, blocked: t?.state === 'blocked' }
 }
+// The desktop card names the task on its own, right of the kind: the title of the task a decision links to (the same link rule).
+export const decisionTitle = (d: Omit<Decision, 'push' | 'stuck'>, tasks: readonly Task[]) => linkedTask(d, tasks)?.title
+
+// The one role a desktop task card names: the first blocked, else the first running, else the first waiting (none: no line). `more`: the other roles, the
+// entries of `roles` past it plus the joined session's `moreRoles`. The file has no start time for a role, so there is no duration.
+export function nowRole(t: Pick<Task, 'roles' | 'moreRoles'>) {
+  const r = (['blocked', 'running', 'waiting'] as const).map(s => t.roles.find(x => x.status === s)).find(Boolean)
+  return r && { role: r, text: [r.name, r.state].filter(Boolean).join(' · '), more: t.roles.length - 1 + (t.moreRoles ?? 0) }
+}
+
+export type Tab = 'running' | 'waiting' | 'done'
+// The tab the desktop list shows: the picked one while it has tasks, else the first that has (Çalışan, Bekleyen, Biten), else none.
+export const tabOf = (picked: Tab | null, n: Record<Tab, number>): Tab | undefined => (picked && n[picked] > 0 ? picked : (['running', 'waiting', 'done'] as const).find(k => n[k] > 0))
 
 // A decision answer is one line of the owner's draft, "Karar (<id>): <option>". The id and the option are model-written:
 // a line break in them (also U+2028 and U+2029) would start another line, so it becomes a space.

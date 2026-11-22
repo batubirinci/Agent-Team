@@ -175,6 +175,7 @@ declare module 'claude-code' {
       othersOpen: Shaped<boolean>
       fresh: Shaped<Fresh[]>
       doneOpen: Shaped<boolean>
+      tab: Shaped<'running' | 'waiting' | 'done' | null>
       karar: Shaped<string[]>
       outbox: Shaped<Outbox>
       reopen: Shaped<Reopen>

@@ -20,7 +20,7 @@ const rect = (x: number, w: number, fill: string) =>
 export function meterSvg(pct: number): string {
   const w = 160
   const p = Math.min(100, Math.max(0, pct))
-  const fill = p > 0 ? rect(0, (w * p) / 100, p >= 80 ? CLAY : MUTED) : ''
+  const fill = p > 0 ? rect(0, (w * p) / 100, p >= 80 ? AMBER : MUTED) : ''
   return svg(w, rect(0, w, TRACK) + fill)
 }
 
@@ -86,3 +86,6 @@ export function evDotSvg(color: string, elapsed = Number.NaN): string {
 // in. The rule divides the evidence rows: 1000 x 1 stretched to the slot (preserveAspectRatio none).
 export const RAIL_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2000" viewBox="0 0 2 2000"><rect width="2" height="2000" rx="1" fill="${TRACK}"/></svg>`
 export const RULE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1" viewBox="0 0 1000 1" preserveAspectRatio="none"><rect width="1000" height="1" fill="${TRACK}"/></svg>`
+
+// The padlock before a push decision's kind (14 x 14, a CLAY stroke, still: no motion).
+export const LOCK_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="${CLAY}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/></svg>`
