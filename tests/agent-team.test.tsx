@@ -3,8 +3,8 @@ import type { TestBody } from 'claude-code/testing'
 
 import { forward } from '../hooks/register'
 import { ago, bandSegments, childOf, countStates, decisionTask, detailScroll, finishes, isInside, isPush, isStuck, joined, kararLine, kararLines, otherFiles, otherSession, parseFolders, parseStatus, pickedAt, sections, spinnerWord, stamp, summary, withKarar } from '../hooks/status'
-import { findingLine, roundsCaption, sevTag } from '../hooks/status'
-import { CLAY, MUTED, OK, STUCK, TRACK, doneStagesSvg, dotSvg, meterSvg, stagesSvg } from '../hooks/svg'
+import { decisionTitle, findingLine, nowRole, roundsCaption, sevTag, tabOf } from '../hooks/status'
+import { AMBER, CLAY, MUTED, OK, STUCK, TRACK, doneStagesSvg, dotSvg, meterSvg, stagesSvg } from '../hooks/svg'
 
 const fills = (svg: string) => [...svg.matchAll(/<rect [^>]*fill="([^"]+)"/g)].map(m => m[1])
 const widths = (svg: string) => [...svg.matchAll(/<rect [^>]*width="([\d.]+)"/g)].map(m => Number(m[1]))
@@ -80,11 +80,12 @@ test('the status file is read as untrusted data', async () => {
   expect(() => parseStatus('not json')).toThrow()
 })
 
-test('the usage bar fills to its percent, clamped, and turns clay from 80', async () => {
-  // Expected values from the approved design: 4 px track, muted fill, clay at 80 % and above.
+test('the usage bar fills to its percent, clamped, and turns amber from 80', async () => {
+  // Expected values from the approved design: 4 px track, muted fill; from pane-polish (brief, proposal 4) amber at 80 % and above, muted at 79.
   expect(fills(meterSvg(42))).toEqual([TRACK, MUTED])
   expect(widths(meterSvg(42))).toEqual([160, 67.2])
-  expect(fills(meterSvg(80))).toEqual([TRACK, CLAY])
+  expect(fills(meterSvg(80))).toEqual([TRACK, AMBER])
+  expect(fills(meterSvg(79))).toEqual([TRACK, MUTED])
   expect(widths(meterSvg(150))).toEqual([160, 160])
   expect(fills(meterSvg(-5))).toEqual([TRACK])
 })
@@ -137,7 +138,7 @@ test('the pane draws the status file and a decision button speaks for the owner'
       expect(await ui.find({ type: 'Text', text: /^Tur 2 · aday 3f9a1c2$/ })).toBeDefined()
     } else {
       expect(await ui.find({ type: 'Text', text: /Seçim kutusu taşması/ })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: /aday 3f9a1c2$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /^3f9a1c2$/ })).toBeDefined()
     }
     expect(await ui.find({ type: 'Text', text: /Hangisi sayılsın\?/ })).toBeDefined()
     await ui.unmount()
@@ -177,12 +178,12 @@ test('desktop draws the bars as SVG with alt text, the terminal keeps the text f
   expect((await desk.find({ key: 'd-d1' }))?.props.backgroundColor).toBe('rgba(128,128,128,0.10)')
   const blocking = await desk.find({ key: 'chip-blocking-t1' })
   expect(blocking?.props.backgroundColor).toBe('rgba(224,108,108,0.18)')
-  expect(blocking?.text).toBe('1 blocking')
-  expect((await desk.find({ key: 'chip-followup-t1' }))?.text).toBe('2 follow-up')
+  expect(blocking?.text).toBe('1 engelleyici')
+  expect((await desk.find({ key: 'chip-followup-t1' }))?.text).toBe('2 takip')
   // A ● in text keeps the text's size on desktop (seen live): dots are 8 px Svg circles there.
   expect(await desk.find({ type: 'Text', text: /●/ })).toBeUndefined()
   const dots = svgs.filter(s => s.props.width === 8)
-  expect(dots.map(s => s.props.alt)).toEqual(['karar bekliyor', 'çalışıyor', 'boşta'])
+  expect(dots.map(s => s.props.alt)).toEqual(['çalışıyor']) // pane-polish: the band has no dot; a card's now line draws one role's dot (here the running one)
   expect(dots.every(s => s.props.height === 8)).toBe(true)
   await desk.unmount()
 
@@ -413,7 +414,7 @@ test('a task card opens its detail view with rounds and evidence, back returns, 
 
   for (const surface of ['desktop', 'terminal'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect((await ui.find({ key: 'detail-t1' }))?.text).toBe(surface === 'terminal' ? 'Seçim kutusu taşması' : 'Ayrıntı ›')
+    expect((await ui.find({ key: 'detail-t1' }))?.text).toBe(surface === 'terminal' ? 'Seçim kutusu taşması' : 'Seçim kutusu taşması ›') // pane-polish: the desktop card's title is the Button (title Text and chevron Text)
     expect(await ui.find({ key: 'detail-back' })).toBeUndefined()
     await ui.press({ key: 'detail-t1' })
     // The evidence file is read after the press (no poll runs here): let the load land.
@@ -432,7 +433,7 @@ test('a task card opens its detail view with rounds and evidence, back returns, 
     expect(await ui.find({ type: 'Link' })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /^\/Users\/x\/agent-team-evidence\/qa report\.md$/ })).toBeUndefined()
     expect(await ui.find({ key: 'ev-open-0' })).toBeDefined()
-    expect((await ui.findAll({ type: 'Svg' })).length).toBe(surface === 'desktop' ? 4 : 0)
+    expect((await ui.findAll({ type: 'Svg' })).length).toBe(surface === 'desktop' ? 5 : 0) // pane-polish: + the stage bar of the detail's now card
 
     await ui.press({ key: 'detail-ask' })
     await ui.press({ key: 'detail-back' })
@@ -1658,10 +1659,13 @@ test('terminal: a header with only waiting tasks reads "0 çalışıyor · 1 bek
 test('desktop: header counts, a state chip and reason caption per task, blocked card and decision in red, red current stage part', async ($, on) => {
   // Source: brief "Task, desktop" and "Decisions": chip colors, caption, card border rgba(224,108,108,0.45), kind text #F2A3A3.
   await boot($, on, STATES)
-  const root = await drawnOf(await $.ui.mount({ ...PANE, surface: 'desktop' }))
-  // pane-groups (A4): section headers replace the one header line.
-  expect(textNode(root, /^1 görev$/)).toBeDefined() // Çalışan
-  expect(textNode(root, /^2 görev · 1 takıldı$/)).toBeDefined() // Bekleyen
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const root = await drawnOf(ui)
+  // pane-polish (brief, proposal 4): count pills replace the section headers; the first non-empty list (Çalışan) is drawn, Bekleyen after its pill is pressed.
+  expect((await ui.find({ key: 'tab-running' }))?.text).toBe('Çalışan 1')
+  expect((await ui.find({ key: 'tab-waiting' }))?.text).toBe('Bekleyen 2 · 1 takıldı')
+  await ui.press({ key: 'tab-waiting' })
+  const wroot = await drawnOf(ui)
 
   const chips = [
     ['tb', '✗ Takıldı', 'rgba(224,108,108,0.22)', '#F2A3A3'],
@@ -1669,12 +1673,12 @@ test('desktop: header counts, a state chip and reason caption per task, blocked 
     ['tw', '⏸ Bekliyor', 'rgba(229,192,123,0.18)', '#E5CC7A'],
   ] as const
   for (const [id, label, bg, ink] of chips) {
-    const chip = keyed(root, `chip-state-${id}`)
+    const chip = keyed(id === 'tr' ? root : wroot, `chip-state-${id}`)
     expect(chip.props?.backgroundColor).toBe(bg)
     expect(textOf(chip)).toBe(label)
     expect(textNode(chip, /./)?.props?.color).toBe(ink)
   }
-  const cards = ['tb', 'tr', 'tw'].map(id => keyed(root, `t-${id}`))
+  const cards = ['tb', 'tr', 'tw'].map(id => keyed(id === 'tr' ? root : wroot, `t-${id}`))
   expect(cards.map(c => c.props?.borderColor)).toEqual(['rgba(224,108,108,0.45)', 'rgba(128,128,128,0.28)', 'rgba(128,128,128,0.28)'])
   // Reason caption under the title; a running task with no reason has none.
   expect(textNode(cards[0] as Node, /^senden 1 karar bekliyor$/)?.props?.size).toBe('caption')
@@ -1685,12 +1689,15 @@ test('desktop: header counts, a state chip and reason caption per task, blocked 
   expect(stage(cards[0])).toEqual([MUTED, STUCK, TRACK, TRACK, TRACK])
   expect(stage(cards[1])).toEqual([MUTED, MUTED, CLAY, TRACK, TRACK])
 
+  // pane-polish (proposal 2): the kind is its own Text on the left, the task's title (dim) on the right.
   const d1 = keyed(root, 'd-d1')
   expect(d1.props?.borderColor).toBe('rgba(224,108,108,0.45)')
-  expect(textNode(d1, /^Takıldı · Developer · Takılan görev$/)?.props?.color).toBe('#F2A3A3')
+  expect(textNode(d1, /^Takıldı · Developer$/)?.props?.color).toBe('#F2A3A3')
+  expect(textNode(d1, /^Takılan görev$/)?.props?.dimColor).toBe(true)
   const d2 = keyed(root, 'd-d2')
   expect(d2.props?.borderColor).toBe('rgba(128,128,128,0.28)')
-  expect(textNode(d2, /^Ürün kararı · Koşan görev$/)?.props?.color).toBe('claude')
+  expect(textNode(d2, /^Ürün kararı$/)?.props?.color).toBe('claude')
+  expect(textNode(d2, /^Koşan görev$/)?.props?.dimColor).toBe(true)
   expect(keyed(root, 'd-d3').props?.borderColor).toBe('rgba(128,128,128,0.28)')
 })
 
@@ -1706,6 +1713,7 @@ test('detail views show the state: a line in the terminal summary, the chip and 
   await term.unmount()
 
   const desk = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await desk.press({ key: 'tab-waiting' }) // pane-polish: tw is in the Bekleyen list
   await desk.press({ key: 'detail-tw' })
   const root = await drawnOf(desk)
   expect(keyed(root, 't-tw')).toBeUndefined()
@@ -1741,14 +1749,15 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
 test('desktop: the header leaves out takıldı and bekliyor at zero', async ($, on) => {
   await boot($, on, LOOSE)
-  const root = await drawnOf(await $.ui.mount({ ...PANE, surface: 'desktop' }))
-  expect(textNode(root, /^Çalışan$/)).toBeDefined() // pane-groups (A4)
-  expect(textNode(root, /^2 görev$/)).toBeDefined()
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ key: 'tab-running' }))?.text).toBe('Çalışan 2') // pane-polish: the Çalışan pill (was the section header and its count)
 })
 
 test('desktop: the blocked reason caption is #F2A3A3, any other reason is dim', async ($, on) => {
   await boot($, on, STATES)
-  const root = await drawnOf(await $.ui.mount({ ...PANE, surface: 'desktop' }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'tab-waiting' }) // pane-polish: the blocked and the waiting task are in the Bekleyen list
+  const root = await drawnOf(ui)
   expect(textNode(keyed(root, 't-tb'), /^senden 1 karar bekliyor$/)?.props?.color).toBe('#F2A3A3')
   const wait = textNode(keyed(root, 't-tw'), /^Koşan görev bitmeden başlamaz$/)
   expect([wait?.props?.color, wait?.props?.dimColor]).toEqual([undefined, true])
@@ -2070,7 +2079,7 @@ test('desktop: the strip under the header, collapsed first, then each session in
   expect(textIn(ns, 'Haftalık · Aylık')).toBe(true)
   expect(textIn(open, 'Cevabı o oturumda ver; seçenekler buradan gönderilemez. 24 saattir güncellenmeyen dosyalar sayılmaz.')).toBe(true)
   // Options are text, never buttons: the only buttons are the pane's own and the toggle.
-  expect(buttons(open).map(b => b.props?.key)).toEqual(['pause', 'others-toggle', 'pane-team-on', 'detail-t1'])
+  expect(buttons(open).map(b => b.props?.key)).toEqual(['pause', 'others-toggle', 'pane-team-on', 'tab-waiting', 'detail-t1']) // pane-polish: the one pill and the card's title Button
 
   // Remembered for the session: a new mount of the pane keeps it open; the toggle closes it again.
   await ui.unmount()
@@ -3090,16 +3099,28 @@ test('criterion 5 (desktop): a queued decision says it waits for the next step, 
   await ui.unmount()
 })
 
+// pane-polish (brief, proposal 4): on the desktop Pause and Devam are icon buttons whose label is fixed; the "sırada" / "gönderildi" note is the first part of the dim
+// header caption. The terminal keeps the note in the label. This reads either as the old state string ('Pause', 'Pause · sırada', 'Devam · gönderildi'); a desktop label
+// that is not the fixed one is returned as it is, so the comparison fails.
+const DESK_LABEL = { pause: 'Takımı duraklat', resume: 'Takımı devam ettir' } as const
+const pauseState = async (ui: { find: (q: { key: string }) => Promise<{ props: Record<string, unknown> } | undefined>; drawn: () => Promise<unknown> }, surface: string, key: 'pause' | 'resume') => {
+  const label = String((await ui.find({ key }))?.props.label)
+  if (surface === 'terminal') return label
+  if (label !== DESK_LABEL[key]) return label
+  const cap = textOf(nodesOf((await ui.drawn()) as Node).find(n => n.type === 'Text' && n.props?.size === 'caption' && n.props?.wrap === 'truncate-end') as Node)
+  return new RegExp(`^(${key === 'pause' ? 'Pause' : 'Devam'} · (sırada|gönderildi))`).exec(cap)?.[1] ?? (key === 'pause' ? 'Pause' : 'Devam')
+}
+
 for (const surface of ['desktop', 'terminal'] as const) {
   test(`criterion 5 (${surface}): Pause shows a short pending state "Pause · sırada" while queued, then follows the status file`, async ($, on) => {
     const k = await pBoot($, on, { surface })
     const ui = await k.mount(surface)
     await k.start('t1')
-    expect((await ui.find({ key: 'pause' }))?.props.label).toBe('Pause')
+    expect((await pauseState(ui, surface, 'pause'))).toBe('Pause')
     await ui.press({ key: 'pause' })
-    expect((await ui.find({ key: 'pause' }))?.props.label).toBe('Pause · sırada')
+    expect((await pauseState(ui, surface, 'pause'))).toBe('Pause · sırada')
     await k.tool()
-    expect((await ui.find({ key: 'pause' }))?.props.label).toBe('Pause')
+    expect((await pauseState(ui, surface, 'pause'))).toBe('Pause')
     await ui.unmount()
   })
 }
@@ -3109,7 +3130,7 @@ test('criterion 5: Devam shows "Devam · sırada" while queued', async ($, on) =
   const ui = await k.mount()
   await k.start('t1')
   await ui.press({ key: 'resume' })
-  expect((await ui.find({ key: 'resume' }))?.props.label).toBe('Devam · sırada')
+  expect((await pauseState(ui, 'desktop', 'resume'))).toBe('Devam · sırada')
   await ui.unmount()
 })
 
@@ -3319,9 +3340,9 @@ test('criteria 2, 3, 4 (svg.ts): the running stage line has a 24 px band clipped
 test('criteria 1, 2, 3, 4 (desktop): only a running role\'s dot and a running task\'s stage line move; every Svg has its size and no SMIL', async ($, on) => {
   const k = await mBoot($, on)
   const ui = await k.mount()
-  const root = await drawnOf(ui)
+  const root = await drawnTabs(ui) // pane-polish: a card names one role (its now line): the running, the blocked and the waiting one are on the cards, the done and the idle one in the detail below
   expect(moves(svgOf(root, 'çalışıyor'))).toBe(true)
-  for (const alt of ['bitti', 'takıldı', 'sırada', 'boşta', 'karar bekliyor']) expect(moves(svgOf(root, alt))).toBe(false)
+  for (const alt of ['takıldı', 'sırada']) expect(moves(svgOf(root, alt))).toBe(false)
   const card = (id: string) => nodesOf(keyed(root, `t-${id}`))
   const stage = (id: string) => String(card(id).find(n => n.type === 'Svg' && /aşamanın/.test(String(n.props?.alt)))?.props?.source)
   expect(moves(stage('tr'))).toBe(true) // running
@@ -3336,6 +3357,10 @@ test('criteria 1, 2, 3, 4 (desktop): only a running role\'s dot and a running ta
     expect(String(s.props?.source)).not.toContain('<animate')
     expect(s.props?.isInteractive).toBeUndefined() // image mode, as the owner's live look chose
   }
+  await ui.press({ key: 'detail-tr' })
+  const detail = await drawnOf(ui)
+  expect(moves(svgOf(detail, 'çalışıyor'))).toBe(true)
+  for (const alt of ['bitti', 'boşta']) expect(moves(svgOf(detail, alt))).toBe(false)
   await ui.unmount()
 })
 
@@ -3371,24 +3396,24 @@ for (const surface of ['desktop', 'terminal'] as const) {
   test(`criterion 7 (${surface}): Pause and Devam pressed with no turn running say "gönderildi" until the status file changes`, async ($, on) => {
     const k = await mBoot($, on, { surface })
     const ui = await k.mount()
-    expect((await ui.find({ key: 'pause' }))?.props.label).toBe('Pause')
+    expect((await pauseState(ui, surface, 'pause'))).toBe('Pause')
     await ui.press({ key: 'pause' })
     await k.settle()
     expect(k.log.sent).toEqual(['Pause'])
-    expect((await ui.find({ key: 'pause' }))?.props.label).toBe('Pause · gönderildi')
+    expect((await pauseState(ui, surface, 'pause'))).toBe('Pause · gönderildi')
     await k.clock.advance(3000) // time alone changes nothing
-    expect((await ui.find({ key: 'pause' }))?.props.label).toBe('Pause · gönderildi')
+    expect((await pauseState(ui, surface, 'pause'))).toBe('Pause · gönderildi')
     await k.change(withPaused(MOTION)) // the Lead paused: the button turns into Devam, the old note is gone
-    expect((await ui.find({ key: 'resume' }))?.props.label).toBe('Devam')
+    expect((await pauseState(ui, surface, 'resume'))).toBe('Devam')
     await ui.press({ key: 'resume' })
     await k.settle()
-    expect((await ui.find({ key: 'resume' }))?.props.label).toBe('Devam · gönderildi')
+    expect((await pauseState(ui, surface, 'resume'))).toBe('Devam · gönderildi')
     await k.change(MOTION) // the file changed again, not paused: Pause with no note
-    expect((await ui.find({ key: 'pause' }))?.props.label).toBe('Pause')
+    expect((await pauseState(ui, surface, 'pause'))).toBe('Pause')
     await ui.press({ key: 'pause' })
     await k.settle()
     await k.change(MOTION.replace('Koşan', 'Başka')) // a change that leaves paused as it was still clears the note
-    expect((await ui.find({ key: 'pause' }))?.props.label).toBe('Pause')
+    expect((await pauseState(ui, surface, 'pause'))).toBe('Pause')
     await ui.unmount()
   })
 }
@@ -3399,7 +3424,7 @@ test('criterion 7: a failed submit takes "gönderildi" back (the press is not lo
   const ui = await k.mount()
   await ui.press({ key: 'pause' })
   await k.settle()
-  expect((await ui.find({ key: 'pause' }))?.props.label).toBe('Pause · sırada')
+  expect((await pauseState(ui, 'desktop', 'pause'))).toBe('Pause · sırada')
   await ui.unmount()
 })
 
@@ -3424,7 +3449,7 @@ test('criterion 8 (desktop): with the submit held unresolved, Pause already says
   const ui2 = await p.mount()
   await ui2.press({ key: 'pause' })
   await p.settle()
-  expect((await ui2.find({ key: 'pause' }))?.props.label).toBe('Pause · gönderildi')
+  expect((await pauseState(ui2, 'desktop', 'pause'))).toBe('Pause · gönderildi')
   await ui2.unmount()
 })
 
@@ -3467,7 +3492,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 test('criterion 11: task and decision cards carry the hover override on desktop', async ($, on) => {
   const k = await mBoot($, on)
   const ui = await k.mount()
-  const root = await drawnOf(ui)
+  const root = await drawnTabs(ui) // pane-polish: t-tb is in the Bekleyen tab
   // A plain card lights its edge and fill; a card with its own edge (blocked red) keeps that edge and lights the fill only.
   expect(hoverOf(keyed(root, 't-tr'))).toEqual({ borderColor: HOVER_EDGE, backgroundColor: HOVER_FILL })
   expect(hoverOf(keyed(root, 'd-d1'))).toEqual({ borderColor: HOVER_EDGE, backgroundColor: HOVER_FILL })
@@ -3590,11 +3615,9 @@ test('R1 (desktop): a reopened session shows the day in the header, the banner w
   const ui = await r.mount()
   expect(await ui.find({ type: 'Text', text: /^Lead · Opus 5\.5 · 14 Kas 22:10'de güncellendi$/ })).toBeDefined()
   expect((await bannerOf(ui))?.text).toMatch(BANNER)
-  expect(await ui.find({ type: 'Text', text: /^Bekleyen$/ })).toBeDefined() // pane-groups (A4): a stopped task is waiting
-  expect(await ui.find({ type: 'Text', text: /^1 görev$/ })).toBeDefined()
-  const dots = (await ui.findAll({ type: 'Svg' })).filter(s => s.props.width === 8).map(s => s.props.alt)
-  expect(dots).toEqual(['boşta', 'bitti'])
-  expect(await ui.find({ type: 'Text', text: /^durmuş olabilir · inceliyor$/ })).toBeDefined()
+  expect((await ui.find({ key: 'tab-waiting' }))?.text).toBe('Bekleyen 1') // pane-groups (A4): a stopped task is waiting (pane-polish: the pill)
+  // pane-polish: a card's now line takes a blocked, running or waiting role; the stopped role is idle, so the card draws none (the detail lists it: see "T4 C13" and "R5-B4").
+  expect((await ui.findAll({ type: 'Svg' })).filter(s => s.props.width === 8).map(s => s.props.alt)).toEqual([])
   expect((await ui.find({ key: 'reopen-ask' }))?.props.label).toBe('Nerede kaldık?')
   await ui.press({ key: 'reopen-ask' })
   expect(r.log.sent).toEqual(['Nerede kaldık?']) // an owner message: the pane press goes through the outbox like Pause
@@ -3620,9 +3643,8 @@ test('R2: once the file is rewritten (mtime after the start) there is no banner 
   const ui = await r.mount()
   expect(await bannerOf(ui)).toBeUndefined()
   expect(await ui.find({ key: 'reopen-ask' })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /^Çalışan$/ })).toBeDefined() // pane-groups (A4)
-  expect(await ui.find({ type: 'Text', text: /^1 görev$/ })).toBeDefined()
-  expect((await ui.findAll({ type: 'Svg' })).filter(s => s.props.width === 8).map(s => s.props.alt)).toEqual(['çalışıyor', 'bitti'])
+  expect((await ui.find({ key: 'tab-running' }))?.text).toBe('Çalışan 1') // pane-groups (A4); pane-polish: the pill
+  expect((await ui.findAll({ type: 'Svg' })).filter(s => s.props.width === 8).map(s => s.props.alt)).toEqual(['çalışıyor']) // the card's now line names the running role
   // the day stays in the header: it is still the 14th's file
   expect(await ui.find({ type: 'Text', text: /14 Kas 22:10/ })).toBeDefined()
   await ui.unmount()
@@ -3677,7 +3699,7 @@ test('R4: after /clear (no session.start) there is no banner and no line, though
   const ui = await r.mount()
   expect(await ui.find({ type: 'Text', text: /Lead · Opus 5\.5/ })).toBeDefined() // the file is read again on the same path
   expect(await bannerOf(ui)).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /^Çalışan$/ })).toBeDefined() // not stopped: the owner cleared, nothing was reopened (pane-groups A4)
+  expect((await ui.find({ key: 'tab-running' }))?.text).toBe('Çalışan 1') // not stopped: the owner cleared, nothing was reopened (pane-groups A4; pane-polish: the pill)
   await ui.unmount()
   expect(await r.prompt()).toEqual([])
 })
@@ -3712,9 +3734,9 @@ test('R7: a task that carries `session` (a live task session) is never drawn as 
   const r = await rBoot($, on, { status: reopenStatus([R_TASK, live]) })
   const ui = await r.mount()
   expect((await bannerOf(ui))?.text).toMatch(BANNER) // still 1 stopped role, the t1 one
-  expect(await ui.find({ type: 'Text', text: /^Çalışan$/ })).toBeDefined() // pane-groups (A4)
-  expect(await ui.find({ type: 'Text', text: /^Bekleyen$/ })).toBeDefined()
-  expect((await ui.findAll({ type: 'Svg' })).filter(s => s.props.width === 8).map(s => s.props.alt)).toEqual(['çalışıyor', 'bitti', 'boşta', 'bitti']) // pane-groups: Çalışan (the live session task) is drawn before Bekleyen, no longer in file order
+  expect([(await ui.find({ key: 'tab-running' }))?.text, (await ui.find({ key: 'tab-waiting' }))?.text]).toEqual(['Çalışan 1', 'Bekleyen 1']) // pane-groups (A4); pane-polish: the pills
+  // pane-polish: Çalışan (the live session task, its running role) is the first tab; the stopped t1 in Bekleyen has only idle and done roles, so its card has no now line.
+  expect((await ui.findAll({ type: 'Svg' })).filter(s => s.props.width === 8).map(s => s.props.alt)).toEqual(['çalışıyor'])
   await ui.unmount()
   const line = (await r.prompt())[0] ?? ''
   expect(line).toContain('Seçim kutusu taşması · QA · GPT-6 Astra')
@@ -4015,7 +4037,7 @@ test('hardening C10 (pane): a candidate shortened to 7 characters (card, detail,
   for (const surface of ['desktop', 'terminal'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
     const list = await drawnOf(ui)
-    expect(textNode(list, new RegExp(`^aday ${seven}$`))).toBeDefined()
+    expect(textNode(list, new RegExp(surface === 'desktop' ? `^${seven}$` : `^aday ${seven}$`))).toBeDefined() // pane-polish: the desktop card's SHA stands alone, mono, beside the chips
     await ui.press({ key: 'detail-t1' })
     const detail = await drawnOf(ui)
     expect(strings(detail).some(x => x.includes(seven))).toBe(true)
@@ -5525,10 +5547,10 @@ test('T4 C2 (desktop): the same card, the caption "ayrı oturum · hard · bbbbb
   const k = await cBoot($, on)
   const root = await drawnOf(await k.pane('desktop'))
   const t = texts4(byKey(root, 't-hard'))
-  for (const want of ['Sağlamlık', 'Tur 2', 'Review · 3/5', 'aday 3f9a1c2', '1 blocking', 'QA · Opus', 'Developer · Sonnet 5.5', 'ayrı oturum · hard · bbbbbbbb · son yazım 11:55']) expect(t).toContain(want)
+  // pane-polish: the card names one role (its now line, `name · state`, and `+N rol` for the others), the five stage labels (the current one 'Review'), the SHA alone and the Turkish chip.
+  for (const want of ['Sağlamlık', 'Tur 2', 'Review', '3f9a1c2', '1 engelleyici', 'QA · Opus · inceliyor', '+1 rol', 'ayrı oturum · hard · bbbbbbbb · son yazım 11:55']) expect(t).toContain(want)
   expect(texts4(root)).not.toContain('Görev oturumu · hard')
-  expect(texts4(root)).toContain('Çalışan') // pane-groups (A4)
-  expect(texts4(root)).toContain('2 görev')
+  expect(byKey(root, 'tab-running').props?.label).toBe('Çalışan 2') // pane-groups (A4); pane-polish: the pill
 })
 
 test('T4 C2 (detail): the detail summary of a linked task carries the session row too', FOLDERS, async ($, on) => {
@@ -5563,10 +5585,11 @@ test('T4 C7 (terminal): Senin sıran lists own then child decisions, digits run 
 test('T4 C7 (desktop): the same three decisions in the same order, the header counts 3', FOLDERS, async ($, on) => {
   const k = await cBoot($, on)
   const root = await drawnOf(await k.pane('desktop'))
-  expect(texts4(root)).toContain('3 karar')
+  expect(texts4(root)).toContain('3 karar bekliyor') // pane-polish: the band (its count chip reads 3)
   expect(keysWith(root, 'd-d1').concat(keysWith(root, 'kd-')).filter(x => !/-\d$/.test(x))).toEqual(['d-d1', 'kd-hard-k1', 'kd-hard-p1'])
-  expect(texts4(root)).toContain('Ürün kararı · Sağlamlık · ◇ hard')
-  expect(texts4(root)).toContain('Push onayı · Sağlamlık · ◇ hard')
+  // pane-polish: the kind (with the ◇ session) on the left, the task's title (dim) on the right, as two Texts.
+  expect(texts4(byKey(root, 'kd-hard-k1'))).toEqual(expect.arrayContaining(['Ürün kararı · ◇ hard', 'Sağlamlık']))
+  expect(texts4(byKey(root, 'kd-hard-p1'))).toEqual(expect.arrayContaining(['Push onayı · ◇ hard', 'Sağlamlık']))
   expect(texts4(byKey(root, 'kd-hard-k1'))).toContain('Bir seçeneğe bas · hard oturumuna gider')
 })
 
@@ -5795,7 +5818,7 @@ for (const surface of ['terminal', 'desktop'] as const)
     const k = await cBoot($, on, { surface })
     const ui = await k.pane(surface)
     const normal = surface === 'terminal' ? '◇ ayrı oturum · hard · bbbbbbbb · 11:55' : 'ayrı oturum · hard · bbbbbbbb · son yazım 11:55'
-    const rowOf = async () => texts4(byKey(await drawnOf(ui), 't-hard'))
+    const rowOf = async () => texts4(byKey(await drawnTabs(ui), 't-hard'))
     const at = async (ms: number) => {
       ;(k.files[C4_KID] as F4).age = ms
       await k.poll()
@@ -5818,13 +5841,16 @@ for (const surface of ['terminal', 'desktop'] as const)
 test('T4 C13: a reopened parent counts only its own running roles; the child roles are not drawn stopped and the reopen line names only the own task', FOLDERS, async ($, on) => {
   // The own `hard` row has no `session` field (as the pilot's): only the join makes it a task session's.
   const k = await cBoot($, on, { own: own4({ session: false }), store: { [`session:${C4_SID}`]: rec(C4_OWN, SWITCH, { announced: C4_OWN, ...kidsOf4() }, hourAt(9)), ...KID_REC }, ownAge: 3 * DAY4, mine: null })
-  const root = await drawnOf(await k.pane('desktop'))
+  const ui = await k.pane('desktop')
+  const root = await drawnTabs(ui)
   expect(texts4(root)).toContain('Oturum yeniden açıldı · durum önceki oturumdan · çalışıyor görünen 1 rol durmuş olabilir')
   const hard = texts4(byKey(root, 't-hard'))
-  expect(hard).toContain('QA · Opus')
-  expect(hard).toContain('inceliyor')
+  expect(hard).toContain('QA · Opus · inceliyor') // pane-polish: the card's now line, `name · state`
   expect(hard.join('|')).not.toContain('durmuş olabilir')
-  expect(texts4(byKey(root, 't-t2'))).toContain('durmuş olabilir · yazıyor')
+  // pane-polish: the own task t2 is drawn stopped (idle roles): its card has no now line, its detail lists the role.
+  await openTask(ui, 't2')
+  expect(texts4(byKey(await drawnOf(ui), 'detail-now'))).toContain('durmuş olabilir · yazıyor')
+  await ui.press({ key: 'detail-back' })
   await $.prompt.submit({ wait: false, origin: { kind: 'composer' }, text: 'merhaba' } as never)
   const line = (k.log.submits.at(-1)?.context ?? []).find(c => c.startsWith(R_PREFIX)) ?? ''
   expect(line).toContain('Başka iş · Analyst · Fable 5.2')
@@ -5934,10 +5960,10 @@ for (const surface of ['terminal', 'desktop'] as const)
     const tasks = [{ id: 'hard', title: 'Görev', stage: 'review', roles: KID_ROLES }, { id: 'x2', title: 'İkinci', stage: 'build' }]
     const k = await cBoot($, on, { surface, store: KID_REC, own: own4({ decisions: [] }), files: { [C4_KID]: { text: kid4({ decisions, tasks }), age: 5 * MIN4 } } })
     const ui = await k.pane(surface)
-    const root = await drawnOf(ui)
+    const root = await drawnTabs(ui)
     expect(keysWith(root, 'kd-hard-').filter(x => !/-\d+$/.test(x)).length).toBe(10)
     expect(texts4(root)).toContain('+1 karar daha · o oturumda')
-    expect(texts4(root)).toContain(surface === 'terminal' ? '◆ SENİN SIRAN · 11 karar' : '11 karar')
+    expect(texts4(root)).toContain(surface === 'terminal' ? '◆ SENİN SIRAN · 11 karar' : '11 karar bekliyor') // pane-polish: the band
     expect(texts4(byKey(root, 't-hard'))).toContain('+1 görev o oturumda')
     expect(byKey(root, 'kd-hard-q1-0').props?.label).toBe(`${'Ö'.repeat(59)}…`)
     await press4(ui, 'kd-hard-q1-0')
@@ -6608,9 +6634,9 @@ test('T4 TR3 (mode off): with team mode off a marker binds nothing', async ($, o
 test('T4 TR4: the fixture joins: the card draws the child\'s task and the bound row with the child\'s id8; Senin sıran lists k1 and p1', FOLDERS, async ($, on) => {
   const k = await cBoot($, on)
   for (const surface of ['terminal', 'desktop'] as const) {
-    const root = await drawnOf(await k.pane(surface))
+    const root = await drawnTabs(await k.pane(surface))
     const t = texts4(byKey(root, 't-hard'))
-    expect(t).toContain('Review · 3/5')
+    expect(t).toContain(surface === 'terminal' ? 'Review · 3/5' : 'Review') // pane-polish: the desktop card names the five stages under the bar
     expect(t).toContain(surface === 'terminal' ? '◇ ayrı oturum · hard · bbbbbbbb · 11:55' : 'ayrı oturum · hard · bbbbbbbb · son yazım 11:55')
     expect(keysWith(root, 'kd-').filter(x => !/-\d$/.test(x))).toEqual(['kd-hard-k1', 'kd-hard-p1'])
   }
@@ -6800,12 +6826,14 @@ test('T4 TR15: a child task of 9000 roles with 500-character names: 12 roles dra
   const roles = Array.from({ length: 9000 }, (_, i) => tRole(`${i}`.padEnd(500, 'r'), 's'.repeat(500), i === 8999 ? 'blocked' : 'idle'))
   const k = await cBoot($, on, { files: { [C4_KID]: { text: kid4({ roles }), age: 5 * MIN4, size: 1000 } } })
   for (const surface of ['terminal', 'desktop'] as const) {
-    const t = texts4(byKey(await drawnOf(await k.pane(surface)), 't-hard'))
+    const ui = await k.pane(surface)
+    if (surface === 'desktop') await openTask(ui, 'hard') // pane-polish: a card names one role; the 12 drawn roles and `+8988 rol` are in the detail's now card
+    const t = texts4(byKey(await drawnOf(ui), surface === 'desktop' ? 'detail-now' : 't-hard'))
     expect(t).toContain('+8988 rol')
     const names = t.filter(x => /^\d+r+…?$/.test(x))
     expect(names.length).toBe(12)
     expect(Math.max(...[...names, ...t.filter(x => /^s+…$/.test(x))].map(x => Array.from(x).length))).toBe(60)
-    expect(t).toContain(surface === 'terminal' ? '✗ TAKILDI' : '✗ Takıldı')
+    expect(surface === 'terminal' ? t : texts4(await drawnOf(ui))).toContain(surface === 'terminal' ? '✗ TAKILDI' : '✗ Takıldı') // the desktop's state chip is in the detail's meta line
   }
 })
 
@@ -7254,9 +7282,12 @@ for (const shape of [undefined, 'status-3', 'status-4'] as const)
     const own = own4({ session: false })
     const store = { [`session:${C4_SID}`]: rec(C4_OWN, SWITCH, { announced: C4_OWN, ...kidsOf4() }, hourAt(9)), ...KID_REC }
     const k = await cBoot($, on, { own, store, ownAge: 3 * DAY4, mine: null, ...(shape && { atoms: { status: { shape, value: storedView(own) } } }) })
-    const root = await drawnOf(await k.pane('desktop'))
+    const ui = await k.pane('desktop')
+    const root = await drawnOf(ui)
     expect(texts4(root).includes('Oturum yeniden açıldı · durum önceki oturumdan · çalışıyor görünen 1 rol durmuş olabilir')).toBe(!shape)
-    expect(texts4(byKey(root, 't-t2')).includes('durmuş olabilir · yazıyor')).toBe(!shape)
+    await openTask(ui, 't2') // pane-polish: a card names only a blocked, running or waiting role; the stopped (idle) role is in the detail
+    expect(texts4(byKey(await drawnOf(ui), 'detail-now')).includes('durmuş olabilir · yazıyor')).toBe(!shape)
+    await ui.press({ key: 'detail-back' })
     await prompt4($, k, 'merhaba')
     expect((k.log.submits.at(-1)?.context ?? []).some(c => c.startsWith(R_PREFIX))).toBe(!shape)
   })
@@ -7488,6 +7519,32 @@ const base = (a: Record<string, unknown>, updatedAt?: string) => pgFile([PGD('X'
 
 const HEADS = /^(Çalışan|Bekleyen|Biten)$|^(ÇALIŞAN|BEKLEYEN|✓ BİTEN) · /
 const headOf = (s: string) => s.replace('✓ ', '').split(' ')[0]?.toLocaleLowerCase('tr') ?? ''
+// pane-polish (brief, proposal 4): the desktop list draws one tab (the primary pill's), so a test that reads every section draws every tab: this presses each pill, joins the
+// trees in tab order (Çalışan, Bekleyen, Biten: the order the sections had) and presses the tab that was shown back. The terminal has no pills and is drawn once.
+// `withDone`: Biten's tab too (the old tests read Biten's rows only with Biten opened); without it the Biten rows are left out, as a folded Biten left them out.
+const TAB_AT: Record<string, string> = { 'tab-running': 'çalışan', 'tab-waiting': 'bekleyen', 'tab-done': 'biten' }
+const drawnTabs = async (ui: { drawn: () => Promise<unknown>; press: (q: { key: string }) => Promise<unknown> }, withDone = false) => {
+  const first = await drawnOf(ui)
+  const all = nodesOf(first).filter(n => n.type === 'Button' && String(n.props?.key) in TAB_AT)
+  if (all.length === 0) return first
+  const pills = all.filter(p => withDone || p.props?.key !== 'tab-done')
+  const trees: Node[] = []
+  for (const p of pills) {
+    await ui.press({ key: String(p.props?.key) })
+    trees.push(await drawnOf(ui))
+  }
+  const shown = all.find(p => p.props?.variant === 'primary')
+  if (shown) await ui.press({ key: String(shown.props?.key) })
+  return { type: 'Box', children: trees } as Node
+}
+// Opens a task's detail from whichever tab holds its card (the pills are pressed in order until the task's press is drawn).
+const openTask = async (ui: { find: (q: { key: string }) => Promise<unknown>; press: (q: { key: string }) => Promise<unknown> }, id: string) => {
+  for (const tab of Object.keys(TAB_AT)) {
+    if (await ui.find({ key: `detail-${id}` })) break
+    await ui.press({ key: tab }).catch(() => undefined)
+  }
+  await ui.press({ key: `detail-${id}` })
+}
 // The drawn task cards and Biten rows in order, each as "<section>:<id>" (both surfaces).
 const layout = (root: Node) => {
   let at = ''
@@ -7495,13 +7552,14 @@ const layout = (root: Node) => {
   for (const n of nodesOf(root)) {
     const key = String(n.props?.key ?? '')
     if (n.type === 'Text' && HEADS.test(textOf(n))) at = headOf(textOf(n))
+    else if (n.type === 'Button' && n.props?.variant === 'primary' && key in TAB_AT) at = TAB_AT[key]!
     else if (/^t-[A-Za-z0-9]+$/.test(key) || (at === 'biten' && /^detail-[A-Za-z0-9]+$/.test(key) && !out.includes(`biten:${key.slice(7)}`))) out.push(`${at}:${key.replace(/^(t|detail)-/, '')}`)
   }
   return out
 }
 const setsOf = (k: K4) => {
   const c: Record<string, number> = {}
-  for (const s of k.log.sets) c[s] = (c[s] ?? 0) + 1
+  for (const s of k.log.sets) if (s !== 'tab') c[s] = (c[s] ?? 0) + 1 // pane-polish: a tab press writes the `tab` atom (UI state); these tests pin the other writes
   return c
 }
 const since = (a: Record<string, number>, b: Record<string, number>) => Object.fromEntries(Object.entries(b).map(([key, v]) => [key, v - (a[key] ?? 0)] as const).filter(([, v]) => v !== 0))
@@ -7613,39 +7671,41 @@ test('pane-groups C8 (doneStagesSvg(elapsed)): one style behind no-preference, o
 })
 
 // ---- desktop: sections, fold, detail (ANALYST 9-11, A11) ----
-test('pane-groups C9 (desktop): F draws Çalışan 1 görev, Bekleyen 5 görev · 2 takıldı, Biten 1 görev, in that order, and no Görevler; no running task, no Çalışan', FOLDERS, async ($, on) => {
+test('pane-groups C9 (desktop): F draws the pills Çalışan 1, Bekleyen 5 · 2 takıldı, Biten 1, in that order, and no Görevler; no running task, no Çalışan', FOLDERS, async ($, on) => {
   const k = await pgBoot($, on, F)
-  const root = await drawnOf(await k.pane('desktop'))
+  const ui = await k.pane('desktop')
+  const root = await drawnOf(ui)
   const t = texts4(root)
-  const at = (s: string) => t.indexOf(s)
-  expect(at('Çalışan')).toBeGreaterThanOrEqual(0)
-  expect(at('Bekleyen')).toBeGreaterThan(at('Çalışan'))
-  expect(at('Biten')).toBeGreaterThan(at('Bekleyen'))
-  expect([t[at('Çalışan') + 1], t[at('Bekleyen') + 1], t[at('Biten') + 1]]).toEqual(['1 görev', '5 görev · 2 takıldı', '1 görev'])
+  // pane-polish (brief, proposal 4): the section headers are count pills (Buttons); the blocked count rides on the Bekleyen pill.
+  expect(nodesOf(root).filter(n => n.type === 'Button' && String(n.props?.key).startsWith('tab-')).map(n => [n.props?.key, n.props?.label])).toEqual([['tab-running', 'Çalışan 1'], ['tab-waiting', 'Bekleyen 5 · 2 takıldı'], ['tab-done', 'Biten 1']])
   expect(t).not.toContain('Görevler')
   expect(t.some(x => /çalışıyor · /.test(x))).toBe(false) // the old count line is gone
-  expect(layout(root)).toEqual(['çalışan:B', 'bekleyen:C', 'bekleyen:E', 'bekleyen:D', 'bekleyen:F', 'bekleyen:G']) // Biten is folded
+  expect(layout(await drawnTabs(ui))).toEqual(['çalışan:B', 'bekleyen:C', 'bekleyen:E', 'bekleyen:D', 'bekleyen:F', 'bekleyen:G']) // Biten is not part of these two tabs
+  expect(layout(await drawnTabs(ui, true)).filter(x => x.startsWith('biten'))).toEqual(['biten:A'])
 })
 
 test('pane-groups C9 (desktop, no running task): a file with no running task has no Çalışan text', FOLDERS, async ($, on) => {
   const k = await pgBoot($, on, pgFile([PGD('W', { wait: 'x' })]))
-  const t = texts4(await drawnOf(await k.pane('desktop')))
-  expect(t).not.toContain('Çalışan')
-  expect(t).toContain('Bekleyen')
+  const root = await drawnOf(await k.pane('desktop'))
+  // pane-polish: the pills are Buttons: no Çalışan pill, a Bekleyen pill.
+  expect(nodesOf(root).filter(n => n.type === 'Button' && String(n.props?.key).startsWith('tab-')).map(n => [n.props?.key, n.props?.label])).toEqual([['tab-waiting', 'Bekleyen 1']])
 })
 
-test('pane-groups C10 + C11 + A10 + A11 (desktop fold): Göster opens one row per task; the toggle makes no other call first; Gizle folds; the row opens the detail with the green chip', FOLDERS, async ($, on) => {
-  const k = await pgBoot($, on, F)
+test('pane-groups C10 + C11 + A10 + A11 (desktop fold): Tümünü göster opens every row, newest first; the toggle makes no other call first; Gizle folds back to the last 3; the row opens the detail with the green chip', FOLDERS, async ($, on) => {
+  // pane-polish (brief, proposal 4): the folded card is gone; Biten's tab draws the last 3 of the file, newest (last in the file) first, and the toggle exists with more than 3.
+  const five = pgFile([...[1, 2, 3, 4, 5].map(i => PGD(`D${i}`, { done: true, stage: 'report', wait: `D${i} notu`, roles: R_DONE })), PGD('Y', { roles: R_RUN })])
+  const k = await pgBoot($, on, five)
   const ui = await k.pane('desktop')
+  await ui.press({ key: 'tab-done' })
   let root = await drawnOf(ui)
-  expect(nodesOf(root).some(n => n.props?.key === 't-A')).toBe(false)
-  expect(byKey(root, 'done-toggle').props?.label).toBe('Göster')
-  // A11: folded Biten is a plain CARD with a green ✓, `Biten`, `<n> görev` and the button; it has the pressable-card hover.
-  const card = nodesOf(root).filter(n => n.type === 'Box' && n.props?.borderStyle === 'round' && nodesOf(n).some(c => c.props?.key === 'done-toggle')).at(-1) as Node
+  const rows = (r: Node) => nodesOf(r).filter(n => /^t-D\d$/.test(String(n.props?.key))).map(n => String(n.props?.key).slice(2))
+  expect(rows(root)).toEqual(['D5', 'D4', 'D3'])
+  expect(byKey(root, 'done-toggle').props?.label).toBe('Tümünü göster')
+  // A11: Biten is a CARD with the header `Biten` and `son 3 · tümü 5`; each row a green ✓ and the title.
+  const card = byKey(root, 'sec-biten')
   expect(card.props).toMatchObject({ borderColor: 'rgba(128,128,128,0.28)', backgroundColor: 'rgba(128,128,128,0.10)' })
-  expect(hoverOf(card)).toBeDefined()
+  expect(texts4(card).slice(0, 2)).toEqual(['Biten', 'son 3 · tümü 5'])
   expect(textNode(card, /^✓$/)?.props?.color).toBe('success')
-  expect(texts4(card)).toEqual(expect.arrayContaining(['Biten', '1 görev']))
   const snap = () => JSON.stringify([k.log.reads.length, k.log.writes.length, k.log.fills.length, k.log.submits.length, k.log.sends.length])
   const before = snap()
   const sets = k.log.sets.length
@@ -7654,24 +7714,23 @@ test('pane-groups C10 + C11 + A10 + A11 (desktop fold): Göster opens one row pe
   expect(snap()).toBe(before) // A10: no fs, store, prompt or send call
   expect(k.log.nowAt.slice(clocks).every(n => n > sets)).toBe(true) // A10: no clock call before the doneOpen write (each one saw it already)
   expect(k.log.sets.slice(sets)).toEqual(['doneOpen']) // exactly one write
-  root = await drawnOf(ui) // and no poll ran: the tree shows the open group
+  root = await drawnOf(ui) // and no poll ran: the tree shows every row
+  expect(rows(root)).toEqual(['D5', 'D4', 'D3', 'D2', 'D1'])
   expect(byKey(root, 'done-toggle').props?.label).toBe('Gizle')
-  const row = byKey(root, 't-A')
+  const row = byKey(root, 't-D5')
   expect(row.props).toMatchObject({ flexDirection: 'row' })
   expect(textNode(row, /^✓$/)?.props?.color).toBe('success')
-  expect(textNode(row, /^Görev A$/)?.props?.wrap).toBe('truncate-end')
-  expect(byKey(row, 'detail-A').props?.label).toBe('Ayrıntı ›')
-  expect(layout(root).filter(x => x.startsWith('biten'))).toEqual(['biten:A'])
+  expect(textNode(row, /^Görev D5$/)?.props?.wrap).toBe('truncate-end')
+  expect(byKey(row, 'detail-D5').props?.label).toBe('Ayrıntı: Görev D5')
   await ui.press({ key: 'done-toggle' })
-  expect(byKey(await drawnOf(ui), 'done-toggle').props?.label).toBe('Göster')
+  expect(byKey(await drawnOf(ui), 'done-toggle').props?.label).toBe('Tümünü göster')
   // The detail of a finished task: chip `✓ Bitti` (A11: green tint, the green of svg.ts OK) and the `wait` text.
-  await ui.press({ key: 'done-toggle' })
-  await ui.press({ key: 'detail-A' })
+  await ui.press({ key: 'detail-D5' })
   root = await drawnOf(ui)
-  const chip = byKey(root, 'chip-state-A')
+  const chip = byKey(root, 'chip-state-D5')
   expect(chip.props?.backgroundColor).toBe('rgba(78,154,71,0.20)')
   expect(textNode(chip, /^✓ Bitti$/)?.props?.color).toBe('#A8D5A2')
-  expect(texts4(root)).toContain('A notu')
+  expect(texts4(root)).toContain('D5 notu')
 })
 
 // ---- desktop: the completion motion (ANALYST 12-18, A5, A6, A9) ----
@@ -7689,7 +7748,7 @@ test('pane-groups C12 (no motion at opening): a file that already has done tasks
   await k.setOwn(base(A_FIN, '2026-11-20T11:59:30')) // a rewrite that leaves `done` as it was
   expect(setsOf(k).fresh).toBeUndefined()
   expect(doneSvgs(await drawnOf(ui))).toEqual([])
-  expect(layout(await drawnOf(ui))).toEqual(['çalışan:Y'])
+  expect(layout(await drawnTabs(ui))).toEqual(['çalışan:Y'])
 })
 
 test('pane-groups C12 (resume): a resumed start (store record, empty atoms) of a file with done tasks writes no fresh', FOLDERS, async ($, on) => {
@@ -7703,16 +7762,15 @@ test('pane-groups C12 (resume): a resumed start (store record, empty atoms) of a
 test('pane-groups C13 + C14 (a finish): the card stays in its section as ✓ Bitti with the done Svg at elapsed 0; a redraw at 500 ms resumes at 500, from 1200 ms it is static', FOLDERS, async ($, on) => {
   const k = await pgBoot($, on, base(A_RUN))
   const ui = await k.pane('desktop')
-  expect(layout(await drawnOf(ui))).toEqual(['çalışan:A', 'çalışan:Y'])
+  expect(layout(await drawnTabs(ui))).toEqual(['çalışan:A', 'çalışan:Y'])
   await k.setOwn(base(A_FIN))
   let root = await drawnOf(ui)
-  expect(layout(root)).toEqual(['çalışan:A', 'çalışan:Y']) // still in its former section
+  expect(layout(await drawnTabs(ui))).toEqual(['çalışan:A', 'çalışan:Y']) // still in its former section
   expect(chipOf(root, 'A')).toBe('✓ Bitti')
   expect(svgOf(byKey(root, 't-A'), DONE_ALT)).toBe(doneStagesSvg(0))
-  const t = texts4(root)
-  expect(t[t.indexOf('Biten') + 1]).toBe('1 görev') // the count does not include it yet
-  // A card is the full card: its roles and reason stay.
-  expect(texts4(byKey(root, 't-A'))).toEqual(expect.arrayContaining(['Developer · Sonnet 5.5', 'A notu']))
+  expect(byKey(root, 'tab-done').props?.label).toBe('Biten 1') // the count does not include it yet (pane-polish: the pill)
+  // A card keeps its reason (pane-polish: its roles are in the detail; a done role is no now line).
+  expect(texts4(byKey(root, 't-A'))).toEqual(expect.arrayContaining(['A notu']))
   frozen(k, 500)
   await k.setOwn(base(A_FIN, '2026-11-20T11:59:40')) // the same content again: a redraw
   root = await drawnOf(ui)
@@ -7720,24 +7778,23 @@ test('pane-groups C13 + C14 (a finish): the card stays in its section as ✓ Bit
   frozen(k, 1200)
   await k.setOwn(base(A_FIN, '2026-11-20T11:59:50'))
   expect(svgOf(byKey(await drawnOf(ui), 't-A'), DONE_ALT)).toBe(doneStagesSvg())
-  expect(layout(await drawnOf(ui))).toEqual(['çalışan:A', 'çalışan:Y'])
+  expect(layout(await drawnTabs(ui))).toEqual(['çalışan:A', 'çalışan:Y'])
 })
 
 test('pane-groups C15 (it closes by itself): at 5000 ms the card moves under Biten; the whole finish writes fresh 2, status 1, outbox 1 and then nothing for 10 s', FOLDERS, async ($, on) => {
   const k = await pgBoot($, on, base(A_RUN))
   const ui = await k.pane('desktop')
-  await ui.press({ key: 'done-toggle' }) // Biten open
   const start = setsOf(k)
   await k.setOwn(base(A_FIN))
-  expect(layout(await drawnOf(ui))).toEqual(['çalışan:A', 'çalışan:Y', 'biten:X'])
+  expect(layout(await drawnTabs(ui, true))).toEqual(['çalışan:A', 'çalışan:Y', 'biten:X'])
   frozen(k, 4999)
   await k.poll()
-  expect(layout(await drawnOf(ui)).slice(0, 1)).toEqual(['çalışan:A'])
+  expect(layout(await drawnTabs(ui, true)).slice(0, 1)).toEqual(['çalışan:A'])
   frozen(k, 5000)
   await k.poll()
   const root = await drawnOf(ui)
-  expect(layout(root)).toEqual(['çalışan:Y', 'biten:X', 'biten:A']) // file order inside Biten, count +1
-  expect(texts4(root)[texts4(root).indexOf('Biten') + 1]).toBe('2 görev')
+  expect(layout(await drawnTabs(ui, true))).toEqual(['çalışan:Y', 'biten:A', 'biten:X']) // pane-polish: newest (last in the file) first inside Biten, count +1
+  expect(byKey(root, 'tab-done').props?.label).toBe('Biten 2') // pane-polish: the count is the pill's
   const end = setsOf(k)
   expect(since(start, end)).toEqual({ fresh: 2, status: 1, outbox: 1 })
   for (let i = 1; i <= 20; i++) {
@@ -7771,8 +7828,8 @@ test('pane-groups C17 (D and E): a done flag with a linked Push onayı or Takıl
   await k.setOwn(text(true))
   const root = await drawnOf(ui)
   expect(JSON.stringify(byKey(root, 'd-dp'))).toBe(was)
-  expect(layout(root)).toEqual(['bekleyen:E', 'bekleyen:D'])
-  expect(texts4(root)).not.toContain('Biten')
+  expect(layout(await drawnTabs(ui, true))).toEqual(['bekleyen:E', 'bekleyen:D'])
+  expect(nodesOf(root).some(n => n.props?.key === 'tab-done')).toBe(false) // nothing is finished: no Biten pill
   expect(setsOf(k).fresh).toBeUndefined()
 })
 
@@ -7788,8 +7845,7 @@ for (const [name, flag, kid, want] of joinCases)
   test(`pane-groups C18 (T4 join): ${name}`, FOLDERS, async ($, on) => {
     const k = await cBoot($, on, { surface: 'desktop', own: hardOwn(flag), ...(kid && { files: { [C4_KID]: { text: kid, age: 5 * MIN4 } } }) })
     const ui = await k.pane('desktop')
-    await ui.press({ key: 'done-toggle' }).catch(() => undefined) // Biten open, when there is one
-    const root = await drawnOf(ui)
+    const root = await drawnTabs(ui, true) // pane-polish: every tab, Biten's too (its rows show without a toggle)
     expect(layout(root)).toEqual(want)
     expect(setsOf(k).fresh).toBeUndefined() // present from the start: no motion
     if (want[0] === 'bekleyen:hard' && flag) expect(byKey(root, 'kd-hard-k1').props?.borderStyle).toBe('round')
@@ -7799,10 +7855,10 @@ test('pane-groups C18 (T4 join, no motion): a child file that changes under a fl
   const own = own4({ decisions: [], tasks: [{ id: 'hard', title: 'Sağlamlık', stage: 'report', wait: 'Ana not', done: true, session: { name: 'hard' } }] })
   const k = await cBoot($, on, { surface: 'desktop', own })
   const ui = await k.pane('desktop')
-  expect(layout(await drawnOf(ui))).toEqual(['çalışan:hard'])
+  expect(layout(await drawnTabs(ui))).toEqual(['çalışan:hard'])
   k.files[C4_KID] = { text: kid4({ decisions: [], tasks: [{ id: 'hard', title: 'Görev', stage: 'review', roles: R_DONE }] }), age: MIN4 }
   await k.poll()
-  expect(layout(await drawnOf(ui))).toEqual([]) // straight under the folded Biten
+  expect(layout(await drawnTabs(ui, true))).toEqual(['biten:hard']) // straight under Biten (pane-polish: whose tab draws its row)
   expect(setsOf(k).fresh).toBeUndefined()
 })
 
@@ -7867,22 +7923,21 @@ test('pane-groups A2 (link drops): a finished task whose link goes (here: the bi
   const own = own4({ decisions: [], tasks: [{ id: 'hard', title: 'Sağlamlık', stage: 'report', done: true, wait: 'Ana not', session: { name: 'hard' }, roles: [tRole('Görev oturumu · hard', 'bitti', 'done')] }] })
   const k = await cBoot($, on, { surface: 'desktop', own, files: { [C4_KID]: { text: kid4({ decisions: [], roles: R_DONE }), age: 5 * MIN4 } } })
   const ui = await k.pane('desktop')
-  await ui.press({ key: 'done-toggle' })
-  expect(layout(await drawnOf(ui))).toEqual(['biten:hard'])
+  expect(layout(await drawnTabs(ui, true))).toEqual(['biten:hard'])
   await k.mineAdd({ kids: undefined }) // the entry is gone: unbound
   await k.poll()
   await k.poll()
-  expect(layout(await drawnOf(ui))).toEqual(['biten:hard'])
+  expect(layout(await drawnTabs(ui, true))).toEqual(['biten:hard'])
 })
 
 test('pane-groups A5 (reopen): the first rewrite that marks a stopped task done lingers in Bekleyen (its drawn state), not in Çalışan', FOLDERS, async ($, on) => {
   const resumed = { store: { ...Object.fromEntries([sess4(C4_SID, 'main--aaaaaaaa.json', hourAt(11))]) } }
   const k = await pgBoot($, on, base(A_RUN), resumed)
   const ui = await k.pane('desktop')
-  expect(layout(await drawnOf(ui))).toEqual(['bekleyen:A', 'bekleyen:Y']) // both drawn stopped (waiting)
+  expect(layout(await drawnTabs(ui))).toEqual(['bekleyen:A', 'bekleyen:Y']) // both drawn stopped (waiting)
   k.disk.ownAge = 0 // the Lead writes now: after the start
   await k.setOwn(base(A_FIN))
-  expect(layout(await drawnOf(ui))).toEqual(['çalışan:Y', 'bekleyen:A'])
+  expect(layout(await drawnTabs(ui))).toEqual(['çalışan:Y', 'bekleyen:A'])
 })
 
 test('pane-groups A6 (places): finishes from waiting and from blocked sit at their file-order place among their state; a bulk finish plays for every task; staggered finishes expire alone', FOLDERS, async ($, on) => {
@@ -7898,23 +7953,23 @@ test('pane-groups A6 (places): finishes from waiting and from blocked sit at the
     ])
   const k = await pgBoot($, on, file({}))
   const ui = await k.pane('desktop')
-  expect(layout(await drawnOf(ui))).toEqual(['çalışan:R', 'çalışan:R2', 'çalışan:R3', 'bekleyen:Bk', 'bekleyen:Bk2', 'bekleyen:W'])
+  expect(layout(await drawnTabs(ui))).toEqual(['çalışan:R', 'çalışan:R2', 'çalışan:R3', 'bekleyen:Bk', 'bekleyen:Bk2', 'bekleyen:W'])
   await k.setOwn(file({ Bk: true }))
-  expect(layout(await drawnOf(ui))).toEqual(['çalışan:R', 'çalışan:R2', 'çalışan:R3', 'bekleyen:Bk', 'bekleyen:Bk2', 'bekleyen:W']) // from blocked: among the blocked
-  expect(chipOf(await drawnOf(ui), 'Bk')).toBe('✓ Bitti')
+  expect(layout(await drawnTabs(ui))).toEqual(['çalışan:R', 'çalışan:R2', 'çalışan:R3', 'bekleyen:Bk', 'bekleyen:Bk2', 'bekleyen:W']) // from blocked: among the blocked
+  expect(chipOf(await drawnTabs(ui), 'Bk')).toBe('✓ Bitti')
   frozen(k, 3000)
   await k.setOwn(file({ Bk: true, W: true, R: true, R2: true, R3: true })) // W from waiting, R, R2 and R3 from running: four more in ONE read (a cap of 3 would fail)
-  let root = await drawnOf(ui)
-  expect(layout(root)).toEqual(['çalışan:R', 'çalışan:R2', 'çalışan:R3', 'bekleyen:Bk', 'bekleyen:Bk2', 'bekleyen:W'])
+  let root = await drawnTabs(ui)
+  expect(layout(await drawnTabs(ui))).toEqual(['çalışan:R', 'çalışan:R2', 'çalışan:R3', 'bekleyen:Bk', 'bekleyen:Bk2', 'bekleyen:W'])
   expect(['W', 'R', 'R2', 'R3'].map(id => chipOf(root, id))).toEqual(['✓ Bitti', '✓ Bitti', '✓ Bitti', '✓ Bitti'])
   expect(doneSvgs(root).length).toBe(5) // all five play: Bk and the four of one read
   frozen(k, 5000) // the first finish (at 0) ends; the four of 3000 do not
   await k.poll()
-  root = await drawnOf(ui)
-  expect(layout(root)).toEqual(['çalışan:R', 'çalışan:R2', 'çalışan:R3', 'bekleyen:Bk2', 'bekleyen:W'])
+  root = await drawnTabs(ui)
+  expect(layout(await drawnTabs(ui))).toEqual(['çalışan:R', 'çalışan:R2', 'çalışan:R3', 'bekleyen:Bk2', 'bekleyen:W'])
   frozen(k, 8000)
   await k.poll()
-  expect(layout(await drawnOf(ui))).toEqual(['bekleyen:Bk2'])
+  expect(layout(await drawnTabs(ui))).toEqual(['bekleyen:Bk2'])
 })
 
 test('pane-groups A9 (fresh never blocks a read): a failing clock skips the motion and the status is still read; a clock stepped back drops the entry', FOLDERS, async ($, on) => {
@@ -7924,17 +7979,16 @@ test('pane-groups A9 (fresh never blocks a read): a failing clock skips the moti
   await k.setOwn(base(A_FIN))
   Object.defineProperty(k.gate, 'now', { value: C4_NOW, writable: true, configurable: true })
   expect(setsOf(k).fresh).toBeUndefined()
-  await ui.press({ key: 'done-toggle' })
-  expect(layout(await drawnOf(ui))).toEqual(['çalışan:Y', 'biten:X', 'biten:A']) // the status write happened; no motion, straight to Biten
+  expect(layout(await drawnTabs(ui, true))).toEqual(['çalışan:Y', 'biten:A', 'biten:X']) // the status write happened; no motion, straight to Biten (pane-polish: newest first)
   // A backward step: an entry with now - at < 0 is dropped.
   await k.setOwn(base({ ...A_RUN, wait: 'A notu' }))
   await k.setOwn(base(A_FIN, '2026-11-20T11:59:10'))
-  expect(layout(await drawnOf(ui))).toContain('çalışan:A')
+  expect(layout(await drawnTabs(ui))).toContain('çalışan:A')
   const was = setsOf(k)
   frozen(k, -10_000)
   await k.poll()
   expect(since(was, setsOf(k))).toEqual({ fresh: 1 })
-  expect(layout(await drawnOf(ui))).toEqual(['çalışan:Y', 'biten:X', 'biten:A'])
+  expect(layout(await drawnTabs(ui, true))).toEqual(['çalışan:Y', 'biten:A', 'biten:X'])
 })
 
 test('pane-groups C28 + A15 (old stored values, desktop): atoms of the pre-pane-groups shape read as not done; nothing is Biten, fresh is never written; a later flag lingers and folds', FOLDERS, async ($, on) => {
@@ -7943,15 +7997,15 @@ test('pane-groups C28 + A15 (old stored values, desktop): atoms of the pre-pane-
   const k = await pgBoot($, on, text, { atoms: { status: { shape: 'status-5', value: old }, children: { shape: 'children-3', value: [] } } })
   const ui = await k.pane('desktop')
   const root = await drawnOf(ui)
-  expect(layout(root)).toEqual(['çalışan:A', 'çalışan:Y', 'bekleyen:X'])
-  expect(texts4(root)).not.toContain('Biten')
+  expect(layout(await drawnTabs(ui))).toEqual(['çalışan:A', 'çalışan:Y', 'bekleyen:X'])
+  expect(nodesOf(root).some(n => n.props?.key === 'tab-done')).toBe(false) // nothing is Biten: no pill (pane-polish)
   expect(setsOf(k).fresh).toBeUndefined()
   await k.setOwn(base(A_FIN))
-  expect(layout(await drawnOf(ui))).toEqual(['çalışan:A', 'çalışan:Y', 'bekleyen:X']) // A and X both finish: both linger in their former sections
-  expect([chipOf(await drawnOf(ui), 'A'), chipOf(await drawnOf(ui), 'X')]).toEqual(['✓ Bitti', '✓ Bitti'])
+  expect(layout(await drawnTabs(ui))).toEqual(['çalışan:A', 'çalışan:Y', 'bekleyen:X']) // A and X both finish: both linger in their former sections
+  expect([chipOf(await drawnTabs(ui), 'A'), chipOf(await drawnTabs(ui), 'X')]).toEqual(['✓ Bitti', '✓ Bitti'])
   frozen(k, 5000)
   await k.poll()
-  expect(layout(await drawnOf(ui))).toEqual(['çalışan:Y'])
+  expect(layout(await drawnTabs(ui))).toEqual(['çalışan:Y'])
 })
 
 test('pane-groups C28 + A15 (old stored values, terminal): the same on the terminal', FOLDERS, async ($, on) => {
@@ -7959,10 +8013,10 @@ test('pane-groups C28 + A15 (old stored values, terminal): the same on the termi
   const old = { file: C4_OWN, mtime: C4_NOW - MIN4, data: parseStatus(text), error: null }
   const k = await pgBoot($, on, text, { surface: 'terminal', atoms: { status: { shape: 'status-5', value: old }, children: { shape: 'children-3', value: [] } } })
   const ui = await k.pane('terminal')
-  expect(layout(await drawnOf(ui))).toEqual(['çalışan:A', 'çalışan:Y'])
+  expect(layout(await drawnTabs(ui))).toEqual(['çalışan:A', 'çalışan:Y'])
   expect(setsOf(k).fresh).toBeUndefined()
   await k.setOwn(pgFile([PGD('A', A_FIN), PGD('Y', { roles: R_DONE })]))
-  expect(layout(await drawnOf(ui))).toEqual(['çalışan:A', 'bekleyen:Y'])
+  expect(layout(await drawnTabs(ui))).toEqual(['çalışan:A', 'bekleyen:Y'])
   frozen(k, 5000)
   await k.poll()
   expect(texts4(await drawnOf(ui))).toContain('✓ BİTEN · 1')
@@ -8003,7 +8057,7 @@ test('pane-groups C22 + C23 + A13 (terminal keys and rows): keys follow the draw
   expect(textNode(pick as Node, /^✓$/)?.props?.color).toBe('success')
   expect(title?.type).toBe('Text')
   expect([textOf(title as Node), title?.props?.wrap]).toEqual(['Görev A', 'truncate-end'])
-  expect(layout(root).filter(x => x.startsWith('biten'))).toEqual(['biten:A'])
+  expect(layout(await drawnTabs(ui)).filter(x => x.startsWith('biten'))).toEqual(['biten:A'])
   // One Button row: no state, stage or role rows for it.
   const t = texts4(root)
   expect(t.filter(x => /^✓ bitti/.test(x))).toEqual([])
@@ -8032,7 +8086,7 @@ test('pane-groups C24 + A13 (terminal finish): the box stays with ✓ bitti and 
   await k.change(pgFile([PGD('A', A_FIN), PGD('X', { done: true, stage: 'report', roles: R_DONE })]))
   const ticks = tickCount(k).sets
   let root = await drawnOf(ui)
-  expect(layout(root)).toEqual(['çalışan:A'])
+  expect(layout(await drawnTabs(ui))).toEqual(['çalışan:A'])
   const box = byKey(root, 't-A')
   expect(parts(box.children?.[1] as Node)).toEqual([['✓ bitti', 'success', 'bold', false], [' · A notu', undefined, undefined, true]])
   expect(nodesOf(box).filter(n => n.type === 'Text' && textOf(n) === '━━━ ').map(n => n.props?.color)).toEqual(['success', 'success', 'success', 'success', 'success'])
@@ -8040,7 +8094,7 @@ test('pane-groups C24 + A13 (terminal finish): the box stays with ✓ bitti and 
   expect(tickCount(k).sets).toBe(ticks)
   await k.clock.advance(2500)
   root = await drawnOf(ui)
-  expect(layout(root)).toEqual([])
+  expect(layout(await drawnTabs(ui))).toEqual([])
   expect(texts4(root)).toContain('✓ BİTEN · 2')
   expect(tickCount(k).sets).toBe(ticks)
 })
@@ -8128,7 +8182,7 @@ test('test-gaps C22 (terminal, three Biten rows): each opened row is a Button an
   const ui = await k.pane('terminal')
   await ui.press({ key: 'done-toggle' })
   const root = await drawnOf(ui)
-  const drawn = layout(root).filter(x => x.startsWith('biten:')).map(x => x.slice(6))
+  const drawn = layout(await drawnTabs(ui)).filter(x => x.startsWith('biten:')).map(x => x.slice(6))
   expect([...drawn].sort()).toEqual(ids)
   expect(drawn.map(id => byKey(root, `detail-${id}`).props?.hotkey)).toEqual(['a', 'c', 'd'])
   for (const id of ids) {
@@ -8152,18 +8206,18 @@ test('test-gaps C27 (caption, desktop detail): the ✓ bitti işaretli row and t
 // biten-overflow (desktop, Biten row): a 120-character title must not push "Ayrıntı ›" out of the card.
 // Source of the expected props: the CSS flexbox rule the desktop engine lays a Box with. A flex item has `min-width: auto` (= its content width),
 // so a grown title Box never shrinks below the full title unless `minWidth` is 0; `flexShrink` 1 lets it give room, and the button's Box keeps `flexShrink` 0.
-test('biten-overflow (desktop): the title Box of a Biten row shrinks (minWidth 0, flexShrink 1) and the Ayrıntı button Box does not', FOLDERS, async ($, on) => {
+test('biten-overflow (desktop): the Box that holds a Biten row\'s title Button shrinks (minWidth 0, flexShrink 1) and the title is cut', FOLDERS, async ($, on) => {
   const title = 'Çok uzun bir görev başlığı '.repeat(5).slice(0, 120)
   expect(title).toHaveLength(120)
   const k = await pgBoot($, on, pgFile([PGD('L', { title, done: true, stage: 'report', roles: R_DONE })]))
   const ui = await k.pane('desktop')
-  await ui.press({ key: 'done-toggle' })
-  const row = byKey(await drawnOf(ui), 't-L')
+  const row = byKey(await drawnOf(ui), 't-L') // pane-polish: the only task is Biten, so its tab is the one drawn (no toggle for up to 3 rows)
   const text = textNode(row, /^Çok uzun/) as Node
   expect([textOf(text), text.props?.wrap]).toEqual([title, 'truncate-end'])
+  // pane-polish: the row's press is the title Button (the title Text and a chevron Text); the Button sits in the row's growing Box, which shrinks and may go to 0.
   const owner = (n: Node) => nodesOf(row).find(b => b.type === 'Box' && b.children?.includes(n)) as Node
-  expect(owner(text).props).toMatchObject({ flexGrow: 1, flexShrink: 1, minWidth: 0 })
-  expect(owner(byKey(row, 'detail-L')).props).toMatchObject({ flexShrink: 0 })
+  expect(byKey(row, 'detail-L').children).toContain(text)
+  expect(owner(byKey(row, 'detail-L')).props).toMatchObject({ flexGrow: 1, flexShrink: 1, minWidth: 0 })
   expect(owner(byKey(row, 'detail-L')).props?.key).toBeUndefined() // a key here would take the row's hover scope from the Button
 })
 
@@ -8183,7 +8237,17 @@ const rowRuleBreaks = (root: Node) => {
     const kids = kidsOf(row)
     const id = `${row.props?.key ?? kids.map(k => k.props?.key ?? k.type).join('+')}`
     for (const k of kids) if (k.type === 'Box' && Number(k.props?.flexGrow) >= 1 && (k.props?.flexShrink !== 1 || k.props?.minWidth !== 0)) bad.push(`grow without shrink/minWidth: ${id}`)
-    const sides = kids.filter(k => k.type === 'Button' || (k.type === 'Box' && kidsOf(k).length === 1 && kidsOf(k)[0]?.type === 'Button'))
+    // pane-polish: a task card's title row and a Biten row put the press in the text side itself: a growing Box that holds only the title Button, whose Texts are cut (the
+    // evidence row's shape). It is not a Button side; its Texts must be cut at the end.
+    const pressText = (k: Node) => k.type === 'Box' && Number(k.props?.flexGrow) >= 1 && kidsOf(k).length === 1 && kidsOf(k)[0]?.type === 'Button'
+    // (revision 2: the title Text is cut at the end; the chevron Text after it is never cut, so a long title cannot squeeze it away)
+    for (const k of kids.filter(pressText)) {
+      checked++
+      const ts = nodesOf(k).filter(x => x.type === 'Text')
+      if (ts[0]?.props?.wrap !== 'truncate-end') bad.push(`title Text not cut at the end in a pressable text side: ${id}`)
+      for (const x of ts.slice(1)) if (x.props?.wrap !== undefined) bad.push(`chevron Text cut in a pressable text side: ${id}`)
+    }
+    const sides = kids.filter(k => k.type === 'Button' || (k.type === 'Box' && !pressText(k) && kidsOf(k).length === 1 && kidsOf(k)[0]?.type === 'Button'))
     if (sides.length === 0 || !kids.some(k => k.type !== 'Button' && !sides.includes(k) && hasText(k))) continue
     checked++
     for (const s of sides) if (s.type !== 'Box' || s.props?.flexShrink !== 0 || s.props?.key !== undefined) bad.push(`button side not a keyless flexShrink 0 Box: ${id}`)
@@ -8219,16 +8283,18 @@ test('biten-overflow R2 (desktop pane, Biten, detail): rows with text beside a B
   const seen: Record<string, { bad: string[]; checked: number }> = {}
   const look = async (name: string) => (seen[name] = rowRuleBreaks(await drawnOf(ui)))
   await look('header + folded Biten')
-  await ui.press({ key: 'done-toggle' })
+  await ui.press({ key: 'tab-done' }) // pane-polish: Biten's rows are its tab's, no toggle
   await look('Biten rows')
+  await ui.press({ key: 'tab-waiting' })
+  await look('task cards') // pane-polish: the card's title row (a pressable text side) and the pills
   await ui.press({ key: 'detail-t1' })
   for (let i = 0; i < 10; i++) await new Promise(r => (globalThis as unknown as { setTimeout: (f: () => void, ms: number) => void }).setTimeout(() => r(undefined), 0))
   expect(await ui.find({ key: 'ev-open-0' })).toBeDefined() // the evidence row is the loaded (Button) kind
   await look('detail')
   // The evidence row has no Button beside its text (the Button is inside the text column), so the rule above does not see it: its column is checked by key.
   expect(kidsOf(byKey(await drawnOf(ui), 'ev-0')).find(k => k.type === 'Box')?.props).toMatchObject({ flexGrow: 1, flexShrink: 1, minWidth: 0 })
-  expect(Object.fromEntries(Object.entries(seen).map(([k, v]) => [k, v.bad]))).toEqual({ 'header + folded Biten': [], 'Biten rows': [], detail: [] })
-  expect(Object.fromEntries(Object.entries(seen).map(([k, v]) => [k, v.checked > 0]))).toEqual({ 'header + folded Biten': true, 'Biten rows': true, detail: false })
+  expect(Object.fromEntries(Object.entries(seen).map(([k, v]) => [k, v.bad]))).toEqual({ 'header + folded Biten': [], 'Biten rows': [], 'task cards': [], detail: [] })
+  expect(Object.fromEntries(Object.entries(seen).map(([k, v]) => [k, v.checked > 0]))).toEqual({ 'header + folded Biten': true, 'Biten rows': true, 'task cards': true, detail: false })
 })
 
 test('biten-overflow R2 (desktop, other sessions): the collapsed banner and the opened header follow the shrink rule with a 120-character project name', FOLDERS, async ($, on) => {
@@ -8544,4 +8610,557 @@ test('evidence-restyle R10 (colours, scroll): the detail draws theme keys and th
   expect(nodesOf(r).filter(n => n.props?.backgroundColor !== undefined).every(n => /^rgba\(/.test(String(n.props?.backgroundColor)))).toBe(true)
   expect(nodesOf(r).some(n => n.props?.overflow === 'scroll' || n.props?.overflowY !== undefined)).toBe(false)
   await ui.unmount()
+})
+
+// ===== pane-polish: the desktop pane's four design proposals (owner sent all four: task card, "Senin sıran" band, detail header, top band and tabs). =====
+// Sources of every expected value (written by hand, nothing read back from the implementation): the Lead's brief of the task
+// (<evidence root>/tasks/pane-polish/dev-brief.md, "The four proposals, with the Lead's rules where the data is thin" 1-4) and the four design mocks it names
+// (design/project/{Main,Karar,Ayrinti,Ust}.dc.html); colours are the literals of hooks/svg.ts (TRACK, MUTED, CLAY, AMBER) and of the pane's own rgba constants.
+// Fidelity gaps are in the developer report, not asserted here (no duration on the card, no 44 px, no full-width buttons, no version or day on a Biten row).
+const PP_SHA = '3f9a1c2d4e5f60718293a4b5c6d7e8f901234567'
+const ppTabs = (root: Node) => nodesOf(root).filter(n => n.type === 'Button' && String(n.props?.key).startsWith('tab-')).map(n => [n.props?.key, n.props?.label, n.props?.variant])
+const ppCards = (root: Node) => nodesOf(root).filter(n => /^t-[A-Za-z0-9]+$/.test(String(n.props?.key)) && n.type === 'Box').map(n => String(n.props?.key).slice(2))
+const ppParentOf = (root: Node, n: Node) => nodesOf(root).find(b => b.children?.includes(n)) as Node
+
+test('pane-polish P1 (now line): a card names one role, the first blocked, else running, else waiting, as `name · state` with its dot; `+N rol` counts the others; no duration', FOLDERS, async ($, on) => {
+  const roles = [tRole('A', 'bitti', 'done'), tRole('B', 'sırada', 'waiting'), tRole('C', 'çalışıyor', 'running'), tRole('D', 'takıldı', 'blocked'), tRole('E', 'başka', 'blocked'), tRole('F', 'boşta', 'idle')]
+  const tasks = [
+    PGD('T1', { roles }), // blocked wins: D, 5 others
+    PGD('T2', { roles: roles.filter(r => r.status !== 'blocked') }), // running wins over waiting: C, 3 others
+    PGD('T3', { roles: [roles[1], roles[0]] }), // waiting: B, 1 other
+    PGD('T4', { roles: [roles[0], roles[5]] }), // done and idle only: no line
+    PGD('T5'), // no roles
+  ]
+  const k = await pgBoot($, on, pgFile(tasks))
+  const root = await drawnTabs(await k.pane('desktop'))
+  const now = (id: string) => nodesOf(root).find(n => n.props?.key === `now-${id}`)
+  const line = (id: string) => {
+    const n = now(id)
+    return n && { text: textNode(n, /./)?.props && textOf(textNode(n, /./) as Node), dot: nodesOf(n).find(x => x.type === 'Svg')?.props?.alt, more: nodesOf(n).filter(x => x.type === 'Text').map(textOf).find(t => /rol$/.test(t)) }
+  }
+  expect(line('T1')).toEqual({ text: 'D · takıldı', dot: 'takıldı', more: '+5 rol' })
+  expect(line('T2')).toEqual({ text: 'C · çalışıyor', dot: 'çalışıyor', more: '+3 rol' })
+  expect(line('T3')).toEqual({ text: 'B · sırada', dot: 'sırada', more: '+1 rol' })
+  expect(now('T4')).toBeUndefined()
+  expect(now('T5')).toBeUndefined()
+  // The `+N rol` is dim; the line's text is one cut Text. A card has no per-role list and no duration (a Role has no start time).
+  const t1 = byKey(root, 't-T1')
+  expect(nodesOf(t1).find(n => n.type === 'Text' && textOf(n) === '+5 rol')?.props).toMatchObject({ size: 'caption', dimColor: true })
+  expect(textNode(t1, /^D · takıldı$/)?.props?.wrap).toBe('truncate-end')
+  for (const id of ['T1', 'T2', 'T3', 'T4', 'T5']) expect(texts4(byKey(root, `t-${id}`)).filter(x => /\bdk\b|\bsa\b|\bsn\b|\d+ ?(dk|dakika)|önce/.test(x))).toEqual([])
+  expect(texts4(t1)).not.toContain('E') // the other roles are not listed on the card
+  expect(texts4(t1)).not.toContain('başka')
+})
+
+test('pane-polish P1 (pure): nowRole takes blocked, then running, then waiting, counts the other roles plus moreRoles; tabOf picks the picked tab while it has tasks, else the first that has', async () => {
+  const r = (status: string, name = status) => ({ name, state: `${status}-durum`, status }) as never
+  expect(nowRole({ roles: [r('done'), r('running'), r('blocked')] })).toMatchObject({ text: 'blocked · blocked-durum', more: 2 })
+  expect(nowRole({ roles: [r('waiting'), r('running', 'a'), r('running', 'b')], moreRoles: 8988 })).toMatchObject({ text: 'a · running-durum', more: 2 + 8988 })
+  expect(nowRole({ roles: [r('idle'), r('done')] })).toBeUndefined()
+  expect(nowRole({ roles: [] })).toBeUndefined()
+  expect(nowRole({ roles: [{ name: 'X', state: '', status: 'running' }] })?.text).toBe('X')
+  expect(tabOf(null, { running: 0, waiting: 2, done: 3 })).toBe('waiting')
+  expect(tabOf('done', { running: 1, waiting: 2, done: 3 })).toBe('done')
+  expect(tabOf('done', { running: 1, waiting: 0, done: 0 })).toBe('running')
+  expect(tabOf('waiting', { running: 0, waiting: 0, done: 4 })).toBe('done')
+  expect(tabOf(null, { running: 0, waiting: 0, done: 0 })).toBeUndefined()
+  const t = { id: 'a', title: 'T', stage: 0, state: 'running', roles: [] } as never
+  expect(decisionTitle({ id: 'd', text: 'x', options: [], task: 'a' }, [t])).toBe('T')
+  expect(decisionTitle({ id: 'd', text: 'x', options: [], task: 'zz' }, [t])).toBeUndefined()
+  expect(decisionTitle({ id: 'd', text: 'x', options: [], task: '#1' }, [{ ...(t as object), id: '#1', generatedId: true } as never])).toBeUndefined() // a made-up id links to no decision
+})
+
+test('pane-polish P1 (stage labels): the five labels sit under the bar, each cut and growing; the current one in claude ink and semibold, the others dim; a finished card has all five dim', FOLDERS, async ($, on) => {
+  const k = await pgBoot($, on, base(A_RUN))
+  const ui = await k.pane('desktop')
+  const labels = (root: Node, id: string) => [0, 1, 2, 3, 4].map(i => byKey(root, `t-${id}-l-${i}`))
+  let root = await drawnOf(ui)
+  // PGD tasks are at stage `build` (index 1).
+  expect(labels(root, 'Y').map(b => textOf(b))).toEqual(['Spec', 'Build', 'Review', 'Revise', 'Rapor'])
+  expect(labels(root, 'Y').map(b => b.props)).toEqual(Array(5).fill(expect.objectContaining({ flexGrow: 1, flexShrink: 1, minWidth: 0 })))
+  const texts = (id: string) => labels(root, id).map(b => textNode(b, /./) as Node)
+  expect(texts('Y').map(t => t.props?.wrap)).toEqual(Array(5).fill('truncate-end'))
+  expect(texts('Y').map(t => [t.props?.color, t.props?.weight, t.props?.dimColor])).toEqual([[undefined, undefined, true], ['claude', 'semibold', false], [undefined, undefined, true], [undefined, undefined, true], [undefined, undefined, true]])
+  // The old caption (`Build · 2/5`) is gone from the card.
+  expect(texts4(byKey(root, 't-Y'))).not.toContain('Build · 2/5')
+  // A task that just finished stays as a card for a moment: all five labels dim, none in claude.
+  await k.setOwn(base(A_FIN))
+  root = await drawnOf(ui)
+  expect(chipOf(root, 'A')).toBe('✓ Bitti')
+  expect(texts('A').map(t => [t.props?.color, t.props?.weight, t.props?.dimColor])).toEqual(Array(5).fill([undefined, undefined, true]))
+})
+
+test('pane-polish P1 (chips): `N engelleyici` and `N takip` chips, the short SHA beside them alone; the row is drawn for a SHA or a chip and not otherwise', FOLDERS, async ($, on) => {
+  const tasks = [
+    PGD('C1', { candidate: PP_SHA, blocking: 2, followup: 3 }),
+    PGD('C2', { candidate: PP_SHA }),
+    PGD('C3', { blocking: 1 }),
+    PGD('C4', { followup: 4 }),
+    PGD('C5'),
+  ]
+  const k = await pgBoot($, on, pgFile(tasks))
+  const root = await drawnTabs(await k.pane('desktop'))
+  const card = (id: string) => byKey(root, `t-${id}`)
+  expect(textOf(keyed(card('C1'), 'chip-blocking-C1'))).toBe('2 engelleyici')
+  expect(keyed(card('C1'), 'chip-blocking-C1').props).toMatchObject({ backgroundColor: 'rgba(224,108,108,0.18)' })
+  expect(textNode(keyed(card('C1'), 'chip-blocking-C1'), /./)?.props).toMatchObject({ color: 'error', weight: 'medium' })
+  expect(textOf(keyed(card('C1'), 'chip-followup-C1'))).toBe('3 takip')
+  expect(keyed(card('C1'), 'chip-followup-C1').props).toMatchObject({ backgroundColor: 'rgba(128,128,128,0.2)' })
+  // The SHA is the first 7 characters, mono, dim, in the same row as the chips (the chips' parent holds it).
+  const sha = textNode(card('C1'), /^3f9a1c2$/) as Node
+  expect(sha.props).toMatchObject({ mono: true, dimColor: true, size: 'caption' })
+  expect(ppParentOf(card('C1'), keyed(card('C1'), 'chip-blocking-C1'))).toBe(ppParentOf(card('C1'), sha))
+  expect(textNode(card('C2'), /^3f9a1c2$/)).toBeDefined()
+  expect(nodesOf(card('C2')).some(n => /^chip-(blocking|followup)-/.test(String(n.props?.key)))).toBe(false)
+  expect(textOf(keyed(card('C3'), 'chip-blocking-C3'))).toBe('1 engelleyici')
+  expect(textNode(card('C3'), /^[0-9a-f]{7}$/)).toBeUndefined()
+  expect(textOf(keyed(card('C4'), 'chip-followup-C4'))).toBe('4 takip')
+  expect(textNode(card('C5'), /^[0-9a-f]{7}$/) ?? nodesOf(card('C5')).find(n => /^chip-(blocking|followup)-/.test(String(n.props?.key)))).toBeUndefined()
+  expect(kidsOf(card('C5')).map(n => n.type)).toEqual(['Box', 'Box']) // the head and the stage block: no chip row
+  expect(kidsOf(card('C1')).map(n => n.type)).toEqual(['Box', 'Box', 'Box']) // + the SHA and chips row
+  // No English chip words and no `aday` prefix anywhere on a card.
+  expect(texts4(root).filter(x => /blocking|follow-up|^aday /.test(x))).toEqual([])
+})
+
+test('pane-polish P1 (press): the title row is the Button detail-<id> (label `Ayrıntı: <title>`, children the title and a dim ›), there is no separate Ayrıntı › button, a blocked card keeps its red edge and its reason right under the title row', FOLDERS, async ($, on) => {
+  const k = await pgBoot($, on, pgFile([PGD('E', { roles: R_RUN })], F_DEC))
+  const ui = await k.pane('desktop')
+  const root = await drawnTabs(ui)
+  const btn = byKey(root, 'detail-E')
+  expect(btn.type).toBe('Button')
+  expect(btn.props?.label).toBe('Ayrıntı: Görev E')
+  expect(btn.children?.map(c => (typeof c === 'string' ? c : textOf(c)))).toEqual(['Görev E', ' ›']) // revision 2: a space before the chevron
+  expect((btn.children?.[0] as Node).props).toMatchObject({ weight: 'semibold', wrap: 'truncate-end' })
+  expect((btn.children?.[1] as Node).props).toMatchObject({ dimColor: true })
+  expect((btn.children?.[1] as Node).props?.wrap).toBeUndefined() // revision 2: the chevron is never cut
+  expect(buttons(root).filter(b => b.props?.label === 'Ayrıntı ›')).toEqual([])
+  expect(nodesOf(root).filter(n => n.props?.key === 'detail-E').length).toBe(1)
+  // The blocked card (a linked Takıldı decision): red edge, the red reason is the next row under the title row.
+  const card = byKey(root, 't-E')
+  expect(card.props?.borderColor).toBe('rgba(224,108,108,0.45)')
+  const head = kidsOf(card)[0] as Node
+  expect(textOf(kidsOf(head)[1] as Node)).toBe('senden 1 karar bekliyor')
+  expect(kidsOf(head)[1]?.props).toMatchObject({ color: '#F2A3A3', size: 'caption' })
+  expect(kidsOf(kidsOf(head)[0] as Node).map(n => n.type)).toEqual(['Box', 'Box']) // the title Box and the chip Box
+  // The press opens the detail (back returns).
+  await ui.press({ key: 'detail-E' })
+  expect(await ui.find({ key: 'detail-back' })).toBeDefined()
+  expect(byKey(await drawnOf(ui), 'chip-state-E')).toBeDefined()
+})
+
+test('pane-polish P2 (band): the "Senin sıran" band shows the count in a chip (claude ink, semibold), the title over `N karar bekliyor`, above the task pills; it never says the team stopped', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on)
+  const ui = await k.pane('desktop')
+  const root = await drawnOf(ui)
+  const band = byKey(root, 'karar-band')
+  expect(band.props).toMatchObject({ backgroundColor: 'rgba(217,119,87,0.10)', flexDirection: 'row' })
+  expect(texts4(band)).toEqual(['3', 'Senin sıran', '3 karar bekliyor']) // 1 own + 2 child decisions (the T4 fixture)
+  expect(textNode(keyed(band, 'karar-count'), /^3$/)?.props).toMatchObject({ color: 'claude', weight: 'semibold' })
+  expect(keyed(band, 'karar-count').props?.backgroundColor).toBe('rgba(217,119,87,0.18)')
+  expect(textNode(band, /^Senin sıran$/)?.props).toMatchObject({ weight: 'semibold' })
+  expect(textNode(band, /karar bekliyor$/)?.props).toMatchObject({ size: 'caption', dimColor: true })
+  expect(JSON.stringify(root)).not.toMatch(/takım bunlarda|duruyor/)
+  const keys = nodesOf(root).map(n => String(n.props?.key))
+  expect(keys.indexOf('karar-band')).toBeLessThan(keys.indexOf('d-d1'))
+  expect(keys.indexOf('d-d1')).toBeLessThan(keys.indexOf('tab-running')) // the decisions stay above the task list
+})
+
+test('pane-polish P2 (band, none): with no decision there is no band', FOLDERS, async ($, on) => {
+  const k = await pgBoot($, on, pgFile([PGD('T1')]))
+  expect(nodesOf(await drawnOf(await k.pane('desktop'))).some(n => n.props?.key === 'karar-band')).toBe(false)
+})
+
+test('pane-polish P2 (card head): the kind on the left (its ink), the task title on the right (dim, cut, growing); no title without a known task; a kid card keeps its ◇ session part', FOLDERS, async ($, on) => {
+  const decisions = [
+    { id: 'q1', kind: 'Ürün kararı', task: 'T1', text: 'Soru 1', options: ['A', 'B'] },
+    { id: 'q2', kind: 'Soru', text: 'Soru 2', options: ['A'] },
+    { id: 'q3', kind: 'Soru', task: 'yok', text: 'Soru 3', options: ['A'] },
+    { id: 'q4', kind: 'Takıldı · Developer', task: 'T2', text: 'Soru 4', options: ['A'] },
+  ]
+  const k = await pgBoot($, on, pgFile([PGD('T1', { title: LONG120 }), PGD('T2', { title: 'Takılan iş' })], decisions))
+  const root = await drawnOf(await k.pane('desktop'))
+  const head = (id: string) => kidsOf(kidsOf(byKey(root, `d-${id}`))[0] as Node)[0] as Node
+  // q1: [kind Box (shrinks), title Box (grows)].
+  const [kind, title] = kidsOf(head('q1')) as [Node, Node]
+  expect(textNode(kind, /^Ürün kararı$/)?.props).toMatchObject({ size: 'caption', weight: 'medium', color: 'claude' })
+  expect(textNode(kind, /^Ürün kararı$/)?.props?.wrap).toBeUndefined() // revision 2: the kind keeps its width, a long title cannot crush it
+  expect(kind.props).toMatchObject({ flexShrink: 0 })
+  expect(title.props).toMatchObject({ flexGrow: 1, flexShrink: 1, minWidth: 0, justifyContent: 'flex-end' })
+  expect(textNode(title, /./)?.props).toMatchObject({ size: 'caption', dimColor: true, wrap: 'truncate-end' })
+  expect(textOf(title)).toBe(LONG120)
+  expect(kidsOf(head('q2')).length).toBe(1) // no task: the kind alone
+  expect(kidsOf(head('q3')).length).toBe(1) // an unknown task id: the kind alone, not red
+  expect(textNode(head('q3'), /^Soru$/)?.props?.color).toBe('claude')
+  expect(texts4(head('q4'))).toEqual(['Takıldı · Developer', 'Takılan iş']) // the blocked task's decision: red kind
+  expect(textNode(head('q4'), /^Takıldı · Developer$/)?.props?.color).toBe('#F2A3A3')
+})
+
+test('pane-polish P2 (card head, kid): a kid card has `kind · ◇ session` on the left and the title of the child\'s task on the right', FOLDERS, async ($, on) => {
+  const kk = await cBoot($, on)
+  const kroot = await drawnOf(await kk.pane('desktop'))
+  expect(texts4(kidsOf(kidsOf(byKey(kroot, 'kd-hard-k1'))[0] as Node)[0] as Node)).toEqual(['Ürün kararı · ◇ hard', 'Sağlamlık'])
+})
+
+test('pane-polish P2 (push): a push decision has the padlock Svg (CLAY stroke, still) before its kind and its meta in an inset CHIP box (mono caption); another decision has neither', FOLDERS, async ($, on) => {
+  const decisions = [
+    { id: 'pp', kind: 'Push onayı', task: 'T1', text: 'Gönderelim mi?', meta: 'origin/main ← d4adf70 · tarama temiz', options: ['Evet, push et', 'Şimdi değil'] },
+    { id: 'nn', kind: 'Ürün kararı', task: 'T1', text: 'Hangisi?', meta: 'bir not', options: ['A', 'B', 'C'] },
+  ]
+  const k = await pgBoot($, on, pgFile([PGD('T1')], decisions))
+  const root = await drawnOf(await k.pane('desktop'))
+  const push = byKey(root, 'd-pp')
+  const lock = nodesOf(push).find(n => n.type === 'Svg')
+  expect(lock?.props).toMatchObject({ alt: 'Push onayı', width: 14, height: 14 })
+  expect(String(lock?.props?.source)).toContain('stroke="#D97757"')
+  expect(String(lock?.props?.source)).not.toMatch(/@keyframes|animation|<animate|<style/)
+  const order = nodesOf(push)
+  expect(order.indexOf(lock as Node)).toBeLessThan(order.indexOf(textNode(push, /^Push onayı$/) as Node)) // before the kind
+  const meta = textNode(push, /^origin\/main ← d4adf70 · tarama temiz$/) as Node
+  expect(meta.props).toMatchObject({ size: 'caption', mono: true })
+  expect(ppParentOf(root, meta).props).toMatchObject({ backgroundColor: 'rgba(128,128,128,0.2)' })
+  // A decision that is not a push: no padlock, and its meta is the old dim mono line, in no inset box.
+  const plain = byKey(root, 'd-nn')
+  expect(nodesOf(plain).some(n => n.type === 'Svg')).toBe(false)
+  const note = textNode(plain, /^bir not$/) as Node
+  expect(note.props).toMatchObject({ size: 'caption', mono: true, dimColor: true })
+  expect(ppParentOf(root, note).props?.backgroundColor).toBeUndefined()
+})
+
+test('pane-polish P2 (push, kid): a kid\'s push decision has the padlock too and still no button; its other decision has no padlock', FOLDERS, async ($, on) => {
+  const kk = await cBoot($, on)
+  const kroot = await drawnOf(await kk.pane('desktop'))
+  expect(nodesOf(byKey(kroot, 'kd-hard-p1')).some(n => n.type === 'Svg' && n.props?.alt === 'Push onayı')).toBe(true)
+  expect(buttons(byKey(kroot, 'kd-hard-p1'))).toEqual([])
+  expect(nodesOf(byKey(kroot, 'kd-hard-k1')).some(n => n.type === 'Svg')).toBe(false)
+})
+
+test('pane-polish P2 (options): two options stack in a column, one or three or more wrap in a row; the keys and the pick are as before', FOLDERS, async ($, on) => {
+  const decisions = [1, 2, 3, 4].map(n => ({ id: `o${n}`, kind: 'Soru', text: `Soru ${n}`, options: ['A', 'B', 'C', 'D'].slice(0, n) }))
+  const k = await pgBoot($, on, pgFile([PGD('T1')], decisions))
+  const ui = await k.pane('desktop')
+  const root = await drawnOf(ui)
+  const box = (id: string) => ppParentOf(root, byKey(root, `d-${id}-0`))
+  expect(box('o1').props).toMatchObject({ flexDirection: 'row', flexWrap: 'wrap' })
+  expect(box('o2').props).toMatchObject({ flexDirection: 'column' })
+  expect(box('o2').props?.flexWrap).toBeUndefined()
+  expect(kidsOf(box('o2')).map(b => b.props?.key)).toEqual(['d-o2-0', 'd-o2-1'])
+  expect(box('o3').props).toMatchObject({ flexDirection: 'row', flexWrap: 'wrap' })
+  expect(box('o4').props).toMatchObject({ flexDirection: 'row', flexWrap: 'wrap' })
+  await ui.press({ key: 'd-o2-1' })
+  expect(byKey(await drawnOf(ui), 'd-o2-1').props).toMatchObject({ label: '✓ B', variant: 'primary' })
+})
+
+test('pane-polish P2 (options, kid): a kid\'s two options stack too', FOLDERS, async ($, on) => {
+  const kk = await cBoot($, on)
+  const kroot = await drawnOf(await kk.pane('desktop'))
+  expect(ppParentOf(kroot, byKey(kroot, 'kd-hard-k1-0')).props).toMatchObject({ flexDirection: 'column' })
+})
+
+test('pane-polish P3 (detail header): one meta line holds the state chip, `Tur N`, the branch (mono, cut, growing) and the short SHA once; the reason is its own line under it; no separate branch or SHA line', FOLDERS, async ($, on) => {
+  const branch = `feat/${'uzun-dal-'.repeat(15)}`.slice(0, 120)
+  const k = await pgBoot($, on, pgFile([PGD('T1', { stage: 'review', round: 2, branch, candidate: PP_SHA, wait: 'Neden bekliyor', roles: R_RUN })]))
+  const ui = await k.pane('desktop')
+  await ui.press({ key: 'detail-T1' })
+  const root = await drawnOf(ui)
+  const meta = ppParentOf(root, keyed(root, 'chip-state-T1'))
+  expect(meta.props).toMatchObject({ flexDirection: 'row', alignItems: 'center' })
+  // revision 2: the chip, `Tur N` and the SHA keep their width (a Box that never shrinks); only the branch Box grows, shrinks and is cut.
+  expect(kidsOf(meta).map(n => n.props?.key ?? n.type)).toEqual(['chip-state-T1', 'Box', 'Box', 'Box'])
+  expect([textOf(kidsOf(meta)[1] as Node), textOf(kidsOf(meta)[3] as Node)]).toEqual(['Tur 2', '3f9a1c2'])
+  const [chip, turBox, grow, shaBox] = kidsOf(meta) as [Node, Node, Node, Node]
+  expect([chip.props, turBox.props, shaBox.props].map(p => p?.flexShrink)).toEqual([0, 0, 0])
+  const tur = textNode(turBox, /./) as Node
+  const sha = textNode(shaBox, /./) as Node
+  expect(tur.props).toMatchObject({ size: 'caption', dimColor: true })
+  expect(grow.props).toMatchObject({ flexGrow: 1, flexShrink: 1, minWidth: 0 })
+  expect(textNode(grow, /./)?.props).toMatchObject({ mono: true, dimColor: true, size: 'caption', wrap: 'truncate-end' })
+  expect(textOf(grow)).toBe(branch)
+  expect(sha.props).toMatchObject({ mono: true, dimColor: true })
+  // The SHA is drawn once on the whole detail (no separate candidate line), the branch once (no separate branch line).
+  expect(nodesOf(root).filter(n => n.type === 'Text' && textOf(n) === '3f9a1c2').length).toBe(1)
+  expect(nodesOf(root).filter(n => n.type === 'Text' && textOf(n) === branch).length).toBe(1)
+  // The reason stays its own line, right under the meta line, in the same header Box as the title.
+  const header = ppParentOf(root, meta)
+  expect(kidsOf(header).map(n => textOf(n))[0]).toBe('Görev T1')
+  expect(textOf(kidsOf(header)[2] as Node)).toBe('Neden bekliyor')
+  expect(kidsOf(header)[2]?.props).toMatchObject({ size: 'caption', dimColor: true })
+})
+
+test('pane-polish P3 (detail header, bare): without a round, a branch or a SHA the meta line is the chip and an empty growing Box', FOLDERS, async ($, on) => {
+  const bare = await pgBoot($, on, pgFile([PGD('T2')]))
+  const bui = await bare.pane('desktop')
+  await bui.press({ key: 'detail-T2' })
+  const broot = await drawnOf(bui)
+  expect(kidsOf(ppParentOf(broot, keyed(broot, 'chip-state-T2'))).map(n => n.props?.key ?? n.type)).toEqual(['chip-state-T2', 'Box'])
+})
+
+test('pane-polish P3 (now card): under the header, the now line and `Stage · n/5` on the right, the stage bar, every role row, the session rows; a task without roles has the stage only', FOLDERS, async ($, on) => {
+  const roles = [tRole('Developer', 'bitti · 7f9ce76', 'done'), tRole('QA (Neon)', 'odaklı tekrar', 'running'), tRole('Helper', 'boşta', 'idle')]
+  const k = await pgBoot($, on, pgFile([PGD('R', { stage: 'review', roles }), PGD('N', { stage: 'spec' })]))
+  const ui = await k.pane('desktop')
+  await ui.press({ key: 'detail-R' })
+  let root = await drawnOf(ui)
+  const card = byKey(root, 'detail-now')
+  expect(card.props).toMatchObject({ borderStyle: 'round', backgroundColor: 'rgba(128,128,128,0.10)' })
+  const [top, bar, list] = kidsOf(card) as [Node, Node, Node]
+  // Top row: the now line on the left (no `+N rol` here: every role is listed below), the dim stage caption on the right.
+  expect(texts4(top)).toEqual(['QA (Neon) · odaklı tekrar', 'Review · 3/5'])
+  expect(nodesOf(top).find(n => n.type === 'Svg')?.props?.alt).toBe('çalışıyor')
+  expect(textNode(top, /^Review · 3\/5$/)?.props).toMatchObject({ size: 'caption', dimColor: true })
+  expect(bar.type).toBe('Svg')
+  expect(bar.props?.alt).toBe('Review, 5 aşamanın 3.')
+  expect(kidsOf(list).map(r => r.props?.key)).toEqual(['t-R-r-0', 't-R-r-1', 't-R-r-2'])
+  expect(kidsOf(list).map(r => texts4(r))).toEqual([['Developer', 'bitti · 7f9ce76'], ['QA (Neon)', 'odaklı tekrar'], ['Helper', 'boşta']])
+  // The card has the stage once (the old card's own stage block is the card's: the detail has no other Svg bar).
+  expect(nodesOf(root).filter(n => n.type === 'Svg' && /aşamanın/.test(String(n.props?.alt))).length).toBe(1)
+  await ui.press({ key: 'detail-back' })
+  await openTask(ui, 'N')
+  root = await drawnOf(ui)
+  const bareCard = byKey(root, 'detail-now')
+  expect(kidsOf(bareCard).map(n => n.type)).toEqual(['Box', 'Svg']) // the top row and the stage bar, no role rows
+  expect(texts4(kidsOf(bareCard)[0] as Node)).toEqual(['Spec · 1/5'])
+  // Without a now line the top row still has a growing empty Box before the caption (so the caption stays on the right); the caption's Box never shrinks.
+  const [spacer, cap] = kidsOf(kidsOf(bareCard)[0] as Node) as [Node, Node]
+  expect([spacer.props, kidsOf(spacer).length, cap.props]).toEqual([expect.objectContaining({ flexGrow: 1, flexShrink: 1, minWidth: 0 }), 0, expect.objectContaining({ flexShrink: 0 })])
+})
+
+test('pane-polish P3 (bind): Bağla and Bağı çöz are small Buttons at the end of the now card, with their keys and actions', FOLDERS, async ($, on) => {
+  const k = await cBoot($, on)
+  const ui = await k.pane('desktop')
+  await openTask(ui, 'hard')
+  const root = await drawnOf(ui)
+  const card = byKey(root, 'detail-now')
+  expect(buttons(card).map(b => [b.props?.key, b.props?.label])).toEqual([['detail-unbind', 'Bağı çöz']])
+  expect(texts4(card)).toContain('bağ: başlatma kodu')
+  expect(kidsOf(card).at(-1)?.props?.flexDirection).toBe('row') // the buttons are the card's last row
+  expect(nodesOf(root).filter(n => n.props?.key === 'detail-unbind').length).toBe(1) // not outside the card
+})
+
+test('pane-polish P3 (bind, unbound): Bağla is in the now card and opens the bind view', FOLDERS, async ($, on) => {
+  const b = await bindBoot($, on)
+  const bui = await b.pane('desktop')
+  await openTask(bui, 'm')
+  const root = await drawnOf(bui)
+  expect(buttons(byKey(root, 'detail-now')).map(x => [x.props?.key, x.props?.label])).toEqual([['detail-bind', 'Bağla']])
+  await bui.press({ key: 'detail-bind' })
+  expect(await bui.find({ key: 'bind-back' })).toBeDefined() // the same action: the bind view opens
+})
+
+test('pane-polish P4 (top band): Pause and Devam are icon buttons with the same keys and lines; the sırada / gönderildi note moves to the header caption', FOLDERS, async ($, on) => {
+  const k = await mBoot($, on, { status: MOTION.replace('"v":1', '"v":1,"lead":"Opus 5.5"') }) // a lead, so the caption has more parts than the note
+  const ui = await k.mount()
+  const pause = byKey(await drawnOf(ui), 'pause')
+  expect([pause.props?.label, pause.children]).toEqual(['Takımı duraklat', ['⏸']])
+  await ui.press({ key: 'pause' })
+  await k.settle()
+  expect(k.log.sent).toEqual(['Pause']) // the same line as before
+  const root = await drawnOf(ui)
+  expect(byKey(root, 'pause').props?.label).toBe('Takımı duraklat') // the label does not carry the note any more
+  expect(texts4(root).some(t => /^Pause · gönderildi · Lead · Opus 5\.5/.test(t))).toBe(true) // the first part of the dim header caption (so the cut at the end never hides it)
+  expect(textNode(root, /^Pause · gönderildi/)?.props).toMatchObject({ size: 'caption', dimColor: true, wrap: 'truncate-end' })
+  await k.change(withPaused(MOTION))
+  const resume = byKey(await drawnOf(ui), 'resume')
+  expect([resume.props?.label, resume.children]).toEqual(['Takımı devam ettir', ['▶']])
+  await ui.press({ key: 'resume' })
+  await k.settle()
+  expect(k.log.sent).toEqual(['Pause', 'Devam et'])
+  expect(texts4(await drawnOf(ui)).some(t => /^Devam · gönderildi/.test(t))).toBe(true)
+})
+
+test('pane-polish P4 (meters): from 80 % the bar fill is AMBER and the percent is `warning` ink; at 79 % and below neither', FOLDERS, async ($, on) => {
+  await boot($, on, STATUS.replace('"lead"', '"limits":{"fiveHourPct":79,"weeklyPct":80},"lead"'))
+  const root = await drawnOf(await $.ui.mount({ ...PANE, surface: 'desktop' }))
+  const bar = (alt: string) => fills(svgOf(root, alt))
+  expect(bar('5 saatlik kullanım %79')).toEqual([TRACK, MUTED])
+  expect(bar('Haftalık kullanım %80')).toEqual([TRACK, AMBER])
+  expect([textNode(root, /^%79$/)?.props?.color, textNode(root, /^%80$/)?.props?.color]).toEqual([undefined, 'warning'])
+  expect(fills(meterSvg(100))).toEqual([TRACK, AMBER])
+  expect(fills(meterSvg(0))).toEqual([TRACK])
+})
+
+const PP_LIST = pgFile([PGD('R1', { roles: R_RUN }), PGD('B1', { roles: [tRole('QA', 'başlatılamadı', 'blocked')] }), PGD('W1', { wait: 'sırada' }), PGD('D1', { done: true, stage: 'report', roles: R_DONE })])
+test('pane-polish P4 (tabs): a pill for each non-empty list, the first non-empty drawn and primary, Bekleyen counts the blocked; a press draws only that list; an emptied pick falls back', FOLDERS, async ($, on) => {
+  const k = await pgBoot($, on, PP_LIST)
+  const ui = await k.pane('desktop')
+  let root = await drawnOf(ui)
+  expect(ppTabs(root)).toEqual([['tab-running', 'Çalışan 1', 'primary'], ['tab-waiting', 'Bekleyen 2 · 1 takıldı', 'secondary'], ['tab-done', 'Biten 1', 'secondary']])
+  expect(ppCards(root)).toEqual(['R1']) // only the selected list; the blocked task is not drawn, but its count is on the pill
+  expect(nodesOf(root).some(n => n.props?.key === 'detail-D1')).toBe(false)
+  await ui.press({ key: 'tab-waiting' })
+  root = await drawnOf(ui)
+  expect(ppTabs(root).map(t => t[2])).toEqual(['secondary', 'primary', 'secondary'])
+  expect(ppCards(root)).toEqual(['B1', 'W1']) // blocked first
+  await ui.press({ key: 'tab-done' })
+  root = await drawnOf(ui)
+  expect(ppTabs(root).map(t => t[2])).toEqual(['secondary', 'secondary', 'primary'])
+  expect(ppCards(root)).toEqual(['D1']) // Biten's row
+  // The picked list empties: the first non-empty one is drawn (no pill for an empty list).
+  await ui.press({ key: 'tab-waiting' })
+  await k.setOwn(pgFile([PGD('R1', { roles: R_RUN }), PGD('D1', { done: true, stage: 'report', roles: R_DONE })]))
+  root = await drawnOf(ui)
+  expect(ppTabs(root)).toEqual([['tab-running', 'Çalışan 1', 'primary'], ['tab-done', 'Biten 1', 'secondary']])
+  expect(ppCards(root)).toEqual(['R1'])
+})
+
+test('pane-polish P4 (tab default): with no pick the first non-empty list shows; the Bekleyen pill has no blocked part with none blocked and counts every blocked one', FOLDERS, async ($, on) => {
+  const k = await pgBoot($, on, pgFile([PGD('W1', { wait: 'x' }), PGD('D1', { done: true, stage: 'report', roles: R_DONE })]))
+  const ui = await k.pane('desktop')
+  const root = await drawnOf(ui)
+  expect(ppTabs(root)).toEqual([['tab-waiting', 'Bekleyen 1', 'primary'], ['tab-done', 'Biten 1', 'secondary']])
+  expect(ppCards(root)).toEqual(['W1'])
+  await k.setOwn(pgFile([PGD('B1', { roles: [tRole('QA', 'x', 'blocked')] }), PGD('B2', { roles: [tRole('QA', 'x', 'blocked')] }), PGD('W1')]))
+  expect(ppTabs(await drawnOf(ui))).toEqual([['tab-waiting', 'Bekleyen 3 · 2 takıldı', 'primary']])
+  await k.setOwn(pgFile([PGD('D1', { done: true, stage: 'report', roles: R_DONE })]))
+  const droot = await drawnOf(ui)
+  expect(ppTabs(droot)).toEqual([['tab-done', 'Biten 1', 'primary']])
+  expect(ppCards(droot)).toEqual(['D1'])
+})
+
+test('pane-polish P4 (Biten card): the last 3 of the file, newest first; the header says `son 3 · tümü N` above 3; Tümünü göster shows all, Gizle folds back; up to 3 has no toggle', FOLDERS, async ($, on) => {
+  const done = (n: number) => pgFile([...Array.from({ length: n }, (_, i) => PGD(`D${i + 1}`, { done: true, stage: 'report', roles: R_DONE })), PGD('Y', { roles: R_RUN })])
+  const k = await pgBoot($, on, done(3))
+  const ui = await k.pane('desktop')
+  await ui.press({ key: 'tab-done' })
+  const drawn = async (...press: string[]) => {
+    for (const key of press) await ui.press({ key })
+    const root = await drawnOf(ui)
+    return { root, rows: ppCards(root), head: texts4(byKey(root, 'sec-biten')).slice(0, 2), toggle: nodesOf(root).find(n => n.props?.key === 'done-toggle')?.props?.label }
+  }
+  expect(await drawn()).toMatchObject({ rows: ['D3', 'D2', 'D1'], head: ['Biten', '3 görev'], toggle: undefined })
+  await k.setOwn(done(4))
+  const four = await drawn()
+  expect([four.rows, four.head, four.toggle]).toEqual([['D4', 'D3', 'D2'], ['Biten', 'son 3 · tümü 4'], 'Tümünü göster'])
+  const open = await drawn('done-toggle')
+  expect([open.rows, open.head, open.toggle]).toEqual([['D4', 'D3', 'D2', 'D1'], ['Biten', '4 görev'], 'Gizle'])
+  const folded = await drawn('done-toggle')
+  expect([folded.rows, folded.head, folded.toggle]).toEqual([['D4', 'D3', 'D2'], ['Biten', 'son 3 · tümü 4'], 'Tümünü göster'])
+  // A row: a green ✓, the title (growing, cut) in the title Button, no version or day.
+  const row = byKey(four.root, 't-D4')
+  expect(kidsOf(row).map(n => n.type)).toEqual(['Text', 'Box'])
+  expect(textNode(row, /^✓$/)?.props?.color).toBe('success')
+  expect(kidsOf(row)[1]?.props).toMatchObject({ flexGrow: 1, flexShrink: 1, minWidth: 0 })
+  expect(byKey(row, 'detail-D4').props?.label).toBe('Ayrıntı: Görev D4')
+  expect(texts4(row)).toEqual(['✓', 'Görev D4', ' ›'])
+})
+
+test('pane-polish rows (row rule): every new row keeps text in a growing, shrinking Box and cuts its Texts, with 120-character titles, branch, role names and decision text', FOLDERS, async ($, on) => {
+  const task = (id: string, extra: Record<string, unknown> = {}) => PGD(id, { title: LONG120, branch: LONG120, candidate: PP_SHA, blocking: 1, followup: 2, round: 2, roles: [tRole(LONG120, LONG120, 'running'), tRole('Y', 'z', 'done')], ...extra })
+  const decisions = [
+    { id: 'q1', kind: LONG120, task: 'T1', text: LONG120, options: ['A', 'B'] },
+    { id: 'q2', kind: 'Push onayı', task: 'T1', text: LONG120, meta: LONG120, options: ['Evet', 'Hayır'] },
+  ]
+  const k = await pgBoot($, on, pgFile([task('T1'), task('T2', { roles: [tRole(LONG120, LONG120, 'blocked')] }), task('T3', { done: true, stage: 'report', roles: R_DONE })], decisions))
+  const ui = await k.pane('desktop')
+  const seen: Record<string, { bad: string[]; checked: number }> = {}
+  const look = async (name: string) => (seen[name] = rowRuleBreaks(await drawnOf(ui)))
+  await look('running tab')
+  const list = await drawnOf(ui)
+  // The rows rowRuleBreaks does not see (no Button beside them): the now line, the stage labels, the decision head, the band.
+  const cut = (n: Node) => nodesOf(n).filter(x => x.type === 'Text').every(x => x.props?.wrap === 'truncate-end')
+  const growing = (n: Node) => expect(n.props).toMatchObject({ flexGrow: 1, flexShrink: 1, minWidth: 0 })
+  const now = keyed(byKey(list, 't-T1'), 'now-T1')
+  growing(now)
+  expect(kidsOf(now).map(n => n.type)).toEqual(['Svg', 'Box', 'Box'])
+  growing(kidsOf(now)[1] as Node)
+  expect(cut(kidsOf(now)[1] as Node)).toBe(true)
+  expect(kidsOf(now)[2]?.props).toMatchObject({ flexShrink: 0 }) // `+N rol` keeps its width
+  for (let i = 0; i < 5; i++) {
+    growing(byKey(list, `t-T1-l-${i}`))
+    expect(cut(byKey(list, `t-T1-l-${i}`))).toBe(true)
+  }
+  const titleRow = kidsOf(kidsOf(byKey(list, 't-T1'))[0] as Node)[0] as Node
+  growing(kidsOf(titleRow)[0] as Node) // the Box that holds the title Button
+  expect(kidsOf(titleRow)[1]?.props).toMatchObject({ flexShrink: 0 }) // `Tur N` and the state chip keep their width
+  const dhead = kidsOf(kidsOf(byKey(list, 'd-q1'))[0] as Node)[0] as Node
+  const [kind, title] = kidsOf(dhead) as [Node, Node]
+  expect(kind.props).toMatchObject({ flexShrink: 0 }) // revision 2: the kind (`Push onayı`) is never cut or crushed
+  growing(title)
+  expect([cut(kind), cut(title)]).toEqual([false, true])
+  growing(kidsOf(byKey(list, 'karar-band'))[1] as Node)
+  expect(cut(kidsOf(byKey(list, 'karar-band'))[1] as Node)).toBe(true)
+  await ui.press({ key: 'tab-waiting' })
+  await look('waiting tab')
+  await ui.press({ key: 'tab-done' })
+  await look('Biten tab')
+  await ui.press({ key: 'tab-running' })
+  await ui.press({ key: 'detail-T1' })
+  await look('detail')
+  const detail = await drawnOf(ui)
+  const meta = ppParentOf(detail, keyed(detail, 'chip-state-T1'))
+  growing(kidsOf(meta)[2] as Node)
+  expect(cut(kidsOf(meta)[2] as Node)).toBe(true)
+  const top = kidsOf(byKey(detail, 'detail-now'))[0] as Node
+  growing(kidsOf(top)[0] as Node)
+  expect(kidsOf(top)[1]?.props).toMatchObject({ flexShrink: 0 }) // the `Stage · n/5` caption keeps its width beside a long now line
+  expect(Object.fromEntries(Object.entries(seen).map(([name, v]) => [name, v.bad]))).toEqual({ 'running tab': [], 'waiting tab': [], 'Biten tab': [], detail: [] })
+  expect(Object.fromEntries(Object.entries(seen).map(([name, v]) => [name, v.checked > 0]))).toEqual({ 'running tab': true, 'waiting tab': true, 'Biten tab': true, detail: false }) // the detail has no Button beside text: its rows are checked by key above
+})
+
+test('pane-polish colours (no dark-only hex, no scroll): the new rows draw theme keys, the pane\'s rgba and the Svg constants only; none of the mocks\' hex; the motion is none', FOLDERS, async ($, on) => {
+  const decisions = [{ id: 'pp', kind: 'Push onayı', task: 'R1', text: 'x', meta: 'm', options: ['A', 'B'] }]
+  const k = await pgBoot($, on, pgFile([PGD('R1', { roles: R_RUN, candidate: PP_SHA, blocking: 1, followup: 1 }), PGD('D1', { done: true, stage: 'report', roles: R_DONE })], decisions))
+  const ui = await k.pane('desktop')
+  const trees = [await drawnTabs(ui, true)]
+  await ui.press({ key: 'detail-R1' })
+  trees.push(await drawnOf(ui))
+  for (const r of trees) {
+    const text = JSON.stringify(r)
+    for (const hex of ['#3A2A22', '#E8A48C', '#E8C27B', '#F2A595', '#4A2622', '#7CC28A', '#D9C2B6', '#ECEAE4', '#2F2E2B', '#262624', '#B9B6AE', '#9E9B93', '#3A3936', '#45443F', '#1F1E1C', '#C9C6BE']) expect(text).not.toContain(hex)
+    expect(nodesOf(r).filter(n => n.props?.backgroundColor !== undefined).every(n => /^rgba\(/.test(String(n.props?.backgroundColor)))).toBe(true)
+    expect(nodesOf(r).some(n => n.props?.overflow === 'scroll' || n.props?.overflowY !== undefined)).toBe(false)
+    // The padlock is the only Svg this task added besides the bar and dots: it never animates.
+    for (const s of nodesOf(r).filter(n => n.type === 'Svg' && n.props?.alt === 'Push onayı')) expect(String(s.props?.source)).not.toMatch(/animation|@keyframes|<animate/)
+  }
+})
+
+// ===== pane-polish revision 2: the Lead's M1-M3 (widths on the detail meta line, the card head, the title Button) and Neon's four surviving mutants (M5). =====
+// Sources: lead-r1-adjudication.md (M1-M3, M5, written by hand) and neon/mutants-neon.json (the four mutants the tests above did not kill).
+test('pane-polish r2 M2 (card head): a long task title cannot crush the kind: the kind Box never shrinks and is not cut, the title Box takes the rest and is cut', FOLDERS, async ($, on) => {
+  const decisions = [{ id: 'pp', kind: 'Push onayı', task: 'T1', text: 'Gönderelim mi?', meta: 'origin/main ← d4adf70', options: ['Evet', 'Hayır'] }]
+  const k = await pgBoot($, on, pgFile([PGD('T1', { title: LONG120 })], decisions))
+  const root = await drawnOf(await k.pane('desktop'))
+  const head = kidsOf(kidsOf(byKey(root, 'd-pp'))[0] as Node)[0] as Node
+  expect(kidsOf(head).map(n => n.type)).toEqual(['Svg', 'Box', 'Box']) // padlock, kind, title
+  const [, kind, title] = kidsOf(head) as [Node, Node, Node]
+  expect(kind.props).toMatchObject({ flexShrink: 0 })
+  expect(textNode(kind, /^Push onayı$/)?.props?.wrap).toBeUndefined()
+  expect(title.props).toMatchObject({ flexGrow: 1, flexShrink: 1, minWidth: 0 })
+  expect(textNode(title, /./)?.props?.wrap).toBe('truncate-end')
+})
+
+test('pane-polish r2 M3 (title Button): the title Text is cut at the end, the chevron Text after it has a space and is never cut', FOLDERS, async ($, on) => {
+  const k = await pgBoot($, on, pgFile([PGD('T1', { title: LONG120 }), PGD('D1', { title: LONG120, done: true, stage: 'report', roles: R_DONE })]))
+  const ui = await k.pane('desktop')
+  const check = (root: Node, id: string) => {
+    const btn = byKey(root, `detail-${id}`)
+    const [title, chevron] = btn.children as [Node, Node]
+    expect([title.props?.wrap, textOf(title)]).toEqual(['truncate-end', LONG120])
+    expect([textOf(chevron), chevron.props?.wrap, chevron.props?.dimColor]).toEqual([' ›', undefined, true])
+  }
+  check(await drawnOf(ui), 'T1')
+  await ui.press({ key: 'tab-done' })
+  check(await drawnOf(ui), 'D1')
+})
+
+test('pane-polish r2 M5 (kid push meta): a kid\'s push decision draws its meta in the inset box too, its other decision in the dim line', FOLDERS, async ($, on) => {
+  const decisions = [{ ...P1, meta: 'origin/main ← d4adf70 · tarama temiz' }, { ...K1, meta: 'bir not' }]
+  const k = await cBoot($, on, { surface: 'desktop', store: KID_REC, own: own4({ decisions: [] }), files: { [C4_KID]: { text: kid4({ decisions }), age: 5 * MIN4 } } })
+  const root = await drawnOf(await k.pane('desktop'))
+  const meta = textNode(byKey(root, 'kd-hard-p1'), /^origin\/main ← d4adf70 · tarama temiz$/) as Node
+  expect(meta.props).toMatchObject({ size: 'caption', mono: true })
+  expect(ppParentOf(root, meta).props).toMatchObject({ backgroundColor: 'rgba(128,128,128,0.2)' })
+  const note = textNode(byKey(root, 'kd-hard-k1'), /^bir not$/) as Node
+  expect(note.props).toMatchObject({ mono: true, dimColor: true })
+  expect(ppParentOf(root, note).props?.backgroundColor).toBeUndefined()
+})
+
+test('pane-polish r2 M5 (lock without kind): a push decision whose stored copy lost its kind and its flag (fail closed) and that names no task still draws the padlock alone in its head', FOLDERS, async ($, on) => {
+  const text = pgFile([PGD('T1')], [{ id: 'pp', kind: 'Push onayı', text: 'Gönderelim mi?', options: ['Evet', 'Hayır'] }])
+  const data = parseStatus(text)
+  const lost = { ...data, decisions: data.decisions.map(d => ({ ...d, kind: undefined, push: undefined })) } as never
+  const k = await pgBoot($, on, text, { atoms: { status: { shape: 'status-5', value: { file: C4_OWN, mtime: C4_NOW - MIN4, data: lost, error: null } }, children: { shape: 'children-3', value: [] } } })
+  const root = await drawnOf(await k.pane('desktop'))
+  const head = kidsOf(kidsOf(byKey(root, 'd-pp'))[0] as Node)[0] as Node
+  expect(kidsOf(head).map(n => n.type)).toEqual(['Svg']) // the padlock alone: no kind, no task title
+  expect(kidsOf(head)[0]?.props?.alt).toBe('Push onayı')
 })
