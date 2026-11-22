@@ -1240,8 +1240,8 @@ export const register: Register = (on, options) => {
         <Box flexDirection="row" alignItems="center" gap="xs">
           {push && Svg && <Svg source={LOCK_SVG} alt="Push onayı" width={14} height={14} />}
           {!!left && (
-            <Box flexShrink={1} minWidth={0}>
-              <Text size="caption" weight="medium" color={ink} wrap="truncate-end">{left}</Text>
+            <Box flexShrink={0}>
+              <Text size="caption" weight="medium" color={ink}>{left}</Text>
             </Box>
           )}
           {!!title && (
@@ -1372,7 +1372,7 @@ export const register: Register = (on, options) => {
     }
 
     const stateChip = (t: Task) => (
-      <Box key={`chip-state-${t.id}`} backgroundColor={STATE_CHIP[t.state][1]} paddingX="xs">
+      <Box key={`chip-state-${t.id}`} flexShrink={0} backgroundColor={STATE_CHIP[t.state][1]} paddingX="xs">
         <Text size="caption" weight="medium" color={STATE_CHIP[t.state][2]}>{STATE_CHIP[t.state][0]}</Text>
       </Box>
     )
@@ -1418,7 +1418,7 @@ export const register: Register = (on, options) => {
       <Box {...FILL}>
         <Button key={`detail-${t.id}`} label={`Ayrıntı: ${t.title}`} hover={{ color: 'claude' }} onPress={() => void show(t.id)}>
           <Text weight={weight} wrap="truncate-end">{t.title}</Text>
-          <Text dimColor wrap="truncate-end">›</Text>
+          <Text dimColor>{' ›'}</Text>
         </Button>
       </Box>
     )
@@ -1549,9 +1549,17 @@ export const register: Register = (on, options) => {
             {/* One meta line: the state, the round, the branch (mono, cut) and the candidate's short SHA (which appears only here). */}
             <Box flexDirection="row" alignItems="center" gap="xs">
               {stateChip(t)}
-              {t.round !== undefined && <Text size="caption" dimColor>{`Tur ${t.round}`}</Text>}
+              {t.round !== undefined && (
+                <Box flexShrink={0}>
+                  <Text size="caption" dimColor>{`Tur ${t.round}`}</Text>
+                </Box>
+              )}
               <Box {...FILL}>{t.branch && <Text size="caption" mono dimColor wrap="truncate-end">{t.branch}</Text>}</Box>
-              {t.candidate && <Text size="caption" mono dimColor>{clip(t.candidate, 7)}</Text>}
+              {t.candidate && (
+                <Box flexShrink={0}>
+                  <Text size="caption" mono dimColor>{clip(t.candidate, 7)}</Text>
+                </Box>
+              )}
             </Box>
             {reason(t)}
           </Box>
@@ -1755,7 +1763,7 @@ export const register: Register = (on, options) => {
     ).filter((u): u is readonly [typeof u[0], number] => u[1] !== undefined)
     const sec = sections(data?.tasks ?? [], stamps, now)
     const toggleDone = () => void update($, doneOpen, v => !v)
-    const picked = await read($, tab)
+    const picked = term ? null : await read($, tab)
     const tabs = [['running', 'Çalışan', sec.running], ['waiting', 'Bekleyen', sec.waiting], ['done', 'Biten', sec.done]] as const
     const shown = tabOf(picked, { running: sec.running.length, waiting: sec.waiting.length, done: sec.done.length })
     const stuck = sec.waiting.filter(t => t.state === 'blocked').length

@@ -414,7 +414,7 @@ test('a task card opens its detail view with rounds and evidence, back returns, 
 
   for (const surface of ['desktop', 'terminal'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect((await ui.find({ key: 'detail-t1' }))?.text).toBe(surface === 'terminal' ? 'Seçim kutusu taşması' : 'Seçim kutusu taşması›') // pane-polish: the desktop card's title is the Button (title Text and chevron Text)
+    expect((await ui.find({ key: 'detail-t1' }))?.text).toBe(surface === 'terminal' ? 'Seçim kutusu taşması' : 'Seçim kutusu taşması ›') // pane-polish: the desktop card's title is the Button (title Text and chevron Text)
     expect(await ui.find({ key: 'detail-back' })).toBeUndefined()
     await ui.press({ key: 'detail-t1' })
     // The evidence file is read after the press (no poll runs here): let the load land.
@@ -8240,9 +8240,12 @@ const rowRuleBreaks = (root: Node) => {
     // pane-polish: a task card's title row and a Biten row put the press in the text side itself: a growing Box that holds only the title Button, whose Texts are cut (the
     // evidence row's shape). It is not a Button side; its Texts must be cut at the end.
     const pressText = (k: Node) => k.type === 'Box' && Number(k.props?.flexGrow) >= 1 && kidsOf(k).length === 1 && kidsOf(k)[0]?.type === 'Button'
+    // (revision 2: the title Text is cut at the end; the chevron Text after it is never cut, so a long title cannot squeeze it away)
     for (const k of kids.filter(pressText)) {
       checked++
-      for (const x of nodesOf(k)) if (x.type === 'Text' && x.props?.wrap !== 'truncate-end') bad.push(`Text not cut at the end in a pressable text side: ${id}`)
+      const ts = nodesOf(k).filter(x => x.type === 'Text')
+      if (ts[0]?.props?.wrap !== 'truncate-end') bad.push(`title Text not cut at the end in a pressable text side: ${id}`)
+      for (const x of ts.slice(1)) if (x.props?.wrap !== undefined) bad.push(`chevron Text cut in a pressable text side: ${id}`)
     }
     const sides = kids.filter(k => k.type === 'Button' || (k.type === 'Box' && !pressText(k) && kidsOf(k).length === 1 && kidsOf(k)[0]?.type === 'Button'))
     if (sides.length === 0 || !kids.some(k => k.type !== 'Button' && !sides.includes(k) && hasText(k))) continue
@@ -8726,9 +8729,10 @@ test('pane-polish P1 (press): the title row is the Button detail-<id> (label `Ay
   const btn = byKey(root, 'detail-E')
   expect(btn.type).toBe('Button')
   expect(btn.props?.label).toBe('Ayrıntı: Görev E')
-  expect(btn.children?.map(c => (typeof c === 'string' ? c : textOf(c)))).toEqual(['Görev E', '›'])
+  expect(btn.children?.map(c => (typeof c === 'string' ? c : textOf(c)))).toEqual(['Görev E', ' ›']) // revision 2: a space before the chevron
   expect((btn.children?.[0] as Node).props).toMatchObject({ weight: 'semibold', wrap: 'truncate-end' })
   expect((btn.children?.[1] as Node).props).toMatchObject({ dimColor: true })
+  expect((btn.children?.[1] as Node).props?.wrap).toBeUndefined() // revision 2: the chevron is never cut
   expect(buttons(root).filter(b => b.props?.label === 'Ayrıntı ›')).toEqual([])
   expect(nodesOf(root).filter(n => n.props?.key === 'detail-E').length).toBe(1)
   // The blocked card (a linked Takıldı decision): red edge, the red reason is the next row under the title row.
@@ -8778,8 +8782,9 @@ test('pane-polish P2 (card head): the kind on the left (its ink), the task title
   const head = (id: string) => kidsOf(kidsOf(byKey(root, `d-${id}`))[0] as Node)[0] as Node
   // q1: [kind Box (shrinks), title Box (grows)].
   const [kind, title] = kidsOf(head('q1')) as [Node, Node]
-  expect(textNode(kind, /^Ürün kararı$/)?.props).toMatchObject({ size: 'caption', weight: 'medium', color: 'claude', wrap: 'truncate-end' })
-  expect(kind.props).toMatchObject({ flexShrink: 1, minWidth: 0 })
+  expect(textNode(kind, /^Ürün kararı$/)?.props).toMatchObject({ size: 'caption', weight: 'medium', color: 'claude' })
+  expect(textNode(kind, /^Ürün kararı$/)?.props?.wrap).toBeUndefined() // revision 2: the kind keeps its width, a long title cannot crush it
+  expect(kind.props).toMatchObject({ flexShrink: 0 })
   expect(title.props).toMatchObject({ flexGrow: 1, flexShrink: 1, minWidth: 0, justifyContent: 'flex-end' })
   expect(textNode(title, /./)?.props).toMatchObject({ size: 'caption', dimColor: true, wrap: 'truncate-end' })
   expect(textOf(title)).toBe(LONG120)
@@ -8859,9 +8864,13 @@ test('pane-polish P3 (detail header): one meta line holds the state chip, `Tur N
   const root = await drawnOf(ui)
   const meta = ppParentOf(root, keyed(root, 'chip-state-T1'))
   expect(meta.props).toMatchObject({ flexDirection: 'row', alignItems: 'center' })
-  expect(kidsOf(meta).map(n => n.props?.key ?? n.type)).toEqual(['chip-state-T1', 'Text', 'Box', 'Text'])
+  // revision 2: the chip, `Tur N` and the SHA keep their width (a Box that never shrinks); only the branch Box grows, shrinks and is cut.
+  expect(kidsOf(meta).map(n => n.props?.key ?? n.type)).toEqual(['chip-state-T1', 'Box', 'Box', 'Box'])
   expect([textOf(kidsOf(meta)[1] as Node), textOf(kidsOf(meta)[3] as Node)]).toEqual(['Tur 2', '3f9a1c2'])
-  const [, tur, grow, sha] = kidsOf(meta) as [Node, Node, Node, Node]
+  const [chip, turBox, grow, shaBox] = kidsOf(meta) as [Node, Node, Node, Node]
+  expect([chip.props, turBox.props, shaBox.props].map(p => p?.flexShrink)).toEqual([0, 0, 0])
+  const tur = textNode(turBox, /./) as Node
+  const sha = textNode(shaBox, /./) as Node
   expect(tur.props).toMatchObject({ size: 'caption', dimColor: true })
   expect(grow.props).toMatchObject({ flexGrow: 1, flexShrink: 1, minWidth: 0 })
   expect(textNode(grow, /./)?.props).toMatchObject({ mono: true, dimColor: true, size: 'caption', wrap: 'truncate-end' })
@@ -8910,6 +8919,9 @@ test('pane-polish P3 (now card): under the header, the now line and `Stage · n/
   const bareCard = byKey(root, 'detail-now')
   expect(kidsOf(bareCard).map(n => n.type)).toEqual(['Box', 'Svg']) // the top row and the stage bar, no role rows
   expect(texts4(kidsOf(bareCard)[0] as Node)).toEqual(['Spec · 1/5'])
+  // Without a now line the top row still has a growing empty Box before the caption (so the caption stays on the right); the caption's Box never shrinks.
+  const [spacer, cap] = kidsOf(kidsOf(bareCard)[0] as Node) as [Node, Node]
+  expect([spacer.props, kidsOf(spacer).length, cap.props]).toEqual([expect.objectContaining({ flexGrow: 1, flexShrink: 1, minWidth: 0 }), 0, expect.objectContaining({ flexShrink: 0 })])
 })
 
 test('pane-polish P3 (bind): Bağla and Bağı çöz are small Buttons at the end of the now card, with their keys and actions', FOLDERS, async ($, on) => {
@@ -9028,7 +9040,7 @@ test('pane-polish P4 (Biten card): the last 3 of the file, newest first; the hea
   expect(textNode(row, /^✓$/)?.props?.color).toBe('success')
   expect(kidsOf(row)[1]?.props).toMatchObject({ flexGrow: 1, flexShrink: 1, minWidth: 0 })
   expect(byKey(row, 'detail-D4').props?.label).toBe('Ayrıntı: Görev D4')
-  expect(texts4(row)).toEqual(['✓', 'Görev D4', '›'])
+  expect(texts4(row)).toEqual(['✓', 'Görev D4', ' ›'])
 })
 
 test('pane-polish rows (row rule): every new row keeps text in a growing, shrinking Box and cuts its Texts, with 120-character titles, branch, role names and decision text', FOLDERS, async ($, on) => {
@@ -9061,9 +9073,9 @@ test('pane-polish rows (row rule): every new row keeps text in a growing, shrink
   expect(kidsOf(titleRow)[1]?.props).toMatchObject({ flexShrink: 0 }) // `Tur N` and the state chip keep their width
   const dhead = kidsOf(kidsOf(byKey(list, 'd-q1'))[0] as Node)[0] as Node
   const [kind, title] = kidsOf(dhead) as [Node, Node]
-  expect(kind.props).toMatchObject({ flexShrink: 1, minWidth: 0 })
+  expect(kind.props).toMatchObject({ flexShrink: 0 }) // revision 2: the kind (`Push onayı`) is never cut or crushed
   growing(title)
-  expect([cut(kind), cut(title)]).toEqual([true, true])
+  expect([cut(kind), cut(title)]).toEqual([false, true])
   growing(kidsOf(byKey(list, 'karar-band'))[1] as Node)
   expect(cut(kidsOf(byKey(list, 'karar-band'))[1] as Node)).toBe(true)
   await ui.press({ key: 'tab-waiting' })
@@ -9079,6 +9091,7 @@ test('pane-polish rows (row rule): every new row keeps text in a growing, shrink
   expect(cut(kidsOf(meta)[2] as Node)).toBe(true)
   const top = kidsOf(byKey(detail, 'detail-now'))[0] as Node
   growing(kidsOf(top)[0] as Node)
+  expect(kidsOf(top)[1]?.props).toMatchObject({ flexShrink: 0 }) // the `Stage · n/5` caption keeps its width beside a long now line
   expect(Object.fromEntries(Object.entries(seen).map(([name, v]) => [name, v.bad]))).toEqual({ 'running tab': [], 'waiting tab': [], 'Biten tab': [], detail: [] })
   expect(Object.fromEntries(Object.entries(seen).map(([name, v]) => [name, v.checked > 0]))).toEqual({ 'running tab': true, 'waiting tab': true, 'Biten tab': true, detail: false }) // the detail has no Button beside text: its rows are checked by key above
 })
@@ -9098,4 +9111,57 @@ test('pane-polish colours (no dark-only hex, no scroll): the new rows draw theme
     // The padlock is the only Svg this task added besides the bar and dots: it never animates.
     for (const s of nodesOf(r).filter(n => n.type === 'Svg' && n.props?.alt === 'Push onayı')) expect(String(s.props?.source)).not.toMatch(/animation|@keyframes|<animate/)
   }
+})
+
+// ===== pane-polish revision 2: the Lead's M1-M3 (widths on the detail meta line, the card head, the title Button) and Neon's four surviving mutants (M5). =====
+// Sources: lead-r1-adjudication.md (M1-M3, M5, written by hand) and neon/mutants-neon.json (the four mutants the tests above did not kill).
+test('pane-polish r2 M2 (card head): a long task title cannot crush the kind: the kind Box never shrinks and is not cut, the title Box takes the rest and is cut', FOLDERS, async ($, on) => {
+  const decisions = [{ id: 'pp', kind: 'Push onayı', task: 'T1', text: 'Gönderelim mi?', meta: 'origin/main ← d4adf70', options: ['Evet', 'Hayır'] }]
+  const k = await pgBoot($, on, pgFile([PGD('T1', { title: LONG120 })], decisions))
+  const root = await drawnOf(await k.pane('desktop'))
+  const head = kidsOf(kidsOf(byKey(root, 'd-pp'))[0] as Node)[0] as Node
+  expect(kidsOf(head).map(n => n.type)).toEqual(['Svg', 'Box', 'Box']) // padlock, kind, title
+  const [, kind, title] = kidsOf(head) as [Node, Node, Node]
+  expect(kind.props).toMatchObject({ flexShrink: 0 })
+  expect(textNode(kind, /^Push onayı$/)?.props?.wrap).toBeUndefined()
+  expect(title.props).toMatchObject({ flexGrow: 1, flexShrink: 1, minWidth: 0 })
+  expect(textNode(title, /./)?.props?.wrap).toBe('truncate-end')
+})
+
+test('pane-polish r2 M3 (title Button): the title Text is cut at the end, the chevron Text after it has a space and is never cut', FOLDERS, async ($, on) => {
+  const k = await pgBoot($, on, pgFile([PGD('T1', { title: LONG120 }), PGD('D1', { title: LONG120, done: true, stage: 'report', roles: R_DONE })]))
+  const ui = await k.pane('desktop')
+  const check = (root: Node, id: string) => {
+    const btn = byKey(root, `detail-${id}`)
+    const [title, chevron] = btn.children as [Node, Node]
+    expect([title.props?.wrap, textOf(title)]).toEqual(['truncate-end', LONG120])
+    expect([textOf(chevron), chevron.props?.wrap, chevron.props?.dimColor]).toEqual([' ›', undefined, true])
+  }
+  check(await drawnOf(ui), 'T1')
+  await ui.press({ key: 'tab-done' })
+  check(await drawnOf(ui), 'D1')
+})
+
+test('pane-polish r2 M5 (kid push meta): a kid\'s push decision draws its meta in the inset box too, its other decision in the dim line', FOLDERS, async ($, on) => {
+  const decisions = [{ ...P1, meta: 'origin/main ← d4adf70 · tarama temiz' }, { ...K1, meta: 'bir not' }]
+  const k = await cBoot($, on, { surface: 'desktop', store: KID_REC, own: own4({ decisions: [] }), files: { [C4_KID]: { text: kid4({ decisions }), age: 5 * MIN4 } } })
+  const root = await drawnOf(await k.pane('desktop'))
+  const meta = textNode(byKey(root, 'kd-hard-p1'), /^origin\/main ← d4adf70 · tarama temiz$/) as Node
+  expect(meta.props).toMatchObject({ size: 'caption', mono: true })
+  expect(ppParentOf(root, meta).props).toMatchObject({ backgroundColor: 'rgba(128,128,128,0.2)' })
+  const note = textNode(byKey(root, 'kd-hard-k1'), /^bir not$/) as Node
+  expect(note.props).toMatchObject({ mono: true, dimColor: true })
+  expect(ppParentOf(root, note).props?.backgroundColor).toBeUndefined()
+})
+
+test('pane-polish r2 M5 (lock without kind): a push decision whose stored copy lost its kind and its flag (fail closed) still draws the padlock, before the task title', FOLDERS, async ($, on) => {
+  const text = pgFile([PGD('T1')], [{ id: 'pp', kind: 'Push onayı', task: 'T1', text: 'Gönderelim mi?', options: ['Evet', 'Hayır'] }])
+  const data = parseStatus(text)
+  const lost = { ...data, decisions: data.decisions.map(d => ({ ...d, kind: undefined, push: undefined })) } as never
+  const k = await pgBoot($, on, text, { atoms: { status: { shape: 'status-5', value: { file: C4_OWN, mtime: C4_NOW - MIN4, data: lost, error: null } }, children: { shape: 'children-3', value: [] } } })
+  const root = await drawnOf(await k.pane('desktop'))
+  const head = kidsOf(kidsOf(byKey(root, 'd-pp'))[0] as Node)[0] as Node
+  expect(kidsOf(head).map(n => n.type)).toEqual(['Svg', 'Box']) // padlock, then the title Box (no kind)
+  expect(kidsOf(head)[0]?.props?.alt).toBe('Push onayı')
+  expect(textOf(kidsOf(head)[1] as Node)).toBe('Görev T1')
 })
