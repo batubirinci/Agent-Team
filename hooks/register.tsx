@@ -1253,7 +1253,7 @@ export const register: Register = (on, options) => {
       )
     const cardMeta = (d: Decision) =>
       d.meta &&
-      (d.push ? (
+      (pushOf(d) ? (
         <Box backgroundColor={CHIP} padding="sm">
           <Text size="caption" mono>{d.meta}</Text>
         </Box>
@@ -1272,7 +1272,7 @@ export const register: Register = (on, options) => {
       return (
       <Box key={`d-${d.id}`} {...CARD} borderColor={edge} hover={hover(edge)}>
         <Box flexDirection="column">
-          {cardHead(d.kind, decisionTitle(d, data?.tasks ?? []), d.push, blocked ? BLOCKED_INK : 'claude')}
+          {cardHead(d.kind, decisionTitle(d, data?.tasks ?? []), pushOf(d), blocked ? BLOCKED_INK : 'claude')}
           <Text>{d.text}</Text>
           {cardMeta(d)}
         </Box>
@@ -1308,7 +1308,7 @@ export const register: Register = (on, options) => {
       return (
         <Box key={`kd-${c.task}-${d.id}`} {...CARD} borderColor={edge} hover={hover(edge)}>
           <Box flexDirection="column">
-            {cardHead([d.kind, `◇ ${c.name}`].filter(Boolean).join(' · '), data?.tasks.find(t => t.id === c.task)?.title, d.push, stuck ? BLOCKED_INK : 'claude')}
+            {cardHead([d.kind, `◇ ${c.name}`].filter(Boolean).join(' · '), data?.tasks.find(t => t.id === c.task)?.title, pushOf(d), stuck ? BLOCKED_INK : 'claude')}
             <Text>{d.text}</Text>
             {cardMeta(d)}
           </Box>
