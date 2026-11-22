@@ -8935,7 +8935,7 @@ test('pane-polish P3 (bind, unbound): Bağla is in the now card and opens the bi
 })
 
 test('pane-polish P4 (top band): Pause and Devam are icon buttons with the same keys and lines; the sırada / gönderildi note moves to the header caption', FOLDERS, async ($, on) => {
-  const k = await mBoot($, on)
+  const k = await mBoot($, on, { status: MOTION.replace('"v":1', '"v":1,"lead":"Opus 5.5"') }) // a lead, so the caption has more parts than the note
   const ui = await k.mount()
   const pause = byKey(await drawnOf(ui), 'pause')
   expect([pause.props?.label, pause.children]).toEqual(['Takımı duraklat', ['⏸']])
@@ -8944,7 +8944,7 @@ test('pane-polish P4 (top band): Pause and Devam are icon buttons with the same 
   expect(k.log.sent).toEqual(['Pause']) // the same line as before
   const root = await drawnOf(ui)
   expect(byKey(root, 'pause').props?.label).toBe('Takımı duraklat') // the label does not carry the note any more
-  expect(texts4(root).some(t => /^Pause · gönderildi/.test(t))).toBe(true) // the first part of the dim header caption
+  expect(texts4(root).some(t => /^Pause · gönderildi · Lead · Opus 5\.5/.test(t))).toBe(true) // the first part of the dim header caption (so the cut at the end never hides it)
   expect(textNode(root, /^Pause · gönderildi/)?.props).toMatchObject({ size: 'caption', dimColor: true, wrap: 'truncate-end' })
   await k.change(withPaused(MOTION))
   const resume = byKey(await drawnOf(ui), 'resume')
@@ -9056,6 +9056,9 @@ test('pane-polish rows (row rule): every new row keeps text in a growing, shrink
     growing(byKey(list, `t-T1-l-${i}`))
     expect(cut(byKey(list, `t-T1-l-${i}`))).toBe(true)
   }
+  const titleRow = kidsOf(kidsOf(byKey(list, 't-T1'))[0] as Node)[0] as Node
+  growing(kidsOf(titleRow)[0] as Node) // the Box that holds the title Button
+  expect(kidsOf(titleRow)[1]?.props).toMatchObject({ flexShrink: 0 }) // `Tur N` and the state chip keep their width
   const dhead = kidsOf(kidsOf(byKey(list, 'd-q1'))[0] as Node)[0] as Node
   const [kind, title] = kidsOf(dhead) as [Node, Node]
   expect(kind.props).toMatchObject({ flexShrink: 1, minWidth: 0 })
