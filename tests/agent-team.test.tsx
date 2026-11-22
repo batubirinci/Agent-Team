@@ -9154,14 +9154,13 @@ test('pane-polish r2 M5 (kid push meta): a kid\'s push decision draws its meta i
   expect(ppParentOf(root, note).props?.backgroundColor).toBeUndefined()
 })
 
-test('pane-polish r2 M5 (lock without kind): a push decision whose stored copy lost its kind and its flag (fail closed) still draws the padlock, before the task title', FOLDERS, async ($, on) => {
-  const text = pgFile([PGD('T1')], [{ id: 'pp', kind: 'Push onayı', task: 'T1', text: 'Gönderelim mi?', options: ['Evet', 'Hayır'] }])
+test('pane-polish r2 M5 (lock without kind): a push decision whose stored copy lost its kind and its flag (fail closed) and that names no task still draws the padlock alone in its head', FOLDERS, async ($, on) => {
+  const text = pgFile([PGD('T1')], [{ id: 'pp', kind: 'Push onayı', text: 'Gönderelim mi?', options: ['Evet', 'Hayır'] }])
   const data = parseStatus(text)
   const lost = { ...data, decisions: data.decisions.map(d => ({ ...d, kind: undefined, push: undefined })) } as never
   const k = await pgBoot($, on, text, { atoms: { status: { shape: 'status-5', value: { file: C4_OWN, mtime: C4_NOW - MIN4, data: lost, error: null } }, children: { shape: 'children-3', value: [] } } })
   const root = await drawnOf(await k.pane('desktop'))
   const head = kidsOf(kidsOf(byKey(root, 'd-pp'))[0] as Node)[0] as Node
-  expect(kidsOf(head).map(n => n.type)).toEqual(['Svg', 'Box']) // padlock, then the title Box (no kind)
+  expect(kidsOf(head).map(n => n.type)).toEqual(['Svg']) // the padlock alone: no kind, no task title
   expect(kidsOf(head)[0]?.props?.alt).toBe('Push onayı')
-  expect(textOf(kidsOf(head)[1] as Node)).toBe('Görev T1')
 })
